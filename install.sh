@@ -50,57 +50,82 @@ setup_venv() {
 install_environment() {
     echo -e "${BLUE}--- Шаг 1: Настройка окружения и установка зависимостей ---${NC}"
 
-    # 1. Установка системных пакетов
-    echo -e "\n${YELLOW}--> 1.1 Установка системных пакетов...${NC}"
-    sudo apt-get update
-    sudo apt-get install -y build-essential python${PYTHON_VERSION} python${PYTHON_VERSION}-dev python${PYTHON_VERSION}-venv ffmpeg sox libsndfile1
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}Ошибка при установке системных пакетов. Пожалуйста, проверьте вывод и попробуйте снова.${NC}"
-        exit 1
+    # 1. Проверка и установка системных пакетов
+    echo -e "\n${YELLOW}--> 1.1 Проверка и установка системных пакетов...${NC}"
+    
+    REQUIRED_PKGS=( "build-essential" "python${PYTHON_VERSION}" "python${PYTHON_VERSION}-dev" "python${PYTHON_VERSION}-venv" "ffmpeg" "sox" "libsndfile1" )
+    PKGS_TO_INSTALL=()
+
+    for pkg in "${REQUIRED_PKGS[@]}"; do
+        if ! dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed"; then
+            PKGS_TO_INSTALL+=("$pkg")
+        fi
+    done
+
+    if [ ${#PKGS_TO_INSTALL[@]} -ne 0 ]; then
+        echo "Следующие пакеты будут установлены: ${PKGS_TO_INSTALL[*]}"
+        sudo apt-get update
+        sudo apt-get install -y "${PKGS_TO_INSTALL[@]}"
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}Ошибка при установке системных пакетов. Пожалуйста, проверьте вывод.${NC}"
+            exit 1
+        fi
+    else
+        echo -e "${GREEN}Все необходимые системные пакеты уже установлены.${NC}"
     fi
-    echo -e "${GREEN}Системные пакеты успешно установлены.${NC}"
 
     # 2. Проверка драйверов NVIDIA
     echo -e "\n${YELLOW}--> 1.2 Проверка наличия драйверов NVIDIA...${NC}"
     if ! command -v nvidia-smi &> /dev/null; then
-        echo -e "${RED}ОШИБКА: Драйверы NVIDIA не найдены (команда 'nvidia-smi' не доступна).${NC}"
+        echo -e "${RED}ОШИБКА: Драйверы NVIDIA не найдены ('nvidia-smi' не доступна).${NC}"
         echo -e "${YELLOW}Пожалуйста, установите проприетарные драйверы NVIDIA для вашей видеокарты."
-        echo -e "Рекомендуемая команда для Ubuntu-based систем:"
-        echo -e "${GREEN}   sudo ubuntu-drivers autoinstall${NC}"
         echo -e "После установки ${RED}ОБЯЗАТЕЛЬНО ПЕРЕЗАГРУЗИТЕ${NC} компьютер и запустите скрипт снова."
         exit 1
     fi
-    echo -e "${GREEN}Драйверы NVIDIA обнаружены. Отлично!${NC}"
-    nvidia-smi --query-gpu=gpu_name,driver_version,cuda_version --format=csv,noheader
+    echo -e "${GREEN}Драйверы NVIDIA обнаружены.${NC}"
+    nvidia-smi
 
     # 3. Создание VENV
     echo -e "\n${YELLOW}--> 1.3 Настройка виртуального окружения Python...${NC}"
     setup_venv
 
-    # 4. Установка PyTorch
-    echo -e "\n${YELLOW}--> 1.4 Установка PyTorch с поддержкой GPU...${NC}"
-    CUDA_VERSION_STRING=$(nvidia-smi --query-gpu=cuda_version --format=csv,noheader)
-    CUDA_MAJOR=$(echo $CUDA_VERSION_STRING | cut -d'.' -f1)
+    # 4. Проверка и установка PyTorch
+    echo -e "\n${YELLOW}--> 1.4 Проверка и установка PyTorch с поддержкой GPU...${NC}"
     
-    PYTORCH_URL=""
-    if [[ "$CUDA_MAJOR" -ge "12" ]]; then
-        echo "Обнаружена CUDA 12.x. Выбираем PyTorch для CUDA 12.1."
-        PYTORCH_URL="https://download.pytorch.org/whl/cu121"
-    elif [[ "$CUDA_MAJOR" -ge "11" ]]; then
-        echo "Обнаружена CUDA 11.x. Выбираем PyTorch для CUDA 11.8."
-        PYTORCH_URL="https://download.pytorch.org/whl/cu118"
+    # Проверяем, установлен ли уже PyTorch с поддержкой CUDA
+    if "$VENV_DIR/bin/python" -c "import torch; exit(0) if torch.cuda.is_available() else exit(1)" &>/dev/null; then
+        PYTORCH_VERSION=$("$VENV_DIR/bin/python" -c "import torch; print(torch.__version__)")
+        echo -e "${GREEN}PyTorch ($PYTORCH_VERSION) с поддержкой CUDA уже установлен. Пропускаем.${NC}"
     else
-        echo -e "${RED}Не удалось определить совместимую версию PyTorch для вашей версии CUDA (${CUDA_VERSION_STRING}).${NC}"
-        echo -e "${YELLOW}Пожалуйста, посетите https://pytorch.org/get-started/locally/ для выбора правильной команды установки."
-        exit 1
-    fi
+        echo -e "${BLUE}PyTorch с CUDA не найден или неисправен. Начинаю установку...${NC}"
+        
+        CUDA_VERSION_STRING=$(nvidia-smi | grep "CUDA Version:" | awk '{print $9}')
+        if [ -z "$CUDA_VERSION_STRING" ]; then
+            echo -e "${RED}Не удалось автоматически определить версию CUDA из вывода 'nvidia-smi'.${NC}"
+            exit 1
+        fi
+        
+        CUDA_MAJOR=$(echo "$CUDA_VERSION_STRING" | cut -d'.' -f1)
+        PYTORCH_URL=""
 
-    "$VENV_DIR/bin/pip" install torch torchvision torchaudio --index-url "$PYTORCH_URL"
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}Ошибка при установке PyTorch. Проверьте вывод.${NC}"
-        exit 1
+        if [[ "$CUDA_MAJOR" -ge "12" ]]; then
+            echo "Обнаружена CUDA ${CUDA_VERSION_STRING}. Выбираем PyTorch для CUDA 12.1."
+            PYTORCH_URL="https://download.pytorch.org/whl/cu121"
+        elif [[ "$CUDA_MAJOR" -ge "11" ]]; then
+            echo "Обнаружена CUDA ${CUDA_VERSION_STRING}. Выбираем PyTorch для CUDA 11.8."
+            PYTORCH_URL="https://download.pytorch.org/whl/cu118"
+        else
+            echo -e "${RED}Не удалось определить совместимую версию PyTorch для вашей CUDA (${CUDA_VERSION_STRING}).${NC}"
+            exit 1
+        fi
+
+        "$VENV_DIR/bin/pip" install torch torchvision torchaudio --index-url "$PYTORCH_URL"
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}Ошибка при установке PyTorch. Проверьте вывод.${NC}"
+            exit 1
+        fi
+        echo -e "${GREEN}PyTorch успешно установлен.${NC}"
     fi
-    echo -e "${GREEN}PyTorch успешно установлен.${NC}"
 
     # 5. Установка остальных зависимостей
     echo -e "\n${YELLOW}--> 1.5 Установка зависимостей проекта из requirements.txt...${NC}"
@@ -109,6 +134,7 @@ install_environment() {
         echo -e "${RED}Ошибка при установке Python пакетов. Проверьте 'requirements.txt' и вывод ошибок.${NC}"
         exit 1
     fi
+    echo -e "${GREEN}Зависимости проекта успешно синхронизированы.${NC}"
     
     echo -e "\n${GREEN}=======================================================${NC}"
     echo -e "${GREEN}Настройка окружения и установка зависимостей успешно завершена!${NC}"
@@ -179,10 +205,10 @@ dataset_menu() {
 main_menu() {
     while true; do
         echo -e "\n${YELLOW}--- Главное меню подготовки проекта ---${NC}"
+        echo "0. Выполнить все шаги по порядку (1 -> 2.1 -> 2.2)"
         echo "1. Настройка окружения и установка всех зависимостей"
         echo "2. Обработка данных (Сегментация и Транскрибация)"
         echo "---"
-        echo "0. Выполнить все шаги по порядку (1 -> 2.1 -> 2.2)"
         echo "9. Выход"
         echo -n "Выберите опцию: "
         read -r choice

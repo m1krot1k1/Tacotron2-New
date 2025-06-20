@@ -17,6 +17,7 @@ ruslan_global_mean.npy
 
 # Кэш Python и Jupyter
 __pycache__/
+/venv/
 *.pyc
 .ipynb_checkpoints/
 
