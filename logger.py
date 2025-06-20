@@ -6,7 +6,11 @@ from plotting_utils import plot_gate_outputs_to_numpy
 
 
 class Tacotron2Logger(SummaryWriter):
-    def __init__(self, logdir):
+    def __init__(self, logdir, run_name=None):
+        # Если передано имя эксперимента, создаем подпапку с этим именем
+        if run_name:
+            import os
+            logdir = os.path.join(logdir, run_name)
         super(Tacotron2Logger, self).__init__(logdir)
 
     def log_training(self, total_loss, taco_loss, mi_loss, guide_loss, gate_loss, emb_loss, grad_norm,

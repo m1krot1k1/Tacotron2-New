@@ -260,11 +260,10 @@ train_model() {
     
     echo -e "${GREEN}🧹 ПОЛНАЯ очистка завершена! Только новые логи будут видны.${NC}"
 
-    # Чекпоинты в data/checkpoint/, логи в output/
-    CHECKPOINT_DIR="data/checkpoint/$EXPERIMENT_NAME"
+    # Упрощенная структура: чекпоинты и логи в одном месте
     OUTPUT_DIR="output/$EXPERIMENT_NAME"
     LOG_DIR="$OUTPUT_DIR/logs"
-    mkdir -p "$CHECKPOINT_DIR" "$OUTPUT_DIR" "$LOG_DIR"
+    mkdir -p "$OUTPUT_DIR" "$LOG_DIR"
 
     IP_ADDR=$(hostname -I | awk '{print $1}')
     if [ -z "$IP_ADDR" ]; then
@@ -297,7 +296,7 @@ train_model() {
     sleep 3
 
     echo "Все логи и чекпойнты будут сохранены в: ${YELLOW}$OUTPUT_DIR${NC}"
-    echo "Чекпоинты будут сохранены в: ${YELLOW}$CHECKPOINT_DIR${NC}"
+
     echo -e "${BLUE}Чтобы следить за процессом, откройте в браузере:${NC}"
     echo -e "1. TensorBoard: ${GREEN}http://${IP_ADDR}:5001${NC}"
     echo -e "2. MLflow:      ${GREEN}http://${IP_ADDR}:5000${NC}"
@@ -305,8 +304,8 @@ train_model() {
     echo "   tensorboard --logdir output/ --port 5001"
     echo "   mlflow ui"
     
-    # Запуск обучения
-    "$VENV_DIR/bin/python" train.py --output_directory="$CHECKPOINT_DIR" --log_directory="$LOG_DIR"
+    # Запуск обучения (чекпоинты и логи в одной папке)
+    "$VENV_DIR/bin/python" train.py --output_directory="$OUTPUT_DIR" --log_directory="$LOG_DIR"
 
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}Обучение успешно завершено.${NC}"

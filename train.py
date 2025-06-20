@@ -71,12 +71,17 @@ def prepare_dataloaders(hparams):
     return train_loader, valset, collate_fn
 
 
-def prepare_directories_and_logger(output_directory, log_directory, rank):
+def prepare_directories_and_logger(output_directory, log_directory, rank, experiment_name=None):
     if rank == 0:
         if not os.path.isdir(output_directory):
             os.makedirs(output_directory)
             os.chmod(output_directory, 0o775)
-        logger = Tacotron2Logger(os.path.join(output_directory, log_directory))
+        # Логи TensorBoard должны быть в log_directory, а не в output_directory
+        if not os.path.isdir(log_directory):
+            os.makedirs(log_directory)
+            os.chmod(log_directory, 0o775)
+        # Передаем имя эксперимента в logger для красивого отображения в TensorBoard
+        logger = Tacotron2Logger(log_directory, run_name=experiment_name)
     else:
         logger = None
     return logger
@@ -250,8 +255,10 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
     if hparams.distributed_run:
         model = apply_gradient_allreduce(model)
 
+    # Извлекаем имя эксперимента из пути для красивого отображения в TensorBoard
+    experiment_name = os.path.basename(output_directory)
     logger = prepare_directories_and_logger(
-        output_directory, log_directory, rank)
+        output_directory, log_directory, rank, experiment_name)
 
     # ---------------- MLflow ----------------
     if MLFLOW_AVAILABLE and rank == 0:
