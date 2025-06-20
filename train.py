@@ -184,7 +184,7 @@ def calculate_global_mean(data_loader, global_mean_npy):
     print('\nCalculating global mean...\n')
     for i, batch in enumerate(data_loader):
         (text_padded, input_lengths, mel_padded, gate_padded,
-         output_lengths, ctc_text, ctc_text_lengths) = batch
+         output_lengths, ctc_text, ctc_text_lengths, _guide_mask) = batch
         # padded values are 0.
         sums.append(mel_padded.double().sum(dim=(0, 2)))
         frames.append(output_lengths.double().sum())
