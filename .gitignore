@@ -1,0 +1,25 @@
+# Папки с данными
+# Содержимое этих папок не будет отслеживаться
+/data/audio/
+/data/segment_audio/
+/data/dataset/
+
+# Папки с логами и результатами обучения
+/logdir/
+/outdir/
+
+# Сгенерированные файлы
+*.log
+*.pt
+*.pth
+*.pt.bak
+ruslan_global_mean.npy
+
+# Кэш Python и Jupyter
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Системные файлы
+.DS_Store
+Thumbs.db 

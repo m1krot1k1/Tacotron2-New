@@ -32,38 +32,40 @@ install_dependencies() {
     echo -e "${GREEN}Установка зависимостей успешно завершена!${NC}"
 }
 
-# Функция сегментации аудио
+# Функция умной сегментации аудио с помощью Python-скрипта
 segment_audio() {
-    echo -e "${BLUE}--- Сегментация аудио ---${NC}"
+    echo -e "${BLUE}--- Шаг 2.1: Умная сегментация аудио ---${NC}"
     
     SRC_DIR="data/audio"
     DEST_DIR="data/segment_audio"
     
+    # Создаем папки, если их нет, на случай если шаг 1 был пропущен
     mkdir -p "$SRC_DIR"
     mkdir -p "$DEST_DIR"
     
-    echo -e "Пожалуйста, поместите ваши аудиофайлы (mp3, flac, wav и т.д.) в папку: ${YELLOW}$SRC_DIR${NC}"
+    echo -e "Пожалуйста, убедитесь, что ваши аудиофайлы (mp3, flac, wav и т.д.) находятся в папке: ${YELLOW}$SRC_DIR${NC}"
+    echo "Скрипт будет искать речь, игнорировать тишину и нарезать аудио на фрагменты от 2 до 15 секунд."
     echo "Нажмите Enter, когда будете готовы продолжить..."
     read
     
-    if [ -z "$(ls -A $SRC_DIR)" ]; then
+    if [ -z "$(ls -A $SRC_DIR 2>/dev/null)" ]; then
        echo -e "${YELLOW}Папка $SRC_DIR пуста. Сегментация не будет выполнена.${NC}"
        return
     fi
     
-    echo "Начинаю сегментацию. Файлы будут сохранены в $DEST_DIR"
-    echo "Параметры конвертации: WAV, 16-бит PCM, 22050 Гц, моно."
-    
-    for FILE in "$SRC_DIR"/*; do
-        if [ -f "$FILE" ]; then
-            FILENAME=$(basename -- "$FILE")
-            BASENAME="${FILENAME%.*}"
-            echo "Обработка файла: $FILENAME"
-            ffmpeg -i "$FILE" -ar 22050 -ac 1 -c:a pcm_s16le "$DEST_DIR/${BASENAME}.wav" -y -hide_banner -loglevel error
-        fi
-    done
-    
-    echo -e "${GREEN}Сегментация аудио завершена!${NC}"
+    if ! command -v python &> /dev/null; then
+        echo -e "${YELLOW}Python не найден. Невозможно запустить smart_segmenter.py.${NC}"
+        return
+    fi
+
+    echo "Запуск скрипта умной сегментации... Это может занять много времени для больших файлов."
+    python smart_segmenter.py --input_dir "$SRC_DIR" --output_dir "$DEST_DIR"
+
+    if [ $? -ne 0 ]; then
+        echo -e "${YELLOW}Во время сегментации произошла ошибка. Проверьте вывод скрипта.${NC}"
+    else
+        echo -e "${GREEN}Умная сегментация аудио завершена!${NC}"
+    fi
 }
 
 # Функция транскрибации
@@ -86,12 +88,11 @@ transcribe_data() {
     fi
 }
 
-
 # Функция меню для работы с датасетом
 dataset_menu() {
     while true; do
         echo -e "\n${YELLOW}--- Меню работы с датасетом ---${NC}"
-        echo "1. Сегментация аудио (из /data/audio в /data/segment_audio)"
+        echo "1. Умная сегментация аудио (из /data/audio в /data/segment_audio)"
         echo "2. Транскрибация аудио (из /data/segment_audio)"
         echo "0. Назад в главное меню"
         echo -n "Выберите опцию: "
