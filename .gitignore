@@ -24,3 +24,17 @@ __pycache__/
 # Системные файлы
 .DS_Store
 Thumbs.db 
+
+.yaml
+/mlruns/
+/output/
+/data/checkpoint/
+/data/dataset/
+/data/segment_audio/
+/data/audio/
+/data/dataset/
+/data/segment_audio/
+/data/audio/
+/data/dataset/
+/data/segment_audio/
+/data/audio/

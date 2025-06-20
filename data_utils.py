@@ -32,23 +32,41 @@ class TextMelLoader(torch.utils.data.Dataset):
         print('Dataset files:',len(self.audiopaths_and_text))
 
     def clean_non_existent(self):
+        """Удаляю несуществующие файлы из датасета"""
         out = []
         for el in self.audiopaths_and_text:
-            if os.path.exists(os.path.join(self.ds_path,'wavs',"%s.wav" % el[0])):
+            # Файлы в CSV уже содержат полные пути
+            audio_path = el[0]
+            if os.path.exists(audio_path):
                 out.append(el)
             else:
-                print(el[0])
+                print(f"Файл не найден: {audio_path}")
         self.audiopaths_and_text = out
 
     def get_mel_text_pair(self, audiopath_and_text):
-        # separate filename and text
-        audiopath, text = audiopath_and_text[0], audiopath_and_text[2].strip() or audiopath_and_text[1].strip()
+        # Получаю путь к файлу и текст
+        audiopath, text = audiopath_and_text[0], audiopath_and_text[1].strip()
         text, ctc_text = self.get_text(text)
-        mel = self.get_mel(os.path.join(self.ds_path,'wavs',audiopath+'.wav'))
-        guide_mask = torch.FloatTensor(guide_attention_fast(len(text),mel.shape[-1],200,1000))
+        
+        # Ограничиваем длину текста до 200 символов (маска 200x1000)
+        if text.size(0) > 200:
+            # Берём первые 200 символов, чтобы не выйти за пределы guide-маски
+            text = text[:200]
+            ctc_text = ctc_text[:200]
+            print(f"[WARN] Text truncated to 200 tokens for file {os.path.basename(audiopath)}")
+
+        mel = self.get_mel(audiopath)  # Используем полный путь
+
+        # Ограничиваем длину мел-спектрограммы до 1000 фреймов
+        if mel.shape[-1] > 1000:
+            mel = mel[:, :1000]
+            print(f"[WARN] Mel truncated to 1000 frames for file {os.path.basename(audiopath)} (orig {mel.shape[-1]})")
+
+        guide_mask = torch.FloatTensor(guide_attention_fast(len(text), mel.shape[-1], 200, 1000))
         return (text, ctc_text, mel, guide_mask)
 
     def get_mel(self, filename):
+        """Загружаю или вычисляю мел-спектрограмму"""
         if not os.path.exists(filename+'.npy'):
             audio, sampling_rate = load_wav_to_torch(filename)
             if sampling_rate != self.stft.sampling_rate:

@@ -13,3 +13,9 @@ transformers==4.41.2
 accelerate
 datasets
 opencv-python-headless
+transliterate
+# Добавлено для поддержки FP16 обучения
+apex
+# Для мониторинга обучения
+tensorboard>=2.0
+mlflow>=2.13

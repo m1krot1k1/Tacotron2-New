@@ -135,7 +135,7 @@ install_environment() {
     "$VENV_DIR/bin/pip" uninstall -y torchvision torchaudio &>/dev/null
 
     echo "Установка и обновление зависимостей из requirements.txt..."
-    "$VENV_DIR/bin/pip" install --upgrade --force-reinstall --no-cache-dir -r requirements.txt
+    "$VENV_DIR/bin/pip" install --upgrade -r requirements.txt
     if [ $? -ne 0 ]; then
         echo -e "${RED}Ошибка при установке Python пакетов. Проверьте 'requirements.txt' и вывод ошибок.${NC}"
         exit 1
@@ -222,25 +222,96 @@ train_model() {
     read -p "Название (по умолчанию: $DEFAULT_EXP_NAME): " EXPERIMENT_NAME
     : "${EXPERIMENT_NAME:=$DEFAULT_EXP_NAME}"
 
+    # --- ПОЛНАЯ ОЧИСТКА СТАРЫХ ДАННЫХ ---
+    echo -e "${YELLOW}Удаляю ВСЕ старые логи, чекпоинты и данные MLflow...${NC}"
+    
+    # Удаляем всю папку output с чекпоинтами и логами
+    if [ -d "output" ]; then
+        rm -rf output/*
+        echo "✓ Удалены все чекпоинты и логи TensorBoard"
+    fi
+    
+    # Удаляем данные MLflow
+    if [ -d "mlruns" ]; then
+        rm -rf mlruns
+        echo "✓ Удалены все данные MLflow"
+    fi
+    
+    # Удаляем временные файлы (если есть)
+    rm -f *.log tb.log mlflow.log tensorboard.log 2>/dev/null
+    rm -f data/segment_audio/*.npy 2>/dev/null  # кеш мел-спектрограмм
+    echo "✓ Удалены временные файлы"
+    
+    echo -e "${GREEN}Очистка завершена. Начинаем с чистого листа!${NC}"
+
+    # Чекпоинты в data/checkpoint/, логи в output/
+    CHECKPOINT_DIR="data/checkpoint/$EXPERIMENT_NAME"
     OUTPUT_DIR="output/$EXPERIMENT_NAME"
     LOG_DIR="$OUTPUT_DIR/logs"
-    mkdir -p "$OUTPUT_DIR"
-    mkdir -p "$LOG_DIR"
+    mkdir -p "$CHECKPOINT_DIR" "$OUTPUT_DIR" "$LOG_DIR"
+
+    # Добавляем очистку старых чекпоинтов в data/checkpoint/
+    if [ -d "data/checkpoint" ]; then
+        rm -rf data/checkpoint/*
+        echo "✓ Удалены все старые чекпоинты из data/checkpoint/"
+    fi
+
+    IP_ADDR=$(hostname -I | awk '{print $1}')
+    if [ -z "$IP_ADDR" ]; then
+        IP_ADDR="localhost" # Fallback, если IP не определился
+    fi
 
     echo -e "${BLUE}Запуск обучения... Это может занять много времени.${NC}"
+    # --- Автозапуск мониторинговых сервисов ---
+    # Запускаем / перезапускаем TensorBoard на 5001
+    TB_PID=$(lsof -t -i:5001 2>/dev/null || true)
+    if [ -n "$TB_PID" ]; then
+        echo -e "${YELLOW}Порт 5001 занят (PID $TB_PID). Останавливаю процесс...${NC}"
+        kill -9 "$TB_PID"
+        sleep 1
+    fi
+    echo -e "${GREEN}Автозапуск TensorBoard на :5001${NC}"
+    nohup "$VENV_DIR/bin/python" -m tensorboard.main --logdir "$LOG_DIR" --host 0.0.0.0 --port 5001 \
+          > "${OUTPUT_DIR}/tensorboard.log" 2>&1 &
+
+    # Запускаем / перезапускаем MLflow UI на 5000
+    ML_PID=$(lsof -t -i:5000 2>/dev/null || true)
+    if [ -n "$ML_PID" ]; then
+        echo -e "${YELLOW}Порт 5000 занят (PID $ML_PID). Останавливаю процесс...${NC}"
+        kill -9 "$ML_PID"
+        sleep 1
+    fi
+    echo -e "${GREEN}Автозапуск MLflow UI на :5000${NC}"
+    nohup "$VENV_DIR/bin/mlflow" ui --host 0.0.0.0 --port 5000 \
+          > "${OUTPUT_DIR}/mlflow.log" 2>&1 &
+
     echo "Все логи и чекпойнты будут сохранены в: ${YELLOW}$OUTPUT_DIR${NC}"
-    echo "Чтобы следить за процессом, откройте в НОВЫХ терминалах:"
-    echo "1. TensorBoard: ${GREEN}tensorboard --logdir output/ --port 6006${NC}"
-    echo "2. MLflow:      ${GREEN}mlflow ui${NC}"
+    echo "Чекпоинты будут сохранены в: ${YELLOW}$CHECKPOINT_DIR${NC}"
+    echo -e "${BLUE}Чтобы следить за процессом, откройте в браузере:${NC}"
+    echo -e "1. TensorBoard: ${GREEN}http://${IP_ADDR}:5001${NC}"
+    echo -e "2. MLflow:      ${GREEN}http://${IP_ADDR}:5000${NC}"
+    echo -e "${YELLOW}Предварительно запустите их в НОВЫХ терминалах (не забудьте активировать venv):${NC}"
+    echo "   tensorboard --logdir output/ --port 5001"
+    echo "   mlflow ui"
     
     # Запуск обучения
-    "$VENV_DIR/bin/python" train.py -c hparams.py --output_directory="$OUTPUT_DIR" --log_directory="$LOG_DIR"
+    "$VENV_DIR/bin/python" train.py --output_directory="$CHECKPOINT_DIR" --log_directory="$LOG_DIR"
 
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}Обучение успешно завершено.${NC}"
     else
         echo -e "${RED}Во время обучения произошла ошибка. Проверьте вывод.${NC}"
     fi
+}
+
+# Функция отладки обучения
+debug_training() {
+    echo -e "${BLUE}--- Запуск отладчика обучения ---${NC}"
+    if [ ! -f "debug_train.sh" ]; then
+        echo -e "${RED}Скрипт отладки 'debug_train.sh' не найден.${NC}"
+        return
+    fi
+    bash ./debug_train.sh
 }
 
 # Меню работы с датасетом
@@ -270,6 +341,7 @@ main_menu() {
         echo "1. Настройка окружения и установка всех зависимостей"
         echo "2. Обработка данных (Сегментация и Транскрибация)"
         echo "3. Обучение модели"
+        echo "4. Отладить запуск обучения"
         echo "---"
         echo "9. Выход"
         echo -n "Выберите опцию: "
@@ -287,6 +359,7 @@ main_menu() {
             1) install_environment ;;
             2) dataset_menu ;;
             3) train_model ;;
+            4) debug_training ;;
             9) exit 0 ;;
             *) echo -e "${RED}Неверный выбор.${NC}" ;;
         esac

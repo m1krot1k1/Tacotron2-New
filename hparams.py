@@ -1,5 +1,6 @@
 from tools import HParams
 from text import symbols
+import logging
 
 
 def create_hparams(hparams_string=None, verbose=False):
@@ -13,7 +14,7 @@ def create_hparams(hparams_string=None, verbose=False):
         iters_per_checkpoint=500,
         seed=1234,
         dynamic_loss_scaling=True,
-        fp16_run=False,
+        fp16_run=True,  # Включено FP16 для быстродействия
         distributed_run=False,
         dist_backend="nccl",
         dist_url="tcp://localhost:54321",
@@ -26,9 +27,9 @@ def create_hparams(hparams_string=None, verbose=False):
         # Data Parameters             #
         ################################
         load_mel_from_disk=False,
-        dataset_path='/home/creotiv/work/tts/Natasha/',
-        training_files='/home/creotiv/work/tts/Natasha/filelists/train_style.csv',
-        validation_files='/home/creotiv/work/tts/Natasha/filelists/val.csv',
+        dataset_path='data/',  # Исправлен путь к данным
+        training_files='data/dataset/train.csv',  # Исправлен путь к файлу обучения
+        validation_files='data/dataset/val.csv',  # Исправлен путь к файлу валидации
         text_cleaners=['transliteration_cleaners_with_stress'],
 
         ################################
@@ -118,10 +119,10 @@ def create_hparams(hparams_string=None, verbose=False):
     )
 
     if hparams_string:
-        tf.logging.info('Parsing command line hparams: %s', hparams_string)
+        logging.info('Parsing command line hparams: %s', hparams_string)
         hparams.parse(hparams_string)
 
     if verbose:
-        tf.logging.info('Final parsed hparams: %s', hparams.values())
+        logging.info('Final parsed hparams: %s', hparams.values())
 
     return hparams

@@ -20,6 +20,14 @@ from hparams import create_hparams
 from utils import to_gpu
 from text import symbol_to_id
 
+# MLflow for experiment tracking
+try:
+    import mlflow
+    import mlflow.pytorch  # позволяет логировать модели PyTorch
+    MLFLOW_AVAILABLE = True
+except ImportError:
+    MLFLOW_AVAILABLE = False
+
 
 def reduce_tensor(tensor, n_gpus):
     rt = tensor.clone()
@@ -88,7 +96,8 @@ def load_model(hparams):
 def warm_start_model(checkpoint_path, model, ignore_layers, exclude=None):
     assert os.path.isfile(checkpoint_path)
     print("Warm starting model from checkpoint '{}'".format(checkpoint_path))
-    checkpoint_dict = torch.load(checkpoint_path, map_location='cpu')
+    # Добавляем weights_only=False для совместимости с PyTorch 2.6+
+    checkpoint_dict = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     model_dict = checkpoint_dict['state_dict']
     # model_dict['embedding.embedding.weight'] = model_dict['embedding.weight']
     # del model_dict['embedding.weight']
@@ -107,7 +116,8 @@ def warm_start_model(checkpoint_path, model, ignore_layers, exclude=None):
 def load_checkpoint(checkpoint_path, model, optimizer):
     assert os.path.isfile(checkpoint_path)
     print("Loading checkpoint '{}'".format(checkpoint_path))
-    checkpoint_dict = torch.load(checkpoint_path, map_location='cpu')
+    # Добавляем weights_only=False для совместимости с PyTorch 2.6+
+    checkpoint_dict = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     model.load_state_dict(checkpoint_dict['state_dict'])
     optimizer.load_state_dict(checkpoint_dict['optimizer'])
     learning_rate = checkpoint_dict['learning_rate']
@@ -155,6 +165,8 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
         print("Validation loss {}: {:9f}  ".format(iteration, val_loss))
         if logger:
             logger.log_validation(val_loss, model, y, y_pred, iteration)
+        if MLFLOW_AVAILABLE:
+            mlflow.log_metric("validation.loss", val_loss, step=iteration)
 
 def calculate_global_mean(data_loader, global_mean_npy):
     if global_mean_npy and os.path.exists(global_mean_npy):
@@ -212,15 +224,53 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
                                  weight_decay=hparams.weight_decay)
 
     if hparams.fp16_run:
-        from apex import amp
-        model, optimizer = amp.initialize(
-            model, optimizer, opt_level='O2')
+        try:
+            from apex import amp
+            model, optimizer = amp.initialize(
+                model, optimizer, opt_level='O2')
+            hparams.use_builtin_amp = False
+        except ImportError:
+            # Используем встроенный в PyTorch AMP если apex недоступен
+            print("Apex недоступен, используем встроенный PyTorch AMP")
+            hparams.use_builtin_amp = True
+    else:
+        hparams.use_builtin_amp = False
+    
+    # Создаем scaler для встроенного AMP
+    if hparams.fp16_run and hparams.use_builtin_amp:
+        # Используем новую сигнатуру для PyTorch 2.6+
+        try:
+            scaler = torch.amp.GradScaler('cuda')
+        except (AttributeError, TypeError):
+            # Fallback для старых версий PyTorch
+            scaler = torch.cuda.amp.GradScaler()
 
     if hparams.distributed_run:
         model = apply_gradient_allreduce(model)
 
     logger = prepare_directories_and_logger(
         output_directory, log_directory, rank)
+
+    # ---------------- MLflow ----------------
+    if MLFLOW_AVAILABLE and rank == 0:
+        try:
+            mlflow.set_tracking_uri("http://localhost:5000")
+        except Exception:
+            pass  # fallback to default URI
+        experiment_name = os.path.basename(output_directory)
+        mlflow.set_experiment(experiment_name)
+        mlflow_start_params = {
+            "run_name": os.path.basename(output_directory),
+        }
+        mlflow.start_run(**mlflow_start_params)
+        # Логируем базовые гиперпараметры
+        mlflow.log_params({
+            "batch_size": hparams.batch_size,
+            "learning_rate": learning_rate,
+            "fp16": hparams.fp16_run,
+            "gaf": hparams.use_gaf,
+            "dataset": os.path.basename(hparams.training_files)
+        })
 
     # Load checkpoint if one exists
     iteration = 0
@@ -261,10 +311,17 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
 
             model.zero_grad()
             x, y = model.parse_batch(batch)
-            y_pred = model(x)
-
-            _loss = criterion(y_pred, y)
-            loss = sum(_loss)
+            
+            # Используем autocast для forward pass если включен FP16
+            if hparams.fp16_run and hparams.use_builtin_amp:
+                with torch.cuda.amp.autocast():
+                    y_pred = model(x)
+                    _loss = criterion(y_pred, y)
+                    loss = sum(_loss)
+            else:
+                y_pred = model(x)
+                _loss = criterion(y_pred, y)
+                loss = sum(_loss)
             guide_loss = _loss[2]
             gate_loss = _loss[1]
             emb_loss = _loss[3]
@@ -310,20 +367,37 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
             else:
                 reduced_loss = loss.item()
             if hparams.fp16_run:
-                with amp.scale_loss(loss, optimizer) as scaled_loss:
-                    scaled_loss.backward()
+                if hparams.use_builtin_amp:
+                    # Используем встроенный PyTorch AMP
+                    scaler.scale(loss).backward()
+                else:
+                    # Используем apex AMP
+                    with amp.scale_loss(loss, optimizer) as scaled_loss:
+                        scaled_loss.backward()
             else:
                 loss.backward()
 
             if hparams.fp16_run:
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    amp.master_params(optimizer), hparams.grad_clip_thresh)
-                is_overflow = math.isnan(grad_norm)
+                if hparams.use_builtin_amp:
+                    # Используем встроенный PyTorch AMP
+                    scaler.unscale_(optimizer)
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
+                        model.parameters(), hparams.grad_clip_thresh)
+                    is_overflow = math.isnan(grad_norm)
+                else:
+                    # Используем apex AMP
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
+                        amp.master_params(optimizer), hparams.grad_clip_thresh)
+                    is_overflow = math.isnan(grad_norm)
             else:
                 grad_norm = torch.nn.utils.clip_grad_norm_(
                     model.parameters(), hparams.grad_clip_thresh)
 
-            optimizer.step()
+            if hparams.fp16_run and hparams.use_builtin_amp:
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
 
             if not is_overflow and rank == 0:
                 duration = time.perf_counter() - start
@@ -332,6 +406,20 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
                 logger.log_training(
                     reduced_loss, taco_loss, mi_loss, guide_loss, gate_loss, emb_loss, grad_norm,
                     learning_rate, duration, iteration)
+
+                # MLflow metrics
+                if MLFLOW_AVAILABLE:
+                    mlflow.log_metrics({
+                        "training.loss": reduced_loss,
+                        "training.taco_loss": taco_loss,
+                        "training.mi_loss": mi_loss,
+                        "training.guide_loss": guide_loss,
+                        "training.gate_loss": gate_loss,
+                        "training.emb_loss": emb_loss,
+                        "grad_norm": grad_norm,
+                        "learning_rate": learning_rate,
+                        "duration": duration
+                    }, step=iteration)
 
             if not is_overflow and (iteration % hparams.iters_per_checkpoint == 0):
                 validate(model, criterion, valset, iteration,
@@ -344,6 +432,10 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
                                     checkpoint_path)
 
             iteration += 1
+
+    # Завершаем MLflow run
+    if MLFLOW_AVAILABLE and rank == 0 and mlflow.active_run() is not None:
+        mlflow.end_run()
 
 
 if __name__ == '__main__':

@@ -66,7 +66,7 @@ def _clean_text(text, cleaner_names):
 
 
 def _symbols_to_sequence(symbols):
-  return [symbol_to_id[s] for s in symbols if _should_keep_symbol(s)]
+  return [symbol_to_id[s] for s in symbols]
 
 
 def _arpabet_to_sequence(text):
@@ -74,4 +74,17 @@ def _arpabet_to_sequence(text):
 
 
 def _should_keep_symbol(s):
-  return s in symbol_to_id and s is not '_' and s is not '~'
+  return s in symbol_to_id and s != '_' and s != '~'
+
+
+def symbol_is_valid(s):
+    # Допустимы все символы, кроме '_' и '~'
+    return s in symbol_to_id and s != '_' and s != '~'
+
+
+def get_arpabet(word, dictionary):
+  word_arp = dictionary.lookup(word)
+  if word_arp is not None:
+    return '{%s}' % (word_arp)
+  else:
+    return None
