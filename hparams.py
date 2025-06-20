@@ -10,7 +10,7 @@ def create_hparams(hparams_string=None, verbose=False):
         ################################
         # Experiment Parameters        #
         ################################
-        epochs=3000,
+        epochs=500000,
         iters_per_checkpoint=500,
         seed=1234,
         dynamic_loss_scaling=True,
@@ -104,7 +104,7 @@ def create_hparams(hparams_string=None, verbose=False):
         min_learning_rate=1e-6,  # Минимальный LR
         weight_decay=1e-6,
         grad_clip_thresh=1.0,
-        batch_size=16,
+        batch_size=48,
         mask_padding=True,  # set model's padded outputs to padded values
 
         ################################

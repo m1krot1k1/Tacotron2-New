@@ -276,9 +276,9 @@ train_model() {
     sleep 1
     
     # --- Автозапуск мониторинговых сервисов ---
-    echo -e "${GREEN}📊 Запуск TensorBoard на порту 5001 (только новые логи)${NC}"
+    echo -e "${GREEN}📊 Запуск TensorBoard на порту 5001 (все эксперименты в output/)${NC}"
     nohup "$VENV_DIR/bin/python" -m tensorboard.main \
-          --logdir "$LOG_DIR" \
+          --logdir "output/" \
           --host 0.0.0.0 \
           --port 5001 \
           --reload_interval 5 \
@@ -292,6 +292,14 @@ train_model() {
           --backend-store-uri "file://$(pwd)/mlruns" \
           > "${OUTPUT_DIR}/mlflow.log" 2>&1 &
     
+    echo -e "${GREEN}🎤 Запуск TTS Demo (Streamlit) на порту 5005${NC}"
+    nohup "$VENV_DIR/bin/streamlit" run demo.py \
+          --server.port 5005 \
+          --server.address 0.0.0.0 \
+          --server.headless true \
+          --browser.gatherUsageStats false \
+          > "${OUTPUT_DIR}/streamlit.log" 2>&1 &
+    
     # Пауза для запуска сервисов
     sleep 3
 
@@ -300,9 +308,11 @@ train_model() {
     echo -e "${BLUE}Чтобы следить за процессом, откройте в браузере:${NC}"
     echo -e "1. TensorBoard: ${GREEN}http://${IP_ADDR}:5001${NC}"
     echo -e "2. MLflow:      ${GREEN}http://${IP_ADDR}:5000${NC}"
-    echo -e "${YELLOW}Предварительно запустите их в НОВЫХ терминалах (не забудьте активировать venv):${NC}"
+    echo -e "3. TTS Demo:    ${GREEN}http://${IP_ADDR}:5005${NC}"
+    echo -e "${YELLOW}Все сервисы запускаются автоматически. Если нужно запустить вручную:${NC}"
     echo "   tensorboard --logdir output/ --port 5001"
-    echo "   mlflow ui"
+    echo "   mlflow ui --port 5000"
+    echo "   streamlit run demo.py --server.port 5005"
     
     # Запуск обучения (чекпоинты и логи в одной папке)
     "$VENV_DIR/bin/python" train.py --output_directory="$OUTPUT_DIR" --log_directory="$LOG_DIR"
@@ -312,6 +322,46 @@ train_model() {
     else
         echo -e "${RED}Во время обучения произошла ошибка. Проверьте вывод.${NC}"
     fi
+}
+
+# Функция запуска веб-демо TTS
+run_tts_demo() {
+    echo -e "${BLUE}--- Запуск веб-демо TTS ---${NC}"
+    
+    if [ ! -f "$VENV_DIR/bin/python" ]; then
+        echo -e "${RED}Python в виртуальном окружении не найден. Запустите сначала установку (пункт 1).${NC}"
+        return
+    fi
+    
+    # Проверка наличия чекпоинтов
+    if [ -z "$(find output/ -name 'checkpoint_*' 2>/dev/null)" ]; then
+        echo -e "${YELLOW}⚠️ Чекпоинты не найдены в папке output/.${NC}"
+        echo -e "${YELLOW}Убедитесь, что обучение было запущено хотя бы один раз.${NC}"
+        echo -e "${YELLOW}Демо все равно запустится, но для генерации потребуются модели.${NC}"
+        echo
+    fi
+    
+    # Проверка установки Streamlit
+    if ! "$VENV_DIR/bin/python" -c "import streamlit" &>/dev/null; then
+        echo -e "${YELLOW}Streamlit не установлен. Устанавливаем...${NC}"
+        "$VENV_DIR/bin/pip" install streamlit
+    fi
+    
+    IP_ADDR=$(hostname -I | awk '{print $1}')
+    if [ -z "$IP_ADDR" ]; then
+        IP_ADDR="localhost"
+    fi
+    
+    echo -e "${GREEN}🎤 Запуск TTS Demo на порту 5005...${NC}"
+    echo -e "${BLUE}Откройте в браузере: ${GREEN}http://${IP_ADDR}:5005${NC}"
+    echo -e "${YELLOW}Для остановки нажмите Ctrl+C${NC}"
+    echo
+    
+    # Запуск Streamlit
+    "$VENV_DIR/bin/streamlit" run demo.py \
+        --server.port 5005 \
+        --server.address 0.0.0.0 \
+        --browser.gatherUsageStats false
 }
 
 # Функция отладки обучения
@@ -351,7 +401,8 @@ main_menu() {
         echo "1. Настройка окружения и установка всех зависимостей"
         echo "2. Обработка данных (Сегментация и Транскрибация)"
         echo "3. Обучение модели"
-        echo "4. Отладить запуск обучения"
+        echo "4. Запуск веб-демо TTS (Streamlit на порту 5005)"
+        echo "5. Отладить запуск обучения"
         echo "---"
         echo "9. Выход"
         echo -n "Выберите опцию: "
@@ -369,7 +420,8 @@ main_menu() {
             1) install_environment ;;
             2) dataset_menu ;;
             3) train_model ;;
-            4) debug_training ;;
+            4) run_tts_demo ;;
+            5) debug_training ;;
             9) exit 0 ;;
             *) echo -e "${RED}Неверный выбор.${NC}" ;;
         esac
