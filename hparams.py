@@ -59,10 +59,10 @@ def create_hparams(hparams_string=None, verbose=False):
         n_frames_per_step=1,  # currently only 1 is supported
         decoder_rnn_dim=1024,
         prenet_dim=256,
-        max_decoder_steps=1500,
+        max_decoder_steps=2000,  # Увеличено для стабильности
         gate_threshold=0.5,
-        p_attention_dropout=0.1,
-        p_decoder_dropout=0.1,
+        p_attention_dropout=0.15,  # Увеличено с 0.1
+        p_decoder_dropout=0.15,   # Увеличено с 0.1
         p_teacher_forcing=1.0,
 
         # Attention parameters
@@ -98,13 +98,13 @@ def create_hparams(hparams_string=None, verbose=False):
         # Optimization Hyperparameters #
         ################################
         use_saved_learning_rate=False,
-        learning_rate=1e-3,
-        learning_rate_decay=0.5,  # Коэффициент снижения LR
-        learning_rate_decay_patience=5,  # Терпение для снижения LR (в checkpoint'ах)
-        min_learning_rate=1e-6,  # Минимальный LR
-        weight_decay=1e-6,
+        learning_rate=5e-4,  # Уменьшено с 1e-3 для стабильности
+        learning_rate_decay=0.98,  # Более мягкое снижение
+        learning_rate_decay_patience=3,  # Более агрессивное снижение
+        min_learning_rate=1e-7,  # Более низкий минимум
+        weight_decay=1e-5,  # Увеличена регуляризация
         grad_clip_thresh=1.0,
-        batch_size=48,
+        batch_size=32,  # Уменьшено с 48 для стабильности
         mask_padding=True,  # set model's padded outputs to padded values
 
         ################################
@@ -112,13 +112,23 @@ def create_hparams(hparams_string=None, verbose=False):
         ################################
         use_mmi=True,  # Включаем MMI для лучшего качества
 
-        drop_frame_rate=0.0 ,#0.2,
-        use_gaf=False,
-        update_gaf_every_n_step=10,
-        max_gaf=0.5,
+        drop_frame_rate=0.1,  # Увеличено для регуляризации
+        use_gaf=True,  # Обучение с Guided Attention Force включено
+        update_gaf_every_n_step=5,  # Более частые обновления
+        max_gaf=0.8,  # Увеличено для лучшего выравнивания
         
         global_mean_npy='ruslan_global_mean.npy',
         
+        ################################
+        # Regularization & Stability  #
+        ################################
+        encoder_dropout_rate=0.1,
+        postnet_dropout_rate=0.15,
+        
+        # Early stopping parameters
+        early_stopping=True,
+        early_stopping_patience=10,
+        early_stopping_min_delta=0.001,
     )
 
     if hparams_string:

@@ -314,6 +314,10 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
     # Learning Rate Scheduler - отслеживание validation loss
     best_val_loss = float('inf')
     patience_counter = 0
+    # Early stopping variables
+    early_best_val_loss = float('inf')
+    early_patience_counter = 0
+    stop_training = False
     
     # ================ MAIN TRAINNIG LOOP! ===================
     for epoch in range(epoch_offset, hparams.epochs):
@@ -460,6 +464,29 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
                             else:
                                 print(f"⚠️ Learning Rate достиг минимума: {learning_rate:.6f}")
                 
+                # ---------- Early Stopping Logic ----------
+                if rank == 0 and hparams.early_stopping:
+                    improvement = early_best_val_loss - val_loss
+                    if improvement > hparams.early_stopping_min_delta:
+                        early_best_val_loss = val_loss
+                        early_patience_counter = 0
+                        print(f"✅ EarlyStopping: улучшение {improvement:.6f}, счетчик сброшен")
+                    else:
+                        early_patience_counter += 1
+                        print(f"⚠️ EarlyStopping patience: {early_patience_counter}/{hparams.early_stopping_patience}")
+                        if early_patience_counter >= hparams.early_stopping_patience:
+                            print("🛑 Early stopping triggered. Останавливаем обучение…")
+                            stop_training = True
+
+                # Распространяем флаг остановки на все процессы в распределенном режиме
+                if hparams.distributed_run:
+                    flag_tensor = torch.tensor([1 if stop_training else 0], dtype=torch.int, device=('cuda' if torch.cuda.is_available() else 'cpu'))
+                    dist.broadcast(flag_tensor, src=0)
+                    stop_training = bool(flag_tensor.item())
+
+                if stop_training:
+                    break
+
                 if rank == 0:
                     checkpoint_path = os.path.join(
                         output_directory, "checkpoint_{}".format(iteration))
@@ -467,6 +494,13 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
                                     checkpoint_path)
 
             iteration += 1
+
+            if stop_training:
+                break
+
+        if stop_training:
+            print("🏁 Обучение завершено по Early Stopping.")
+            break
 
     # Завершаем MLflow run
     if MLFLOW_AVAILABLE and rank == 0 and mlflow.active_run() is not None:
