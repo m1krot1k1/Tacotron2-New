@@ -7,4 +7,8 @@ tensorflow-cpu
 tensorboardX
 Unidecode
 tqdm
-openai-whisper
+# Заменено на transformers для более производительной пакетной обработки
+# openai-whisper
+transformers
+accelerate
+datasets

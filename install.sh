@@ -1,3 +1,5 @@
+
+
 #!/bin/bash
 
 # ==============================================================================
@@ -186,8 +188,8 @@ transcribe_data() {
 dataset_menu() {
     while true; do
         echo -e "\n${YELLOW}--- Меню обработки данных ---${NC}"
-        echo "1. Умная сегментация аудио (из /data/audio)"
-        echo "2. Транскрибация аудио (из /data/segment_audio)"
+        echo "1. Умная сегментация аудио (из /data/audio в /data/segment_audio)"
+        echo "2. Транскрибация аудио (из /data/segment_audio в /data/dataset)"
         echo "0. Назад в главное меню"
         echo -n "Выберите опцию: "
         read -r choice
@@ -214,8 +216,6 @@ main_menu() {
         read -r choice
         
         case $choice in
-            1) install_environment ;;
-            2) dataset_menu ;;
             0)
                 echo -e "${BLUE}--- Запуск всех шагов ---${NC}"
                 install_environment
@@ -223,6 +223,8 @@ main_menu() {
                 transcribe_data
                 echo -e "${GREEN}Все шаги выполнены!${NC}"
                 ;;
+            1) install_environment ;;
+            2) dataset_menu ;;
             9) exit 0 ;;
             *) echo -e "${RED}Неверный выбор.${NC}" ;;
         esac
