@@ -223,26 +223,42 @@ train_model() {
     : "${EXPERIMENT_NAME:=$DEFAULT_EXP_NAME}"
 
     # --- ПОЛНАЯ ОЧИСТКА СТАРЫХ ДАННЫХ ---
-    echo -e "${YELLOW}Удаляю ВСЕ старые логи, чекпоинты и данные MLflow...${NC}"
+    echo -e "${YELLOW}🗑️ Удаляю ВСЕ старые логи, чекпоинты и данные мониторинга...${NC}"
     
-    # Удаляем всю папку output с чекпоинтами и логами
+    # 1. Останавливаем все процессы TensorBoard и MLflow
+    echo "⏹️ Останавливаю все процессы мониторинга..."
+    pkill -f "tensorboard" 2>/dev/null || true
+    pkill -f "mlflow" 2>/dev/null || true
+    sleep 2
+    
+    # 2. Удаляем ВСЕ данные TensorBoard
     if [ -d "output" ]; then
-        rm -rf output/*
-        echo "✓ Удалены все чекпоинты и логи TensorBoard"
+        rm -rf output/
+        mkdir -p output/
+        echo "✓ Удалены ВСЕ логи TensorBoard"
     fi
     
-    # Удаляем данные MLflow
+    # 3. Удаляем ВСЕ данные MLflow
     if [ -d "mlruns" ]; then
-        rm -rf mlruns
-        echo "✓ Удалены все данные MLflow"
+        rm -rf mlruns/
+        mkdir -p mlruns/
+        echo "✓ Удалены ВСЕ данные MLflow"
     fi
     
-    # Удаляем временные файлы (если есть)
-    rm -f *.log tb.log mlflow.log tensorboard.log 2>/dev/null
-    rm -f data/segment_audio/*.npy 2>/dev/null  # кеш мел-спектрограмм
-    echo "✓ Удалены временные файлы"
+    # 4. Удаляем ВСЕ чекпоинты
+    if [ -d "data/checkpoint" ]; then
+        rm -rf data/checkpoint/
+        mkdir -p data/checkpoint/
+        echo "✓ Удалены ВСЕ чекпоинты"
+    fi
     
-    echo -e "${GREEN}Очистка завершена. Начинаем с чистого листа!${NC}"
+    # 5. Удаляем временные файлы и кеш
+    rm -f *.log tb.log mlflow.log tensorboard.log 2>/dev/null || true
+    rm -f data/segment_audio/*.npy 2>/dev/null || true  # кеш мел-спектрограмм
+    rm -rf .tensorboard-info/ 2>/dev/null || true      # служебные файлы TensorBoard
+    echo "✓ Удалены временные файлы и кеш"
+    
+    echo -e "${GREEN}🧹 ПОЛНАЯ очистка завершена! Только новые логи будут видны.${NC}"
 
     # Чекпоинты в data/checkpoint/, логи в output/
     CHECKPOINT_DIR="data/checkpoint/$EXPERIMENT_NAME"
@@ -250,40 +266,35 @@ train_model() {
     LOG_DIR="$OUTPUT_DIR/logs"
     mkdir -p "$CHECKPOINT_DIR" "$OUTPUT_DIR" "$LOG_DIR"
 
-    # Добавляем очистку старых чекпоинтов в data/checkpoint/
-    if [ -d "data/checkpoint" ]; then
-        rm -rf data/checkpoint/*
-        echo "✓ Удалены все старые чекпоинты из data/checkpoint/"
-    fi
-
     IP_ADDR=$(hostname -I | awk '{print $1}')
     if [ -z "$IP_ADDR" ]; then
         IP_ADDR="localhost" # Fallback, если IP не определился
     fi
 
-    echo -e "${BLUE}Запуск обучения... Это может занять много времени.${NC}"
+    echo -e "${BLUE}🚀 Запуск обучения с чистыми логами...${NC}"
+    
+    # Дополнительная пауза для завершения очистки
+    sleep 1
+    
     # --- Автозапуск мониторинговых сервисов ---
-    # Запускаем / перезапускаем TensorBoard на 5001
-    TB_PID=$(lsof -t -i:5001 2>/dev/null || true)
-    if [ -n "$TB_PID" ]; then
-        echo -e "${YELLOW}Порт 5001 занят (PID $TB_PID). Останавливаю процесс...${NC}"
-        kill -9 "$TB_PID"
-        sleep 1
-    fi
-    echo -e "${GREEN}Автозапуск TensorBoard на :5001${NC}"
-    nohup "$VENV_DIR/bin/python" -m tensorboard.main --logdir "$LOG_DIR" --host 0.0.0.0 --port 5001 \
+    echo -e "${GREEN}📊 Запуск TensorBoard на порту 5001 (только новые логи)${NC}"
+    nohup "$VENV_DIR/bin/python" -m tensorboard.main \
+          --logdir "$LOG_DIR" \
+          --host 0.0.0.0 \
+          --port 5001 \
+          --reload_interval 5 \
+          --purge_orphaned_data true \
           > "${OUTPUT_DIR}/tensorboard.log" 2>&1 &
 
-    # Запускаем / перезапускаем MLflow UI на 5000
-    ML_PID=$(lsof -t -i:5000 2>/dev/null || true)
-    if [ -n "$ML_PID" ]; then
-        echo -e "${YELLOW}Порт 5000 занят (PID $ML_PID). Останавливаю процесс...${NC}"
-        kill -9 "$ML_PID"
-        sleep 1
-    fi
-    echo -e "${GREEN}Автозапуск MLflow UI на :5000${NC}"
-    nohup "$VENV_DIR/bin/mlflow" ui --host 0.0.0.0 --port 5000 \
+    echo -e "${GREEN}📈 Запуск MLflow UI на порту 5000 (только новые эксперименты)${NC}"
+    nohup "$VENV_DIR/bin/mlflow" ui \
+          --host 0.0.0.0 \
+          --port 5000 \
+          --backend-store-uri "file://$(pwd)/mlruns" \
           > "${OUTPUT_DIR}/mlflow.log" 2>&1 &
+    
+    # Пауза для запуска сервисов
+    sleep 3
 
     echo "Все логи и чекпойнты будут сохранены в: ${YELLOW}$OUTPUT_DIR${NC}"
     echo "Чекпоинты будут сохранены в: ${YELLOW}$CHECKPOINT_DIR${NC}"
