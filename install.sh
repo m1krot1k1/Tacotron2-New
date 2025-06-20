@@ -1,5 +1,3 @@
-
-
 #!/bin/bash
 
 # ==============================================================================
@@ -129,9 +127,15 @@ install_environment() {
         echo -e "${GREEN}PyTorch успешно установлен.${NC}"
     fi
 
-    # 5. Установка остальных зависимостей
-    echo -e "\n${YELLOW}--> 1.5 Установка зависимостей проекта из requirements.txt...${NC}"
-    "$VENV_DIR/bin/pip" install -r requirements.txt
+    # 5. Очистка от конфликтующих пакетов и установка зависимостей
+    echo -e "\n${YELLOW}--> 1.5 Очистка от конфликтующих пакетов и установка зависимостей...${NC}"
+
+    # Удаляем torchvision и torchaudio, т.к. они не используются и могут конфликтовать с версией torch
+    echo "Удаление потенциально конфликтующих пакетов (torchvision, torchaudio)..."
+    "$VENV_DIR/bin/pip" uninstall -y torchvision torchaudio &>/dev/null
+
+    echo "Установка и обновление зависимостей из requirements.txt..."
+    "$VENV_DIR/bin/pip" install --upgrade --force-reinstall --no-cache-dir -r requirements.txt
     if [ $? -ne 0 ]; then
         echo -e "${RED}Ошибка при установке Python пакетов. Проверьте 'requirements.txt' и вывод ошибок.${NC}"
         exit 1
@@ -179,9 +183,64 @@ transcribe_data() {
         return
     fi
     
-    echo "Запуск скрипта транскрибации..."
-    "$VENV_DIR/bin/python" transcribe.py --data_dir="data/segment_audio" --output_dir="data/dataset"
-    echo -e "${GREEN}Транскрибация завершена.${NC}"
+    # Запрашиваем у пользователя размер пачки
+    echo -e "${YELLOW}Введите размер пакета (batch size) для транскрибации.${NC}"
+    echo "Рекомендации: 16 (для 24ГБ VRAM), 8 (для 16ГБ VRAM), 4 (для 8-12ГБ VRAM)."
+    read -p "Ваш выбор (по умолчанию: 16): " BATCH_SIZE
+    
+    # Если пользователь ничего не ввел, используем значение по умолчанию
+    : "${BATCH_SIZE:=8}"
+    
+    echo "Запуск скрипта транскрибации с размером пачки: $BATCH_SIZE..."
+    "$VENV_DIR/bin/python" transcribe.py --data_dir="data/segment_audio" --output_dir="data/dataset" --batch_size="$BATCH_SIZE"
+    
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Во время транскрибации произошла ошибка. Если это 'Out of Memory', попробуйте уменьшить размер пачки.${NC}"
+    else
+        echo -e "${GREEN}Транскрибация завершена.${NC}"
+    fi
+}
+
+# Функция обучения модели
+train_model() {
+    echo -e "${BLUE}--- Шаг 3: Обучение модели ---${NC}"
+
+    if [ ! -f "$VENV_DIR/bin/python" ]; then
+        echo -e "${RED}Python в виртуальном окружении не найден. Запустите сначала установку (пункт 1).${NC}"
+        return
+    fi
+    
+    TRAIN_FILE="data/dataset/train.csv"
+    if [ ! -f "$TRAIN_FILE" ] || [ ! -s "$TRAIN_FILE" ]; then
+        echo -e "${RED}Файл с данными для обучения ($TRAIN_FILE) не найден или пуст.${NC}"
+        echo -e "${YELLOW}Пожалуйста, сначала выполните шаги 2.1 (Сегментация) и 2.2 (Транскрибация).${NC}"
+        return
+    fi
+
+    DEFAULT_EXP_NAME="tacotron2_$(date +%Y-%m-%d_%H-%M)"
+    echo -e "${YELLOW}Введите название для этого эксперимента (для логов и чекпойнтов).${NC}"
+    read -p "Название (по умолчанию: $DEFAULT_EXP_NAME): " EXPERIMENT_NAME
+    : "${EXPERIMENT_NAME:=$DEFAULT_EXP_NAME}"
+
+    OUTPUT_DIR="output/$EXPERIMENT_NAME"
+    LOG_DIR="$OUTPUT_DIR/logs"
+    mkdir -p "$OUTPUT_DIR"
+    mkdir -p "$LOG_DIR"
+
+    echo -e "${BLUE}Запуск обучения... Это может занять много времени.${NC}"
+    echo "Все логи и чекпойнты будут сохранены в: ${YELLOW}$OUTPUT_DIR${NC}"
+    echo "Чтобы следить за процессом, откройте в НОВЫХ терминалах:"
+    echo "1. TensorBoard: ${GREEN}tensorboard --logdir output/ --port 6006${NC}"
+    echo "2. MLflow:      ${GREEN}mlflow ui${NC}"
+    
+    # Запуск обучения
+    "$VENV_DIR/bin/python" train.py -c hparams.py --output_directory="$OUTPUT_DIR" --log_directory="$LOG_DIR"
+
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}Обучение успешно завершено.${NC}"
+    else
+        echo -e "${RED}Во время обучения произошла ошибка. Проверьте вывод.${NC}"
+    fi
 }
 
 # Меню работы с датасетом
@@ -207,9 +266,10 @@ dataset_menu() {
 main_menu() {
     while true; do
         echo -e "\n${YELLOW}--- Главное меню подготовки проекта ---${NC}"
-        echo "0. Выполнить все шаги по порядку (1 -> 2.1 -> 2.2)"
+        echo "0. Выполнить все шаги по порядку (1 -> 2.1 -> 2.2 -> 3)"
         echo "1. Настройка окружения и установка всех зависимостей"
         echo "2. Обработка данных (Сегментация и Транскрибация)"
+        echo "3. Обучение модели"
         echo "---"
         echo "9. Выход"
         echo -n "Выберите опцию: "
@@ -221,10 +281,12 @@ main_menu() {
                 install_environment
                 segment_audio
                 transcribe_data
+                train_model
                 echo -e "${GREEN}Все шаги выполнены!${NC}"
                 ;;
             1) install_environment ;;
             2) dataset_menu ;;
+            3) train_model ;;
             9) exit 0 ;;
             *) echo -e "${RED}Неверный выбор.${NC}" ;;
         esac

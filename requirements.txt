@@ -3,12 +3,13 @@ numpy
 scipy
 inflect==0.2.5
 librosa
-tensorflow-cpu
+soundfile
 tensorboardX
 Unidecode
 tqdm
 # Заменено на transformers для более производительной пакетной обработки
 # openai-whisper
-transformers
+transformers==4.41.2
 accelerate
 datasets
+opencv-python-headless

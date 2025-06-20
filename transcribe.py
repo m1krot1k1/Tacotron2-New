@@ -40,20 +40,42 @@ def transcribe_audio_pipeline(data_dir, output_dir, batch_size):
     )
     print("Модель загружена.")
 
-    audio_files = [os.path.join(data_dir, f) for f in os.listdir(data_dir) if f.endswith('.wav')]
+    all_audio_files = [os.path.join(data_dir, f) for f in os.listdir(data_dir) if f.endswith('.wav')]
+    
+    # Проверяем файлы на корректность (не пустые и доступны для чтения)
+    audio_files = []
+    print("Проверка аудиофайлов перед транскрибацией...")
+    for f in tqdm(all_audio_files, desc="Проверка файлов"):
+        try:
+            # Проверяем, что размер файла больше минимального порога (например, 1KB)
+            if os.path.getsize(f) > 1024:
+                audio_files.append(f)
+            else:
+                print(f"\nПРЕДУПРЕЖДЕНИЕ: Пропускается слишком маленький файл (возможно, поврежден): {f}")
+        except Exception as e:
+            print(f"\nОШИБКА: Не удалось получить доступ к файлу {f}, он будет пропущен. Ошибка: {e}")
+
     if not audio_files:
-        print(f"В директории {data_dir} не найдено .wav файлов.")
+        print(f"В директории {data_dir} не найдено корректных .wav файлов для обработки.")
         return
 
-    print(f"Найдено {len(audio_files)} аудиофайлов для транскрибации. Начинаю пакетную обработку...")
+    print(f"Найдено {len(audio_files)} корректных аудиофайлов для транскрибации. Начинаю пакетную обработку...")
     
-    # Пакетная транскрибация. Pipeline сам покажет прогресс.
-    outputs = pipe(
-        audio_files, 
-        batch_size=batch_size, 
-        generate_kwargs={'language': 'russian', 'task': 'transcribe'}
-    )
-    
+    try:
+        # Пакетная транскрибация. Pipeline сам покажет прогресс.
+        outputs = pipe(
+            audio_files, 
+            batch_size=batch_size, 
+            generate_kwargs={'language': 'russian', 'task': 'transcribe'}
+        )
+    except torch.cuda.OutOfMemoryError:
+        print("\n---------------------------------------------------------")
+        print("ОШИБКА: Недостаточно видеопамяти (CUDA Out of Memory).")
+        print(f"Текущий размер пачки ({batch_size}) слишком велик для вашей GPU.")
+        print("Попробуйте перезапустить скрипт с меньшим значением batch_size (например, 4 или 2).")
+        print("---------------------------------------------------------")
+        return # Завершаем выполнение, чтобы пользователь мог изменить параметры
+
     # Собираем результаты
     results = []
     for i, output in enumerate(tqdm(outputs, desc="Обработка результатов")):
@@ -74,9 +96,9 @@ def transcribe_audio_pipeline(data_dir, output_dir, batch_size):
     # Разделяем данные на обучающую и валидационную выборки (95/5)
     train_data, val_data = train_test_split(results, test_size=0.05, random_state=42)
 
-    # Сохраняем файлы
-    train_filepath = os.path.join(output_dir, 'train.txt')
-    val_filepath = os.path.join(output_dir, 'val.txt')
+    # Сохраняем файлы в формате CSV без заголовков
+    train_filepath = os.path.join(output_dir, 'train.csv')
+    val_filepath = os.path.join(output_dir, 'val.csv')
 
     with open(train_filepath, 'w', encoding='utf-8') as f:
         for line in train_data:
@@ -97,7 +119,7 @@ if __name__ == "__main__":
     parser.add_argument('--data_dir', type=str, default='data/segment_audio', 
                         help='Директория с сегментированными аудиофайлами (.wav).')
     parser.add_argument('--output_dir', type=str, default='data/dataset', 
-                        help='Директория для сохранения файлов датасета (train.txt, val.txt).')
+                        help='Директория для сохранения файлов датасета (train.csv, val.csv).')
     parser.add_argument('--batch_size', type=int, default=16, 
                         help='Размер пакета (batch size) для транскрибации. Подбирайте в зависимости от VRAM вашей GPU.')
 
