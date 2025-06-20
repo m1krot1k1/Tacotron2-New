@@ -167,6 +167,8 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
             logger.log_validation(val_loss, model, y, y_pred, iteration)
         if MLFLOW_AVAILABLE:
             mlflow.log_metric("validation.loss", val_loss, step=iteration)
+    
+    return val_loss  # Возвращаем validation loss для scheduler'а
 
 def calculate_global_mean(data_loader, global_mean_npy):
     if global_mean_npy and os.path.exists(global_mean_npy):
@@ -301,6 +303,11 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
 
     model.train()
     is_overflow = False
+    
+    # Learning Rate Scheduler - отслеживание validation loss
+    best_val_loss = float('inf')
+    patience_counter = 0
+    
     # ================ MAIN TRAINNIG LOOP! ===================
     for epoch in range(epoch_offset, hparams.epochs):
         print("Epoch: {}".format(epoch))
@@ -422,9 +429,30 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
                     }, step=iteration)
 
             if not is_overflow and (iteration % hparams.iters_per_checkpoint == 0):
-                validate(model, criterion, valset, iteration,
+                val_loss = validate(model, criterion, valset, iteration,
                          hparams.batch_size, n_gpus, collate_fn, logger,
                          hparams.distributed_run, rank)
+                
+                # Learning Rate Scheduler based on validation loss
+                if rank == 0:
+                    if val_loss < best_val_loss:
+                        best_val_loss = val_loss
+                        patience_counter = 0
+                        print(f"📈 Новый лучший validation loss: {val_loss:.4f}")
+                    else:
+                        patience_counter += 1
+                        print(f"⏳ Validation loss не улучшился: {patience_counter}/{hparams.learning_rate_decay_patience}")
+                        
+                        if patience_counter >= hparams.learning_rate_decay_patience:
+                            old_lr = learning_rate
+                            learning_rate = max(learning_rate * hparams.learning_rate_decay, 
+                                              hparams.min_learning_rate)
+                            if learning_rate != old_lr:
+                                print(f"🔻 Learning Rate снижен: {old_lr:.6f} → {learning_rate:.6f}")
+                                patience_counter = 0
+                            else:
+                                print(f"⚠️ Learning Rate достиг минимума: {learning_rate:.6f}")
+                
                 if rank == 0:
                     checkpoint_path = os.path.join(
                         output_directory, "checkpoint_{}".format(iteration))

@@ -99,6 +99,9 @@ def create_hparams(hparams_string=None, verbose=False):
         ################################
         use_saved_learning_rate=False,
         learning_rate=1e-3,
+        learning_rate_decay=0.5,  # Коэффициент снижения LR
+        learning_rate_decay_patience=5,  # Терпение для снижения LR (в checkpoint'ах)
+        min_learning_rate=1e-6,  # Минимальный LR
         weight_decay=1e-6,
         grad_clip_thresh=1.0,
         batch_size=16,
@@ -107,7 +110,7 @@ def create_hparams(hparams_string=None, verbose=False):
         ################################
         # FINE-TUNE #
         ################################
-        use_mmi=False,
+        use_mmi=True,  # Включаем MMI для лучшего качества
 
         drop_frame_rate=0.0 ,#0.2,
         use_gaf=False,
