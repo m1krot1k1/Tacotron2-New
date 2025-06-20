@@ -201,15 +201,22 @@ transcribe_data() {
     fi
 }
 
-# Функция обучения модели
+# Функция для запуска процесса обучения
 train_model() {
-    echo -e "${BLUE}--- Шаг 3: Обучение модели ---${NC}"
-
+    echo -e "${BLUE}--- Шаг 3: Запуск умного обучения ---${NC}"
+    
+    # Проверка, существует ли виртуальное окружение
     if [ ! -f "$VENV_DIR/bin/python" ]; then
         echo -e "${RED}Python в виртуальном окружении не найден. Запустите сначала установку (пункт 1).${NC}"
         return
     fi
     
+    # Проверка, существует ли Smart Tuner
+    if [ ! -f "smart_tuner_main.py" ]; then
+        echo -e "${RED}Smart Tuner (smart_tuner_main.py) не найден. Убедитесь, что все компоненты на месте.${NC}"
+        return
+    fi
+
     TRAIN_FILE="data/dataset/train.csv"
     if [ ! -f "$TRAIN_FILE" ] || [ ! -s "$TRAIN_FILE" ]; then
         echo -e "${RED}Файл с данными для обучения ($TRAIN_FILE) не найден или пуст.${NC}"
@@ -217,110 +224,92 @@ train_model() {
         return
     fi
 
-    DEFAULT_EXP_NAME="tacotron2_$(date +%Y-%m-%d_%H-%M)"
-    echo -e "${YELLOW}Введите название для этого эксперимента (для логов и чекпойнтов).${NC}"
-    read -p "Название (по умолчанию: $DEFAULT_EXP_NAME): " EXPERIMENT_NAME
-    : "${EXPERIMENT_NAME:=$DEFAULT_EXP_NAME}"
+    echo -e "${GREEN}🤖 Запуск Smart Tuner V2 в режиме полноценного обучения...${NC}"
+    echo "Система автоматически:"
+    echo "  ✅ Продолжит обучение с последнего чекпоинта"
+    echo "  ✅ Будет использовать лучшие известные параметры"
+    echo "  ✅ Остановит обучение при переобучении или стагнации"
+    echo "  ✅ Сохранит лучшую модель и все логи в MLflow"
+    echo "  ✅ Отправит уведомления в Telegram (если настроено)"
+    echo -e "${YELLOW}Для остановки нажмите Ctrl+C в этом терминале.${NC}"
+    echo
 
-    # --- ПОЛНАЯ ОЧИСТКА СТАРЫХ ДАННЫХ ---
-    echo -e "${YELLOW}🗑️ Удаляю ВСЕ старые логи, чекпоинты и данные мониторинга...${NC}"
-    
-    # 1. Останавливаем все процессы TensorBoard и MLflow
-    echo "⏹️ Останавливаю все процессы мониторинга..."
-    pkill -f "tensorboard" 2>/dev/null || true
-    pkill -f "mlflow" 2>/dev/null || true
-    sleep 2
-    
-    # 2. Удаляем ВСЕ данные TensorBoard
-    if [ -d "output" ]; then
-        rm -rf output/
-        mkdir -p output/
-        echo "✓ Удалены ВСЕ логи TensorBoard"
+    # Настройка Telegram уведомлений (опционально)
+    # Проверяем, не настроен ли Telegram в config.yaml
+    if ! grep -q 'enabled: true' smart_tuner/config.yaml; then
+        echo -e "${YELLOW}🔔 Настройка Telegram уведомлений (опционально):${NC}"
+        echo "Для получения уведомлений о прогрессе обучения введите данные бота:"
+        echo -n "Telegram Bot Token (Enter для пропуска): "
+        read -r BOT_TOKEN
+        
+        if [ -n "$BOT_TOKEN" ]; then
+            echo -n "Telegram Chat ID: "
+            read -r CHAT_ID
+            
+            if [ -n "$CHAT_ID" ];
+            then
+                echo -e "${GREEN}✅ Настройка Telegram уведомлений...${NC}"
+                # Обновляем конфигурацию
+                sed -i 's/enabled: false/enabled: true/' smart_tuner/config.yaml
+                sed -i "s/bot_token: .*/bot_token: \"$BOT_TOKEN\"/" smart_tuner/config.yaml
+                sed -i "s/chat_id: .*/chat_id: \"$CHAT_ID\"/" smart_tuner/config.yaml
+                echo "✓ Telegram уведомления включены"
+            fi
+        else
+            echo "⏭️ Telegram уведомления пропущены"
+        fi
+    else
+        echo "✅ Telegram уведомления уже настроены."
     fi
-    
-    # 3. Удаляем ВСЕ данные MLflow
-    if [ -d "mlruns" ]; then
-        rm -rf mlruns/
-        mkdir -p mlruns/
-        echo "✓ Удалены ВСЕ данные MLflow"
-    fi
-    
-    # 4. Удаляем ВСЕ чекпоинты
-    if [ -d "data/checkpoint" ]; then
-        rm -rf data/checkpoint/
-        mkdir -p data/checkpoint/
-        echo "✓ Удалены ВСЕ чекпоинты"
-    fi
-    
-    # 5. Удаляем временные файлы и кеш
-    rm -f *.log tb.log mlflow.log tensorboard.log 2>/dev/null || true
-    rm -f data/segment_audio/*.npy 2>/dev/null || true  # кеш мел-спектрограмм
-    rm -rf .tensorboard-info/ 2>/dev/null || true      # служебные файлы TensorBoard
-    echo "✓ Удалены временные файлы и кеш"
-    
-    echo -e "${GREEN}🧹 ПОЛНАЯ очистка завершена! Только новые логи будут видны.${NC}"
 
-    # Упрощенная структура: чекпоинты и логи в одном месте
-    OUTPUT_DIR="output/$EXPERIMENT_NAME"
-    LOG_DIR="$OUTPUT_DIR/logs"
-    mkdir -p "$OUTPUT_DIR" "$LOG_DIR"
+    # --- Подготовка и запуск ---
+    echo -e "\n${YELLOW}🗑️  Полная очистка и подготовка к новому запуску...${NC}"
+    
+    # 1. Останавливаем все старые процессы
+    pkill -f "tensorboard" &>/dev/null
+    pkill -f "mlflow" &>/dev/null
+    pkill -f "smart_tuner/web_interfaces.py" &>/dev/null
+    sleep 1
+    echo "✓ Старые процессы мониторинга остановлены"
 
+    # 2. Удаляем старые логи и артефакты
+    rm -rf output/ mlruns/ smart_tuner/models/ tensorboard.log mlflow.log smart_tuner_main.log smart_tuner/optuna_studies.db
+    mkdir -p output/ mlruns/ smart_tuner/models/
+    echo "✓ Старые логи и артефакты удалены, директории пересозданы"
+
+    # 3. Запускаем систему мониторинга
+    echo -e "\n${GREEN}📊 Запуск системы мониторинга...${NC}"
     IP_ADDR=$(hostname -I | awk '{print $1}')
     if [ -z "$IP_ADDR" ]; then
-        IP_ADDR="localhost" # Fallback, если IP не определился
+        IP_ADDR="localhost"
     fi
 
-    echo -e "${BLUE}🚀 Запуск обучения с чистыми логами...${NC}"
-    
-    # Дополнительная пауза для завершения очистки
-    sleep 1
-    
-    # --- Автозапуск мониторинговых сервисов ---
-    echo -e "${GREEN}📊 Запуск TensorBoard на порту 5001 (все эксперименты в output/)${NC}"
-    nohup "$VENV_DIR/bin/python" -m tensorboard.main \
-          --logdir "output/" \
-          --host 0.0.0.0 \
-          --port 5001 \
-          --reload_interval 5 \
-          --purge_orphaned_data true \
-          > "${OUTPUT_DIR}/tensorboard.log" 2>&1 &
+    nohup "$VENV_DIR/bin/python" -m tensorboard.main --logdir "output/" --host 0.0.0.0 --port 5001 --reload_interval 5 > tensorboard.log 2>&1 &
+    echo "✓ TensorBoard запущен на порту 5001"
 
-    echo -e "${GREEN}📈 Запуск MLflow UI на порту 5000 (только новые эксперименты)${NC}"
-    nohup "$VENV_DIR/bin/mlflow" ui \
-          --host 0.0.0.0 \
-          --port 5000 \
-          --backend-store-uri "file://$(pwd)/mlruns" \
-          > "${OUTPUT_DIR}/mlflow.log" 2>&1 &
-    
-    echo -e "${GREEN}🎤 Запуск TTS Demo (Streamlit) на порту 5005${NC}"
-    nohup "$VENV_DIR/bin/streamlit" run demo.py \
-          --server.port 5005 \
-          --server.address 0.0.0.0 \
-          --server.headless true \
-          --browser.gatherUsageStats false \
-          > "${OUTPUT_DIR}/streamlit.log" 2>&1 &
-    
-    # Пауза для запуска сервисов
+    nohup "$VENV_DIR/bin/mlflow" ui --host 0.0.0.0 --port 5000 --backend-store-uri "file://$(pwd)/mlruns" > mlflow.log 2>&1 &
+    echo "✓ MLflow UI запущен на порту 5000"
     sleep 3
 
-    echo "Все логи и чекпойнты будут сохранены в: ${YELLOW}$OUTPUT_DIR${NC}"
+    echo -e "\n${BLUE}📈 Мониторинг будет доступен по адресам (через ~1-2 минуты):${NC}"
+    echo -e "  MLflow:      ${GREEN}http://${IP_ADDR}:5000${NC}"
+    echo -e "  TensorBoard: ${GREEN}http://${IP_ADDR}:5001${NC}"
+    echo
 
-    echo -e "${BLUE}Чтобы следить за процессом, откройте в браузере:${NC}"
-    echo -e "1. TensorBoard: ${GREEN}http://${IP_ADDR}:5001${NC}"
-    echo -e "2. MLflow:      ${GREEN}http://${IP_ADDR}:5000${NC}"
-    echo -e "3. TTS Demo:    ${GREEN}http://${IP_ADDR}:5005${NC}"
-    echo -e "${YELLOW}Все сервисы запускаются автоматически. Если нужно запустить вручную:${NC}"
-    echo "   tensorboard --logdir output/ --port 5001"
-    echo "   mlflow ui --port 5000"
-    echo "   streamlit run demo.py --server.port 5005"
-    
-    # Запуск обучения (чекпоинты и логи в одной папке)
-    "$VENV_DIR/bin/python" train.py --output_directory="$OUTPUT_DIR" --log_directory="$LOG_DIR"
+    # 4. Запускаем основной процесс Smart Tuner
+    echo -e "${GREEN}🚀 Запуск Smart Tuner...${NC}"
+    "$VENV_DIR/bin/python" smart_tuner_main.py --mode train
 
     if [ $? -eq 0 ]; then
-        echo -e "${GREEN}Обучение успешно завершено.${NC}"
+        echo -e "\n${GREEN}🎉 Обучение успешно завершено!${NC}"
+        echo -e "${YELLOW}Результаты сохранены в:${NC}"
+        echo "  📁 Модели: output/ и smart_tuner/models/"
+        echo "  📊 Логи: mlruns/"
+        echo "  📋 Подробные логи: smart_tuner_main.log"
     else
-        echo -e "${RED}Во время обучения произошла ошибка. Проверьте вывод.${NC}"
+        echo -e "\n${RED}❌ Во время обучения произошла ошибка.${NC}"
+        echo -e "${YELLOW}Проверьте логи для диагностики:${NC}"
+        echo "  tail -f smart_tuner_main.log"
     fi
 }
 

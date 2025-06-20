@@ -268,10 +268,17 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
             pass  # fallback to default URI
         experiment_name = os.path.basename(output_directory)
         mlflow.set_experiment(experiment_name)
-        mlflow_start_params = {
-            "run_name": os.path.basename(output_directory),
-        }
-        mlflow.start_run(**mlflow_start_params)
+        
+        # MLflow автоматически подхватит MLFLOW_RUN_ID из окружения,
+        # если он установлен, и возобновит этот run.
+        # Если нет, он создаст новый.
+        mlflow.start_run()
+        
+        # Добавим тег, чтобы было понятно, что это вложенный/дочерний процесс
+        # Это также поможет нам понять, что train.py был запущен тюнером
+        if os.getenv('MLFLOW_RUN_ID'):
+            mlflow.set_tag("run_type", "smart_tuner_child")
+            
         # Логируем базовые гиперпараметры
         mlflow.log_params({
             "batch_size": hparams.batch_size,
@@ -505,6 +512,8 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
     # Завершаем MLflow run
     if MLFLOW_AVAILABLE and rank == 0 and mlflow.active_run() is not None:
         mlflow.end_run()
+
+    logger.close()
 
 
 if __name__ == '__main__':

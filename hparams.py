@@ -12,6 +12,9 @@ def create_hparams(hparams_string=None, verbose=False):
         ################################
         epochs=500000,
         iters_per_checkpoint=500,
+        save_interval=1000,          # Интервал сохранения чекпоинтов
+        validate_interval=100,       # Интервал валидации
+        warmup_steps=1000,          # Шаги прогрева learning rate
         seed=1234,
         dynamic_loss_scaling=True,
         fp16_run=True,  # Включено FP16 для быстродействия
