@@ -1,9 +1,9 @@
-matplotlib==2.0.2
+matplotlib
 numpy
 scipy
 inflect==0.2.5
-librosa==0.6.0
-tensorflow>=1.10.0,<=1.15.2
+librosa
+tensorflow-cpu
 tensorboardX
 Unidecode
 tqdm
