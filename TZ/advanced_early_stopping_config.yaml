@@ -1,0 +1,224 @@
+# Расширенная конфигурация системы Early Stopping для Tacotron2
+# Версия: 2.0
+# Дата: 20.06.2025
+
+smart_early_stopping:
+  # Базовые параметры
+  enabled: true
+  patience: 8  # Увеличено для более стабильной работы
+  min_delta: 0.0015  # Минимальное улучшение
+  restore_best_weights: true
+  verbose: 1
+
+  # Множественные метрики для мониторинга
+  primary_metrics:
+    - name: "val_loss"
+      weight: 0.4
+      direction: "minimize"
+      threshold: 0.001
+    - name: "mel_loss"
+      weight: 0.3
+      direction: "minimize"
+      threshold: 0.002
+    - name: "gate_loss"
+      weight: 0.2
+      direction: "minimize"
+      threshold: 0.0005
+    - name: "attention_score"
+      weight: 0.1
+      direction: "maximize"
+      threshold: 0.05
+
+  # Статистические детекторы изменений
+  change_point_detection:
+    cusum:
+      enabled: true
+      threshold: 3.0
+      min_length: 5
+      alpha: 0.05
+
+    mann_kendall:
+      enabled: true
+      significance_level: 0.05
+      min_observations: 10
+
+    bayesian_changepoint:
+      enabled: true
+      prior_scale: 0.1
+      probability_threshold: 0.8
+
+  # Анализ качества внимания
+  attention_monitoring:
+    enabled: true
+    alignment_threshold: 0.85
+    monotonic_penalty: 0.1
+    diagonal_focus_weight: 0.7
+
+    # Детекция проблем с выравниванием
+    attention_issues:
+      repetition_threshold: 0.3
+      skipping_threshold: 0.2
+      premature_end_threshold: 0.1
+
+  # Байесовская оптимизация конвергенции
+  bayesian_convergence:
+    enabled: true
+    gp_kernel: "matern52"
+    acquisition_function: "ei"  # Expected Improvement
+    n_initial_points: 10
+    convergence_threshold: 0.95
+
+    # Параметры Gaussian Process
+    length_scale: 1.0
+    noise_level: 0.01
+    nu: 2.5  # для Matérn kernel
+
+  # Адаптивный контроллер терпения
+  adaptive_patience:
+    enabled: true
+    initial_patience: 5
+    max_patience: 15
+    min_patience: 3
+
+    # Стратегии адаптации
+    adaptation_strategy: "curriculum_based"
+    improvement_factor: 1.2
+    degradation_factor: 0.8
+
+    # Curriculum learning параметры
+    curriculum_stages:
+      - stage: "warmup"
+        epochs: 20
+        patience_multiplier: 1.5
+      - stage: "main"
+        epochs: 100
+        patience_multiplier: 1.0
+      - stage: "fine_tune"
+        epochs: 50
+        patience_multiplier: 0.7
+
+  # Ensemble методы
+  ensemble_decision:
+    enabled: true
+    voting_strategy: "weighted"
+    confidence_threshold: 0.8
+
+    # Методы ансамбля
+    methods:
+      - name: "statistical_consensus"
+        weight: 0.3
+      - name: "bayesian_prediction"
+        weight: 0.4
+      - name: "attention_analysis"
+        weight: 0.3
+
+  # Регуляризация и стабилизация
+  regularization:
+    spectral_dropout:
+      enabled: true
+      drop_rate: 0.1
+      spectral_norm: true
+
+    gradient_clipping:
+      enabled: true
+      max_norm: 1.0
+      norm_type: 2
+      adaptive_clipping: true
+
+    weight_decay:
+      enabled: true
+      factor: 1e-4
+      adaptive_factor: true
+
+  # Кросс-валидация для временных рядов
+  time_series_validation:
+    enabled: true
+    validation_strategy: "walk_forward"
+    window_size: 1000  # эпох
+    step_size: 200
+    min_train_size: 5000
+
+    # Стратификация по времени
+    temporal_stratification:
+      enabled: true
+      n_folds: 5
+      preserve_order: true
+
+  # Мониторинг и логирование
+  monitoring:
+    log_level: "INFO"
+    save_history: true
+    plot_metrics: true
+
+    # Алерты и уведомления
+    alerts:
+      slack_webhook: null
+      email_recipients: []
+      telegram_bot_token: null
+
+    # Сохранение промежуточных результатов
+    checkpointing:
+      save_frequency: 5  # каждые 5 эпох
+      keep_best_n: 3
+      save_optimizer_state: true
+
+  # Продвинутые техники
+  advanced_techniques:
+    # Learning curve analysis
+    learning_curve_analysis:
+      enabled: true
+      smooth_window: 10
+      trend_detection: true
+      anomaly_detection: true
+
+    # Stochastic Weight Averaging
+    swa:
+      enabled: false  # включить в production
+      start_epoch: 50
+      update_freq: 5
+      lr_ratio: 0.1
+
+    # Lookahead optimizer integration
+    lookahead:
+      enabled: false
+      k: 5
+      alpha: 0.5
+
+  # TTS специфичные настройки
+  tts_specific:
+    # Мониторинг качества аудио
+    audio_quality:
+      mcd_threshold: 5.0  # Mel Cepstral Distortion
+      mos_threshold: 3.5  # Mean Opinion Score
+      pesq_threshold: 3.0  # PESQ score
+      stoi_threshold: 0.85  # STOI score
+
+    # Валидация на разных типах текста
+    text_validation:
+      short_sentences: true
+      long_paragraphs: true
+      numbers_and_symbols: true
+      out_of_vocabulary: true
+
+    # Мониторинг mel-spectrogram качества
+    mel_spectrogram:
+      frequency_range_analysis: true
+      temporal_smoothness: true
+      dynamic_range_check: true
+
+# Экспериментальные настройки
+experimental:
+  # Нейронная сеть для предсказания early stopping
+  neural_early_stopping:
+    enabled: false
+    architecture: "lstm"
+    hidden_size: 64
+    num_layers: 2
+    dropout: 0.1
+
+  # Reinforcement Learning для оптимизации
+  rl_optimization:
+    enabled: false
+    algorithm: "ppo"
+    reward_function: "combined_metrics"
+    action_space: ["continue", "stop", "adjust_lr"]

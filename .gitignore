@@ -39,6 +39,5 @@ Thumbs.db
 /data/segment_audio/
 /data/audio/
 /hifigan/
-*.md
 generated_audio.wav
 out.png
