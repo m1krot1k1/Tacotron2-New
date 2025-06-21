@@ -14,7 +14,7 @@ class Tacotron2Logger(SummaryWriter):
         super(Tacotron2Logger, self).__init__(logdir)
 
     def log_training(self, total_loss, taco_loss, mi_loss, guide_loss, gate_loss, emb_loss, grad_norm,
-                     learning_rate, duration, iteration):
+                     learning_rate, duration, iteration, guide_loss_weight=None):
             self.add_scalar("training.loss", total_loss, iteration)
             self.add_scalar("training.taco_loss", taco_loss, iteration)
             self.add_scalar("training.mi_loss", mi_loss, iteration)
@@ -24,6 +24,8 @@ class Tacotron2Logger(SummaryWriter):
             self.add_scalar("grad.norm", grad_norm, iteration)
             self.add_scalar("learning.rate", learning_rate, iteration)
             self.add_scalar("duration", duration, iteration)
+            if guide_loss_weight is not None:
+                self.add_scalar("training.guide_loss_weight", guide_loss_weight, iteration)
 
     def log_validation(self, reduced_loss, model, y, y_pred, iteration):
         self.add_scalar("validation.loss", reduced_loss, iteration)

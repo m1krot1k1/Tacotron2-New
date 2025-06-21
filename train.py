@@ -335,6 +335,15 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
         print("Epoch: {}".format(epoch))
         for i, batch in enumerate(train_loader):
             start = time.perf_counter()
+
+            # --- Learning Rate Warm-up ---
+            if iteration < hparams.warmup_steps:
+                learning_rate = hparams.learning_rate * (iteration + 1) / hparams.warmup_steps
+            else:
+                # После прогрева можно использовать основную стратегию (например, decay)
+                # Текущая логика decay уже есть ниже, в секции валидации
+                pass # Просто используем текущий learning_rate
+
             for param_group in optimizer.param_groups:
                 param_group['lr'] = learning_rate
 
@@ -351,9 +360,19 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
                 y_pred = model(x)
                 _loss = criterion(y_pred, y)
                 loss = sum(_loss)
-            guide_loss = _loss[2]
+            guide_loss_val = _loss[2]
             gate_loss = _loss[1]
             emb_loss = _loss[3]
+            
+            # --- Расчет динамического веса для Guide Loss ---
+            guide_loss_weight = hparams.guide_loss_initial_weight
+            if hparams.use_dynamic_guide_loss and iteration > hparams.guide_loss_decay_start:
+                decay_progress = min(1.0, (iteration - hparams.guide_loss_decay_start) / hparams.guide_loss_decay_steps)
+                guide_loss_weight = hparams.guide_loss_initial_weight * (1.0 - decay_progress)
+
+            # Пересчитываем общую потерю с учетом веса
+            # _loss[2] - это guide_loss
+            loss = _loss[0] + _loss[1] + (guide_loss_val * guide_loss_weight) + _loss[3]
 
             if model.mi is not None:
                 # transpose to [b, T, dim]
@@ -379,14 +398,14 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
                 reduced_loss = reduce_tensor(loss.data, n_gpus).item()
                 taco_loss = reduce_tensor(taco_loss.data, n_gpus).item()
                 mi_loss = reduce_tensor(mi_loss.data, n_gpus).item()
-                guide_loss = reduce_tensor(guide_loss.data, n_gpus).item()
+                guide_loss = reduce_tensor(guide_loss_val.data, n_gpus).item()
                 gate_loss = reduce_tensor(gate_loss.data, n_gpus).item()
                 emb_loss = reduce_tensor(emb_loss.data, n_gpus).item()
             else:
                 reduced_loss = loss.item()
                 taco_loss = taco_loss.item()
                 mi_loss = mi_loss.item()
-                guide_loss = guide_loss.item()
+                guide_loss = guide_loss_val.item()
                 gate_loss = gate_loss.item()
                 emb_loss = emb_loss.item()
 
@@ -412,21 +431,25 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
                     scaler.unscale_(optimizer)
                     grad_norm = torch.nn.utils.clip_grad_norm_(
                         model.parameters(), hparams.grad_clip_thresh)
-                    is_overflow = math.isnan(grad_norm)
+                    is_overflow = math.isnan(grad_norm) or math.isinf(grad_norm)
                 else:
                     # Используем apex AMP
                     grad_norm = torch.nn.utils.clip_grad_norm_(
                         amp.master_params(optimizer), hparams.grad_clip_thresh)
-                    is_overflow = math.isnan(grad_norm)
+                    is_overflow = math.isnan(grad_norm) or math.isinf(grad_norm)
             else:
                 grad_norm = torch.nn.utils.clip_grad_norm_(
                     model.parameters(), hparams.grad_clip_thresh)
+                is_overflow = math.isnan(grad_norm) or math.isinf(grad_norm)
 
-            if hparams.fp16_run and hparams.use_builtin_amp:
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                optimizer.step()
+            if not is_overflow:
+                if hparams.fp16_run and hparams.use_builtin_amp:
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    optimizer.step()
+            elif rank == 0:
+                print(f"Gradient overflow. Skipping step {iteration}...")
 
             if not is_overflow and rank == 0:
                 duration = time.perf_counter() - start
@@ -434,7 +457,7 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
                     iteration, taco_loss, mi_loss, guide_loss, gate_loss, emb_loss, grad_norm, duration))
                 logger.log_training(
                     reduced_loss, taco_loss, mi_loss, guide_loss, gate_loss, emb_loss, grad_norm,
-                    learning_rate, duration, iteration)
+                    learning_rate, duration, iteration, guide_loss_weight)
 
                 # MLflow metrics
                 if MLFLOW_AVAILABLE:
@@ -447,7 +470,8 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
                         "training.emb_loss": emb_loss,
                         "grad_norm": grad_norm,
                         "learning_rate": learning_rate,
-                        "duration": duration
+                        "duration": duration,
+                        "guide_loss_weight": guide_loss_weight
                     }, step=iteration)
 
             if not is_overflow and (iteration % hparams.iters_per_checkpoint == 0):

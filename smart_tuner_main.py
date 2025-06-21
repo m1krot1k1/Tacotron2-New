@@ -120,15 +120,21 @@ class SmartTunerMain:
         
         controller = EarlyStopController(self.config_path)
         metrics_store = MetricsStore() # Используем для сбора метрик
+        
+        proactive_config = self.config.get('proactive_measures', {})
+        
         log_watcher = LogWatcher(
             metrics_store=metrics_store,
-            tracking_uri=self.config.get('mlflow', {}).get('tracking_uri', 'mlruns')
+            tracking_uri=self.config.get('mlflow', {}).get('tracking_uri', 'mlruns'),
+            stall_threshold_seconds=proactive_config.get('stall_threshold_seconds', 600)
         )
         
         training_active = True
+        live_log_parser_process = None # Хендл для процесса парсера
+        
         while training_active:
             # Запускаем обучение с текущими hparams и с последнего чекпоинта
-            process, run_id = self.trainer.start_training(
+            process, run_id, output_dir, log_dir = self.trainer.start_training(
                 hparams_override=hparams, 
                 checkpoint_path=current_checkpoint
             )
@@ -137,15 +143,41 @@ class SmartTunerMain:
                 self.alert_manager.send_error_notification("❌ Не удалось запустить процесс обучения. Проверьте логи.")
                 break
             
+            # --- Запускаем Live Log Parser ---
+            if output_dir and log_dir:
+                checkpoint_dir = os.path.join(output_dir, "checkpoint")
+                live_log_path = os.path.join(checkpoint_dir, "training_live_log.txt")
+                
+                parser_command = [
+                    sys.executable, 'smart_tuner/live_log_parser.py',
+                    '--tfevents_dir', log_dir,
+                    '--output_txt_file', live_log_path
+                ]
+                live_log_parser_process = subprocess.Popen(parser_command)
+                logger.info(f"Запущен live_log_parser (PID: {live_log_parser_process.pid}) для {log_dir}")
+
             # Начинаем следить за логами для нового run_id
             log_watcher.set_run_id(run_id)
-            watcher_thread = threading.Thread(target=log_watcher.watch, daemon=True)
-            watcher_thread.start()
 
             # Цикл мониторинга текущего процесса обучения
             while process.poll() is None:
-                time.sleep(self.config.get('proactive_measures', {}).get('check_interval', 60))
+                # Опрашиваем логгер напрямую
+                log_watcher.check_for_new_metrics()
                 
+                time.sleep(proactive_config.get('check_interval', 60))
+                
+                # Проверка на зависание процесса
+                if log_watcher.is_stalled():
+                    logger.error("🚨 Обнаружено зависание! Перезапускаем процесс обучения.")
+                    self.alert_manager.send_error_notification("🚨 Обнаружено зависание! Перезапускаем обучение с последнего чекпоинта.")
+                    self.trainer.stop_training()
+                    if live_log_parser_process:
+                        live_log_parser_process.terminate()
+                    time.sleep(5) # Даем время на завершение
+                    # Находим последний чекпоинт для перезапуска
+                    current_checkpoint = find_latest_checkpoint(self.config['checkpoint_path'])
+                    break # Выходим из цикла мониторинга для перезапуска
+
                 new_metrics = metrics_store.get_latest_metrics()
                 if not new_metrics:
                     continue
@@ -159,6 +191,8 @@ class SmartTunerMain:
                     logger.info(f"Получено решение 'stop': {decision.get('reason')}")
                     self.alert_manager.send_success_notification(f"✅ Обучение остановлено: {decision.get('reason')}")
                     self.trainer.stop_training()
+                    if live_log_parser_process:
+                        live_log_parser_process.terminate()
                     training_active = False
                     break
 
@@ -167,6 +201,8 @@ class SmartTunerMain:
                     self.alert_manager.send_info_notification(f"🔄 Перезапуск обучения: {decision.get('reason')}")
                     
                     self.trainer.stop_training() # Останавливаем текущий процесс
+                    if live_log_parser_process:
+                        live_log_parser_process.terminate()
                     time.sleep(5) # Даем время процессу завершиться
 
                     hparams = decision['new_params']
@@ -183,6 +219,8 @@ class SmartTunerMain:
             # значит, обучение завершилось само по себе (успешно или с ошибкой).
             if process.poll() is not None and training_active:
                 logger.info(f"Процесс обучения завершился с кодом {process.returncode}.")
+                if live_log_parser_process:
+                    live_log_parser_process.terminate() # Останавливаем парсер
                 if process.returncode == 0:
                     self.alert_manager.send_success_notification("🎉 Обучение успешно завершено!")
                 else:
@@ -312,3 +350,4 @@ if __name__ == "__main__":
         logger.critical(f"Неперехваченная ошибка в main: {e}", exc_info=True)
         sys.exit(1)
 
+ 

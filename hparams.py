@@ -120,6 +120,12 @@ def create_hparams(hparams_string=None, verbose=False):
         update_gaf_every_n_step=5,  # Более частые обновления
         max_gaf=0.8,  # Увеличено для лучшего выравнивания
         
+        # --- Динамический вес для Guide Loss ---
+        use_dynamic_guide_loss=True, # Включить динамический вес
+        guide_loss_initial_weight=1.0, # Начальный вес
+        guide_loss_decay_start=5000,   # Шаг, с которого начинается спад
+        guide_loss_decay_steps=50000, # Количество шагов для спада до нуля
+        
         global_mean_npy='ruslan_global_mean.npy',
         
         ################################

@@ -69,15 +69,17 @@ class TrainerWrapper:
     def start_training(self, hparams_override=None, checkpoint_path=None):
         """
         Запускает train.py с заданными параметрами.
-        Возвращает процесс и MLflow run_id.
+        Возвращает процесс, MLflow run_id и пути к директориям.
         """
         run_name = f"proactive_run_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
         
         output_dir = os.path.join(self.config.get('output_dir', 'output'), run_name)
         log_dir = os.path.join(output_dir, "logs")
+        checkpoint_dir = os.path.join(output_dir, "checkpoint")
 
         os.makedirs(output_dir, exist_ok=True)
         os.makedirs(log_dir, exist_ok=True)
+        os.makedirs(checkpoint_dir, exist_ok=True)
         
         mlflow.set_tracking_uri(self.config.get('mlflow', {}).get('tracking_uri', 'file:./mlruns'))
         mlflow.set_experiment(self.config.get('experiment_name', 'tacotron2_production'))
@@ -126,14 +128,13 @@ class TrainerWrapper:
             self.current_process = subprocess.Popen(command, env=env)
             logging.info(f"Запущен процесс обучения с PID: {self.current_process.pid}")
             
-            # НЕ завершаем run здесь - пусть train.py работает с ним
-            # mlflow.end_run() - убираем эту строку
-            return self.current_process, self.current_run_id
+            # Возвращаем все необходимые данные
+            return self.current_process, self.current_run_id, output_dir, log_dir
 
         except Exception as e:
             logging.error(f"Не удалось запустить процесс обучения: {e}", exc_info=True)
             mlflow.end_run()
-            return None, None
+            return None, None, None, None
 
     def stop_training(self):
         """Останавливает текущий процесс обучения."""
