@@ -167,14 +167,15 @@ mlflow:
 ports:
   mlflow: 5000              # Эксперименты и метрики  
   tensorboard: 5001         # Графики обучения
-  optimization_engine: 5002 # Optuna Dashboard (перенесен на 5002)
+  optimization_engine: 5002 # Optuna Dashboard
   streamlit: 5003           # TTS Demo
-  log_watcher: 5004         # Мониторинг логов в реальном времени  
-  metrics_store: 5005       # API для метрик и статистики
-  param_scheduler: 5006     # Планировщик гиперпараметров
-  early_stop_controller: 5007  # Контроллер раннего останова
-  alert_manager: 5008       # Управление уведомлениями
-  model_registry: 5009      # Реестр моделей
+  # Пропускаем 5004 - зарезервирован
+  log_watcher: 5005         # Мониторинг логов в реальном времени  
+  metrics_store: 5006       # API для метрик и статистики
+  param_scheduler: 5007     # Планировщик гиперпараметров
+  early_stop_controller: 5008  # Контроллер раннего останова
+  alert_manager: 5009       # Управление уведомлениями
+  model_registry: 5010      # Реестр моделей
 
 # Настройки ресурсов
 resources:
