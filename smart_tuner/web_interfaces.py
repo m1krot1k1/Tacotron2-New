@@ -138,13 +138,9 @@ class ComponentWebInterface:
             "config_loaded": bool(self.config)
         }
     
-    def start(self):
-        """Запуск веб-сервера"""
-        try:
-            logger.info(f"🚀 Запуск {self.component_name} на порту {self.port}")
-            self.app.run(host='0.0.0.0', port=self.port, debug=False, threaded=True)
-        except Exception as e:
-            logger.error(f"❌ Ошибка запуска {self.component_name}: {e}")
+    def get_app(self):
+        """Возвращает экземпляр Flask-приложения."""
+        return self.app
 
 class LogWatcherInterface(ComponentWebInterface):
     """Веб-интерфейс для LogWatcher"""
@@ -251,51 +247,73 @@ class OptimizationEngineInterface(ComponentWebInterface):
         """Количество завершенных trials"""
         return 10
 
+class ParamSchedulerInterface(ComponentWebInterface):
+    """Веб-интерфейс для ParamScheduler"""
+    def __init__(self, port, config):
+        super().__init__("Param Scheduler", port, config)
+
+class EarlyStopControllerInterface(ComponentWebInterface):
+    """Веб-интерфейс для EarlyStopController"""
+    def __init__(self, port, config):
+        super().__init__("Early Stop Controller", port, config)
+
+class AlertManagerInterface(ComponentWebInterface):
+    """Веб-интерфейс для AlertManager"""
+    def __init__(self, port, config):
+        super().__init__("Alert Manager", port, config)
+
+class ModelRegistryInterface(ComponentWebInterface):
+    """Веб-интерфейс для ModelRegistry"""
+    def __init__(self, port, config):
+        super().__init__("Model Registry", port, config)
+
 class WebInterfaceManager:
-    """Менеджер всех веб-интерфейсов"""
+    """Управляет созданием и запуском всех веб-интерфейсов"""
     
     def __init__(self, config_path="smart_tuner/config.yaml"):
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
-        
         self.ports = self.config.get('ports', {})
-        self.interfaces = {}
-        self.threads = {}
+        self.interfaces = []
         
     def create_interfaces(self):
-        """Создание всех интерфейсов"""
-        interface_classes = {
-            'log_watcher': LogWatcherInterface,
-            'metrics_store': MetricsStoreInterface,
-            'optimization_engine': OptimizationEngineInterface,
+        """Создает экземпляры всех веб-интерфейсов"""
+        component_map = {
+            "log_watcher": LogWatcherInterface,
+            "metrics_store": MetricsStoreInterface,
+            "optimization_engine": OptimizationEngineInterface,
+            "param_scheduler": ParamSchedulerInterface,
+            "early_stop_controller": EarlyStopControllerInterface,
+            "alert_manager": AlertManagerInterface,
+            "model_registry": ModelRegistryInterface,
         }
         
-        for component, port in self.ports.items():
-            if component in interface_classes:
-                interface_class = interface_classes[component]
-                self.interfaces[component] = interface_class(port, self.config)
-            elif component not in ['tensorboard', 'mlflow', 'streamlit']:
-                # Для остальных компонентов создаем базовый интерфейс
-                self.interfaces[component] = ComponentWebInterface(
-                    component.replace('_', ' ').title(), port, self.config
-                )
-    
+        for name, port in self.ports.items():
+            if name in component_map:
+                InterfaceClass = component_map[name]
+                self.interfaces.append(InterfaceClass(port, self.config))
+        logger.info(f"Создано {len(self.interfaces)} веб-интерфейсов.")
+
     def start_all(self):
-        """Запуск всех интерфейсов в отдельных потоках"""
-        logger.info("🚀 Запуск всех веб-интерфейсов Smart Tuner V2...")
-        
-        for component, interface in self.interfaces.items():
+        """Запускает все веб-серверы в отдельных фоновых потоках."""
+        threads = []
+        for interface in self.interfaces:
+            app = interface.get_app()
             thread = threading.Thread(
-                target=interface.start,
-                name=f"WebInterface_{component}",
-                daemon=True
+                target=app.run,
+                kwargs={'host': '0.0.0.0', 'port': interface.port, 'debug': False},
+                daemon=True,
+                name=f"{interface.component_name}Thread"
             )
+            threads.append(thread)
             thread.start()
-            self.threads[component] = thread
-            time.sleep(0.5)  # Небольшая задержка между запусками
-    
+            logger.info(f"🚀 Запущен интерфейс {interface.component_name} на порту {interface.port}")
+        
+        # Основной поток не будет ждать завершения дочерних потоков
+        logger.info("Все веб-интерфейсы запущены в фоновом режиме.")
+
     def get_all_urls(self):
-        """Получение всех URL интерфейсов"""
+        """Возвращает URL-адреса всех активных интерфейсов"""
         import socket
         hostname = socket.gethostname()
         local_ip = socket.gethostbyname(hostname)

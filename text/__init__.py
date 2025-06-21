@@ -58,10 +58,21 @@ def sequence_to_text(sequence):
 
 def _clean_text(text, cleaner_names):
   for name in cleaner_names:
-    cleaner = getattr(cleaners, name)
-    if not cleaner:
-      raise Exception('Unknown cleaner: %s' % name)
-    text = cleaner(text)
+    # Пропускаем пустые имена
+    if not name or not name.strip():
+      continue
+    
+    name = name.strip()  # Убираем лишние пробелы
+    
+    try:
+      cleaner = getattr(cleaners, name)
+      if not cleaner:
+        raise Exception('Unknown cleaner: %s' % name)
+      text = cleaner(text)
+    except AttributeError as e:
+      print(f"Error: cleaner '{name}' not found in cleaners module")
+      print(f"Available cleaners: {[attr for attr in dir(cleaners) if not attr.startswith('_')]}")
+      raise Exception('Unknown cleaner: %s' % name) from e
   return text
 
 

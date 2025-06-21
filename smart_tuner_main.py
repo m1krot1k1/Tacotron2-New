@@ -14,6 +14,10 @@ from smart_tuner.trainer_wrapper import TrainerWrapper
 from smart_tuner.optimization_engine import OptimizationEngine
 from smart_tuner.alert_manager import AlertManager
 from smart_tuner.web_interfaces import WebInterfaceManager
+from smart_tuner.early_stop_controller import EarlyStopController
+from smart_tuner.log_watcher import LogWatcher
+from smart_tuner.metrics_store import MetricsStore
+from utils import find_latest_checkpoint, load_hparams, save_hparams
 
 logging.basicConfig(
     level=logging.INFO,
@@ -86,19 +90,15 @@ class SmartTunerMain:
             logger.info("✅ MLflow уже запущен")
         
     def start_web_interfaces(self):
-        """Запуск всех веб-интерфейсов в фоновом режиме"""
+        """Запуск всех веб-интерфейсов в фоновом режиме."""
         try:
             logger.info("🚀 Запуск веб-интерфейсов Smart Tuner V2...")
             
-            # Запуск в отдельном потоке
-            web_thread = threading.Thread(
-                target=self.web_manager.start_all,
-                name="WebInterfaceManager",
-                daemon=True
-            )
-            web_thread.start()
+            # Метод start_all уже запускает все в фоновых потоках,
+            # поэтому дополнительный поток не нужен.
+            self.web_manager.start_all()
             
-            # Небольшая задержка для инициализации
+            # Небольшая задержка для инициализации серверов
             time.sleep(2)
             
             # Отображение дашборда
@@ -107,78 +107,90 @@ class SmartTunerMain:
         except Exception as e:
             logger.error(f"❌ Ошибка запуска веб-интерфейсов: {e}")
         
-    def run_single_training(self, hyperparams=None):
-        """Запуск полноценного обучения с опциональными гиперпараметрами"""
-        logger.info("Запуск полноценного продакшн обучения")
+    def run_proactive_training(self):
+        """
+        Запускает обучение с проактивным контролем.
+        Цикл обучения, который может перезапускаться с новыми параметрами.
+        """
+        logger.info("🚀 Запуск обучения в проактивном режиме...")
+        self.alert_manager.send_info_notification("🚀 Началось проактивное обучение Smart Tuner V2!")
+
+        hparams = load_hparams(self.config['hparams_path'])
+        current_checkpoint = find_latest_checkpoint(self.config['checkpoint_path'])
         
-        if hyperparams:
-            logger.info(f"Используются кастомные гиперпараметры: {hyperparams}")
-            
-        # Отправляем уведомление о начале обучения
-        self.alert_manager.send_info_notification(
-            "🚀 Smart Tuner V2 - ПОЛНОЦЕННОЕ ОБУЧЕНИЕ\n\n"
-            "🎯 Режим: Продакшн обучение\n"
-            f"⚙️ Параметры: {'Кастомные' if hyperparams else 'По умолчанию'}\n"
-            "🔄 Автопродолжение с чекпоинтов: ВКЛ\n"
-            "💾 Полное сохранение моделей: ВКЛ\n\n"
-            "📊 Мониторинг доступен через веб-интерфейсы!"
+        controller = EarlyStopController(self.config_path)
+        metrics_store = MetricsStore() # Используем для сбора метрик
+        log_watcher = LogWatcher(
+            metrics_store=metrics_store,
+            tracking_uri=self.config.get('mlflow', {}).get('tracking_uri', 'mlruns')
         )
         
-        try:
-            # Формируем гиперпараметры для полноценного обучения
-            if hyperparams:
-                # Конвертируем строку параметров в словарь
-                hparams_str = ",".join([f"{k}={v}" for k, v in hyperparams.items()])
-            else:
-                hparams_str = None
-                
-            # Запускаем полноценное обучение
-            process = self.trainer.start_training(hparams_override=hparams_str)
-            
-            if process:
-                logger.info("Процесс обучения запущен, ожидаем завершения...")
-                return_code = process.wait()
-                
-                if return_code == 0:
-                    metrics = {"status": "completed", "return_code": return_code}
-                    logger.info("Полноценное обучение завершено успешно")
-                else:
-                    metrics = {"status": "failed", "return_code": return_code}
-                    logger.error(f"Обучение завершилось с ошибкой, код: {return_code}")
-            else:
-                metrics = {"status": "failed", "error": "Не удалось запустить процесс"}
-                logger.error("Не удалось запустить процесс обучения")
-            
-            # Отправляем уведомление о завершении
-            if metrics["status"] == "completed":
-                self.alert_manager.send_success_notification(
-                    "🎉 ПОЛНОЦЕННОЕ ОБУЧЕНИЕ ЗАВЕРШЕНО!\n\n"
-                    "✅ Статус: Успешно\n"
-                    "📁 Модели сохранены в output/\n"
-                    "📊 Логи доступны в MLflow UI\n"
-                    "🌐 Все метрики в веб-интерфейсах\n"
-                    "🏆 Готово к использованию!"
-                )
-            else:
-                self.alert_manager.send_error_notification(
-                    "❌ Обучение завершилось с ошибкой\n\n"
-                    f"🔴 Статус: {metrics.get('error', 'Неизвестная ошибка')}\n"
-                    "📋 Проверьте логи для диагностики\n"
-                    "🌐 Детали в веб-интерфейсах"
-                )
-            
-            return metrics
-            
-        except Exception as e:
-            logger.error(f"Критическая ошибка при обучении: {e}")
-            self.alert_manager.send_error_notification(
-                f"💥 Критическая ошибка обучения\n\n"
-                f"🔴 Ошибка: {str(e)}\n"
-                "🔧 Требуется ручное вмешательство\n"
-                "🌐 Проверьте веб-интерфейсы для диагностики"
+        training_active = True
+        while training_active:
+            # Запускаем обучение с текущими hparams и с последнего чекпоинта
+            process, run_id = self.trainer.start_training(
+                hparams_override=hparams, 
+                checkpoint_path=current_checkpoint
             )
-            raise
-        
+            if not process:
+                logger.error("Не удалось запустить процесс обучения. Прерываем.")
+                self.alert_manager.send_error_notification("❌ Не удалось запустить процесс обучения. Проверьте логи.")
+                break
+            
+            # Начинаем следить за логами для нового run_id
+            log_watcher.set_run_id(run_id)
+            watcher_thread = threading.Thread(target=log_watcher.watch, daemon=True)
+            watcher_thread.start()
+
+            # Цикл мониторинга текущего процесса обучения
+            while process.poll() is None:
+                time.sleep(self.config.get('proactive_measures', {}).get('check_interval', 60))
+                
+                new_metrics = metrics_store.get_latest_metrics()
+                if not new_metrics:
+                    continue
+
+                controller.add_metrics(new_metrics)
+                
+                decision = controller.decide_next_step(hparams)
+                action = decision.get('action', 'continue')
+
+                if action == 'stop':
+                    logger.info(f"Получено решение 'stop': {decision.get('reason')}")
+                    self.alert_manager.send_success_notification(f"✅ Обучение остановлено: {decision.get('reason')}")
+                    self.trainer.stop_training()
+                    training_active = False
+                    break
+
+                if action == 'restart':
+                    logger.warning(f"Получено решение 'restart': {decision.get('reason')}")
+                    self.alert_manager.send_info_notification(f"🔄 Перезапуск обучения: {decision.get('reason')}")
+                    
+                    self.trainer.stop_training() # Останавливаем текущий процесс
+                    time.sleep(5) # Даем время процессу завершиться
+
+                    hparams = decision['new_params']
+                    save_hparams(self.config['hparams_path'], hparams) # Сохраняем новые параметры
+                    
+                    # Находим последний сохраненный чекпоинт для продолжения
+                    current_checkpoint = find_latest_checkpoint(self.config['checkpoint_path'])
+                    
+                    logger.info(f"Новые параметры для перезапуска: {hparams}")
+                    logger.info(f"Продолжаем с чекпоинта: {current_checkpoint}")
+                    break # Выходим из внутреннего цикла для перезапуска внешнего
+            
+            # Если цикл мониторинга завершился, а флаг training_active все еще True,
+            # значит, обучение завершилось само по себе (успешно или с ошибкой).
+            if process.poll() is not None and training_active:
+                logger.info(f"Процесс обучения завершился с кодом {process.returncode}.")
+                if process.returncode == 0:
+                    self.alert_manager.send_success_notification("🎉 Обучение успешно завершено!")
+                else:
+                    self.alert_manager.send_error_notification(f"❌ Обучение завершилось с ошибкой (код: {process.returncode}).")
+                training_active = False
+
+        logger.info("Проактивное обучение завершено.")
+
     def run_optimization(self, n_trials=10):
         """Запуск оптимизации гиперпараметров"""
         logger.info(f"Запуск оптимизации с {n_trials} trials")
@@ -248,88 +260,55 @@ class SmartTunerMain:
             
             if not metrics:
                 logger.warning(f"Trial {trial.number}: Получены пустые метрики")
-                return float('inf')  # Плохой результат
-            
-            # Вычисляем целевую функцию
-            objective_value = self.optimizer.calculate_objective_value(metrics)
-            
-            logger.info(f"Trial {trial.number}: Результат = {objective_value}")
+                # В случае сбоя возвращаем большое значение, чтобы Optuna избегала этих параметров
+                return float('inf')
+
+            # Получаем целевую метрику из результатов
+            objective_metric = self.config.get("optimization", {}).get("objective_metric", "val_loss")
             
             # Отправляем уведомление о завершении trial
-            best_value = trial.study.best_value if hasattr(trial.study, 'best_value') and trial.study.best_value else float('inf')
-            self.alert_manager.send_info_notification(
+            self.alert_manager.send_success_notification(
                 f"✅ Trial #{trial.number} завершен\n\n"
-                f"📈 Результат: {objective_value:.4f}\n"
-                f"🏆 Лучший результат: {best_value:.4f}\n\n"
-                f"⏭️ Переходим к следующему trial...\n"
-                "🌐 Детали в веб-интерфейсах"
+                f"🏆 Результат ({objective_metric}): {metrics.get(objective_metric, 'N/A'):.4f}"
             )
-            
-            return objective_value
+
+            return metrics.get(objective_metric, float('inf'))
             
         except Exception as e:
-            logger.error(f"Trial {trial.number}: Ошибка - {e}")
-            
-            # Отправляем уведомление об ошибке
+            logger.error(f"Критическая ошибка в objective function для trial {trial.number}: {e}")
             self.alert_manager.send_error_notification(
-                f"❌ Trial #{trial.number} завершен с ошибкой\n\n"
-                f"🔴 Ошибка: {str(e)}\n\n"
-                f"🔄 Автоматически переходим к следующему trial\n"
-                "🌐 Логи в веб-интерфейсах"
+                f"💥 Критическая ошибка в Trial #{trial.number}\n\n"
+                f"🔴 Ошибка: {str(e)}\n"
+                "🌐 Проверьте веб-интерфейсы для диагностики"
             )
-            
-            # Возвращаем плохое значение при ошибке
-            return float('inf')
+            # Сообщаем Optuna о сбое
+            raise optuna.exceptions.TrialPruned()
+
 
 def main():
-    parser = argparse.ArgumentParser(description='Smart Tuner V2 - Автоматическая оптимизация гиперпараметров')
-    parser.add_argument('--mode', choices=['train', 'optimize'], default='train',
-                        help='Режим работы: train (обучение) или optimize (оптимизация)')
-    parser.add_argument('--trials', type=int, default=10,
-                        help='Количество trials для оптимизации (по умолчанию: 10)')
-    parser.add_argument('--hyperparams', type=str, default=None,
-                        help='Кастомные гиперпараметры в формате key1=value1,key2=value2')
+    """Основная функция"""
+    parser = argparse.ArgumentParser(description="Smart Tuner V2 для Tacotron2")
+    parser.add_argument('--config', default='smart_tuner/config.yaml', help='Путь к файлу конфигурации')
+    parser.add_argument('--optimize', action='store_true', help='Запуск оптимизации гиперпараметров')
+    parser.add_argument('--train', action='store_true', help='Запуск одиночного полноценного обучения')
+    parser.add_argument('--n_trials', type=int, default=10, help='Количество trials для оптимизации')
+
     args = parser.parse_args()
     
-    try:
-        tuner = SmartTunerMain()
-        
-        if args.mode == 'train':
-            # Парсим кастомные гиперпараметры если есть
-            hyperparams = None
-            if args.hyperparams:
-                hyperparams = {}
-                for param in args.hyperparams.split(','):
-                    key, value = param.split('=')
-                    # Пытаемся преобразовать в число
-                    try:
-                        if '.' in value:
-                            hyperparams[key.strip()] = float(value.strip())
-                        else:
-                            hyperparams[key.strip()] = int(value.strip())
-                    except ValueError:
-                        hyperparams[key.strip()] = value.strip()
-            
-            # Запуск обучения
-            result = tuner.run_single_training(hyperparams)
-            print(f"Результат обучения: {result}")
-            
-        elif args.mode == 'optimize':
-            # Запуск оптимизации
-            best_params = tuner.run_optimization(args.trials)
-            print(f"Лучшие параметры: {best_params}")
-        
-        # Держим программу активной для веб-интерфейсов
-        print("\n🌐 Веб-интерфейсы активны. Нажмите Ctrl+C для завершения...")
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            print("\n🛑 Завершение работы Smart Tuner V2...")
-            
-    except Exception as e:
-        logger.error(f"Критическая ошибка: {e}")
-        sys.exit(1)
+    tuner = SmartTunerMain(args.config)
+    
+    if args.optimize:
+        tuner.run_optimization(n_trials=args.n_trials)
+    elif args.train:
+        tuner.run_proactive_training()
+    else:
+        logger.info("Не выбран режим работы. Используйте --train или --optimize.")
+        parser.print_help()
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        logger.critical(f"Неперехваченная ошибка в main: {e}", exc_info=True)
+        sys.exit(1)
+

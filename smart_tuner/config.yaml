@@ -1,7 +1,8 @@
 # Конфигурация Smart Tuner V2
 experiment_name: "tacotron2_production"
+hparams_path: "hparams.py"
 dataset_path: "data/dataset"
-checkpoint_dir: "data/checkpoint"
+checkpoint_path: "data/checkpoint"
 output_dir: "output"
 
 # Настройки обучения
@@ -112,22 +113,38 @@ early_stopping:
 # Проактивные меры предотвращения проблем
 proactive_measures:
   enabled: true
-  stagnation_threshold: 0.001      # Порог стагнации loss
-  overfitting_gap_threshold: 0.5   # Порог разрыва train/val loss
-  volatility_threshold: 0.1        # Порог нестабильности
-  convergence_threshold: 0.01      # Порог медленной сходимости
   
-  # Автоматические корректировки
-  auto_lr_adjustment: true         # Автокорректировка learning rate
-  auto_regularization: true       # Автокорректировка регуляризации
-  auto_gradient_clipping: true    # Автовключение gradient clipping
-  auto_optimizer_switch: true     # Автосмена оптимизатора
+  # 1. Стагнация (Validation Loss на плато)
+  stagnation_detection:
+    enabled: true
+    patience: 15  # после скольки шагов без улучшения считать стагнацией
+    min_delta: 0.005 # минимальное улучшение, которое не считается стагнацией
+    action:
+      learning_rate_multiplier: 1.5 # Увеличить LR в 1.5 раза
 
+  # 2. Переобучение (Validation Loss растет, а Train Loss падает)
+  overfitting_detection:
+    enabled: true
+    patience: 5 # после скольки шагов с признаками переобучения вмешиваться
+    threshold: 0.1 # если val_loss > train_loss на 10%
+    action:
+      learning_rate_multiplier: 0.7 # Уменьшить LR на 30%
+      # В hparams.py нужно добавить параметр "dropout_rate"
+      dropout_rate_increase: 0.1 # Увеличить dropout
+
+  # 3. Нестабильность обучения (взрыв градиентов)
+  instability_detection:
+    enabled: true
+    grad_norm_threshold: 50.0 # порог для grad_norm
+    action:
+      enable_gradient_clipping: true # Включить/увеличить grad_clip_thresh
+      gradient_clip_thresh: 1.0
+      batch_size_multiplier: 1.5 # Увеличить batch_size в 1.5 раза (если позволяет память)
+      
 # Настройки Telegram уведомлений
 telegram:
-  enabled: true
-  bot_token: "6228970684:AAGRnDmTPeLQVsGBiBLKw02tHxaigNWSsok"
-  chat_id: "5150585721"
+  enabled: false
+  bot_token: ""
 
 # Настройки реестра моделей
 model_registry:

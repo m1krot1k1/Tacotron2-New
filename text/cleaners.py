@@ -17,10 +17,10 @@ import os
 from unidecode import unidecode
 from .numb import normalize_numbers
 from transliterate import translit
-from .emphasizer import Emphasizer
+from text.symbols import symbols
+from text.emphasizer import Emphasizer
 
-if __file__:
-  rdc = Emphasizer(os.path.join(os.path.dirname(__file__),'ru_emphasize.dict'))
+_rdc = None
 
 # Regular expression matching whitespace:
 _whitespace_re = re.compile(r'\s+')
@@ -31,7 +31,7 @@ _sep = re.compile(r'[\?\,\.!\-\—]+')
 _abbreviations = [(re.compile('\\b%s\\.' % x[0], re.IGNORECASE), x[1]) for x in [
   ('mrs', 'misess'),
   ('mr', 'mister'),
-  ('dr', 'doctor'),
+  ('dr', 'doktor'),
   ('st', 'saint'),
   ('co', 'company'),
   ('jr', 'junior'),
@@ -110,14 +110,22 @@ def transliteration_cleaners(text):
   return text
 
 def transliteration_cleaners_with_stress(text):
-  '''Pipeline for non-English text that transliterates to ASCII.'''
-  text = lowercase(text)
-  text = rdc.add_stress(text)
-  text = convert_to_ascii(text)
-  text = collapse_whitespace(text)
-  text = clean_end(text)
-  text = "S"+text+"E"
-  return text
+    '''Конвейер для обработки текста с расстановкой ударений.'''
+    global _rdc
+    # "Ленивая" инициализация: Emphasizer создается только при первом вызове.
+    if _rdc is None:
+        dict_path = os.path.join(os.path.dirname(__file__), 'ru_emphasize.dict')
+        _rdc = Emphasizer(dict_path)  # Исправлено: path вместо dictionary_path
+
+    for regex, replacement in _abbreviations:
+        text = re.sub(regex, replacement, text)
+    
+    text = text.lower()
+    text = _rdc.add_stress(text)  # Исправлено: add_stress вместо emphasize
+    
+    # Оставляем только те символы, которые есть в словаре symbols
+    res = ''.join([char for char in text if char in symbols])
+    return res
 
 
 def english_cleaners(text):

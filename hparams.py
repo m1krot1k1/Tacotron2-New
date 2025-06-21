@@ -125,6 +125,7 @@ def create_hparams(hparams_string=None, verbose=False):
         ################################
         # Regularization & Stability  #
         ################################
+        dropout_rate=0.5,             # Общий dropout для всех дропаут-слоев
         encoder_dropout_rate=0.1,
         postnet_dropout_rate=0.15,
         

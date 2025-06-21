@@ -3,6 +3,10 @@ from scipy.io.wavfile import read
 import torch
 import cv2
 import math
+import os
+import re
+import importlib.util
+from pathlib import Path
 
 
 
@@ -102,3 +106,57 @@ def guide_attention_fast(txt_len, mel_len, max_txt, max_mel, g=0.20):
 
 # res = guide_attention_fast(150,700,200,1000)
 # cv2.imwrite('test.png', (res*255).astype(np.uint8))
+
+def find_latest_checkpoint(checkpoint_path: str) -> str:
+    """Находит последний чекпоинт в указанной директории."""
+    checkpoint_dir = Path(checkpoint_path)
+    if not checkpoint_dir.exists():
+        return None
+    
+    checkpoints = list(checkpoint_dir.glob("checkpoint_*"))
+    if not checkpoints:
+        return None
+        
+    latest_checkpoint = max(checkpoints, key=lambda p: int(p.name.split('_')[1]))
+    return str(latest_checkpoint)
+
+def load_hparams(hparams_path: str):
+    """Загружает гиперпараметры из файла hparams.py."""
+    spec = importlib.util.spec_from_file_location("hparams", hparams_path)
+    hparams_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hparams_module)
+    hparams = hparams_module.create_hparams()
+    return hparams
+
+def save_hparams(hparams_path: str, hparams_dict: dict):
+    """
+    Сохраняет измененные гиперпараметры обратно в hparams.py.
+    Использует регулярные выражения для безопасной замены значений.
+    """
+    with open(hparams_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    for key, value in hparams_dict.items():
+        # Формируем корректное представление значения (строка в кавычках, остальное как есть)
+        if isinstance(value, str):
+            value_str = f"'{value}'"
+        else:
+            value_str = str(value)
+        
+        # Регулярное выражение для поиска "key=value"
+        # Оно ищет ключ, окруженный пробелами или началом строки/скобкой,
+        # за которым следует знак равенства и любое значение до запятой или новой строки.
+        pattern = re.compile(f"({key}\\s*=\\s*)[^,\\n)]*")
+        
+        # Заменяем найденное значение на новое
+        new_content, count = pattern.subn(f"\\g<1>{value_str}", content)
+        if count > 0:
+            content = new_content
+        else:
+            # Если параметр не найден, возможно, его нужно добавить.
+            # Для простоты пока будем только обновлять существующие.
+            print(f"Warning: a chave de hiperparâmetro '{key}' não foi encontrada em {hparams_path} e não foi atualizada.")
+
+
+    with open(hparams_path, 'w', encoding='utf-8') as f:
+        f.write(content)

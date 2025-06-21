@@ -104,23 +104,18 @@ def temp_seed(seed=None):
             np.random.set_state(state)
 
 class Prenet(nn.Module):
-    def __init__(self, in_dim, sizes):
+    def __init__(self, in_dim, sizes, dropout_rate=0.5):
         super(Prenet, self).__init__()
         in_sizes = [in_dim] + sizes[:-1]
         self.layers = nn.ModuleList(
             [LinearNorm(in_size, out_size, bias=False)
              for (in_size, out_size) in zip(in_sizes, sizes)])
+        self.dropout_rate = dropout_rate
 
     def forward(self, x):
         for linear in self.layers:
             x = F.relu(linear(x))
-            if self.training:
-                x = F.dropout(x, p=0.5, training=True)
-            else:
-                w = x.numel()
-                b = np.expand_dims(np.random.binomial(1, p=0.5, size=w),axis=0)
-                b = torch.tensor(b, dtype=torch.float16).to(x.device).view(x.shape)
-                x = x * b * (1/0.5)
+            x = F.dropout(x, p=self.dropout_rate, training=self.training)
         return x
 
 
@@ -132,6 +127,7 @@ class Postnet(nn.Module):
     def __init__(self, hparams):
         super(Postnet, self).__init__()
         self.convolutions = nn.ModuleList()
+        self.dropout_rate = hparams.postnet_dropout_rate
 
         self.convolutions.append(
             nn.Sequential(
@@ -164,8 +160,8 @@ class Postnet(nn.Module):
 
     def forward(self, x):
         for i in range(len(self.convolutions) - 1):
-            x = F.dropout(torch.tanh(self.convolutions[i](x)), 0.5, self.training)
-        x = F.dropout(self.convolutions[-1](x), 0.5, self.training)
+            x = F.dropout(torch.tanh(self.convolutions[i](x)), self.dropout_rate, self.training)
+        x = F.dropout(self.convolutions[-1](x), self.dropout_rate, self.training)
 
         return x
 
@@ -177,6 +173,7 @@ class Encoder(nn.Module):
     """
     def __init__(self, hparams):
         super(Encoder, self).__init__()
+        self.dropout_rate = hparams.encoder_dropout_rate
 
         convolutions = []
         for _ in range(hparams.encoder_n_convolutions):
@@ -196,7 +193,7 @@ class Encoder(nn.Module):
 
     def forward(self, x, input_lengths):
         for conv in self.convolutions:
-            x = F.dropout(F.relu(conv(x)), 0.5, self.training)
+            x = F.dropout(F.relu(conv(x)), self.dropout_rate, self.training)
 
         x = x.transpose(1, 2)
 
@@ -216,7 +213,7 @@ class Encoder(nn.Module):
         try:
             with torch.no_grad():
                 for conv in self.convolutions:
-                    x = F.dropout(F.relu(conv(x)), 0.5, self.training)
+                    x = F.dropout(F.relu(conv(x)), self.dropout_rate, self.training)
 
                 x = x.transpose(1, 2)
 
@@ -245,8 +242,7 @@ class Decoder(nn.Module):
         self.prenet_dim = hparams.prenet_dim
         self.max_decoder_steps = hparams.max_decoder_steps
         self.gate_threshold = hparams.gate_threshold
-        self.p_attention_dropout = hparams.p_attention_dropout
-        self.p_decoder_dropout = hparams.p_decoder_dropout
+        self.dropout_rate = hparams.dropout_rate
         self.p_teacher_forcing = hparams.p_teacher_forcing
 
         # Maximazing Mutual Inforamtion
@@ -256,7 +252,8 @@ class Decoder(nn.Module):
 
         self.prenet = Prenet(
             hparams.n_mel_channels * hparams.n_frames_per_step,
-            [hparams.prenet_dim, hparams.prenet_dim])
+            [hparams.prenet_dim, hparams.prenet_dim],
+            self.dropout_rate)
 
         self.attention_rnn = nn.LSTMCell(
             hparams.prenet_dim + self.encoder_embedding_dim,
@@ -310,6 +307,9 @@ class Decoder(nn.Module):
         self.gate_layer = LinearNorm(
             gate_in_dim, 1,
             bias=True, w_init_gain='sigmoid')
+
+        self.attention_dropout = nn.Dropout(self.dropout_rate)
+        self.decoder_dropout = nn.Dropout(self.dropout_rate)
 
     def get_go_frame(self, memory):
         """ Gets all zeros frames to use as first decoder input
@@ -429,8 +429,7 @@ class Decoder(nn.Module):
         cell_input = torch.cat((decoder_input, self.attention_context), -1)
         self.attention_hidden, self.attention_cell = self.attention_rnn(
             cell_input, (self.attention_hidden, self.attention_cell))
-        self.attention_hidden = F.dropout(
-            self.attention_hidden, self.p_attention_dropout, self.training)
+        self.attention_hidden = self.attention_dropout(self.attention_hidden)
 
         attention_weights_cat = torch.cat(
             (self.attention_weights.unsqueeze(1),
@@ -444,8 +443,7 @@ class Decoder(nn.Module):
             (self.attention_hidden, self.attention_context), -1)
         self.decoder_hidden, self.decoder_cell = self.decoder_rnn(
             decoder_input, (self.decoder_hidden, self.decoder_cell))
-        self.decoder_hidden = F.dropout(
-            self.decoder_hidden, self.p_decoder_dropout, self.training)
+        self.decoder_hidden = self.decoder_dropout(self.decoder_hidden)
 
         decoder_hidden_attention_context = torch.cat(
             (self.decoder_hidden, self.attention_context), dim=1)

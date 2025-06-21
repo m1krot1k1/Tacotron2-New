@@ -267,12 +267,16 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
         except Exception:
             pass  # fallback to default URI
         experiment_name = os.path.basename(output_directory)
-        mlflow.set_experiment(experiment_name)
-        
-        # MLflow автоматически подхватит MLFLOW_RUN_ID из окружения,
-        # если он установлен, и возобновит этот run.
-        # Если нет, он создаст новый.
-        mlflow.start_run()
+        # Проверяем, есть ли уже активный run от Smart Tuner
+        existing_run_id = os.getenv('MLFLOW_RUN_ID')
+        if existing_run_id:
+            # Используем существующий run, созданный Smart Tuner
+            mlflow.start_run(run_id=existing_run_id)
+            print(f"🔗 Подключились к существующему MLflow run: {existing_run_id}")
+        else:
+            # Создаем новый run (обычный режим)
+            mlflow.set_experiment(experiment_name)
+            mlflow.start_run()
         
         # Добавим тег, чтобы было понятно, что это вложенный/дочерний процесс
         # Это также поможет нам понять, что train.py был запущен тюнером
