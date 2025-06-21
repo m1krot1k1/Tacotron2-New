@@ -408,12 +408,6 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
                 guide_loss = guide_loss_val.item()
                 gate_loss = gate_loss.item()
                 emb_loss = emb_loss.item()
-
-
-            if hparams.distributed_run:
-                reduced_loss = reduce_tensor(loss.data, n_gpus).item()
-            else:
-                reduced_loss = loss.item()
             if hparams.fp16_run:
                 if hparams.use_builtin_amp:
                     # Используем встроенный PyTorch AMP
@@ -425,31 +419,41 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
             else:
                 loss.backward()
 
-            if hparams.fp16_run:
-                if hparams.use_builtin_amp:
-                    # Используем встроенный PyTorch AMP
-                    scaler.unscale_(optimizer)
-                    grad_norm = torch.nn.utils.clip_grad_norm_(
-                        model.parameters(), hparams.grad_clip_thresh)
-                    is_overflow = math.isnan(grad_norm) or math.isinf(grad_norm)
-                else:
-                    # Используем apex AMP
-                    grad_norm = torch.nn.utils.clip_grad_norm_(
-                        amp.master_params(optimizer), hparams.grad_clip_thresh)
-                    is_overflow = math.isnan(grad_norm) or math.isinf(grad_norm)
-            else:
+            if hparams.fp16_run and hparams.use_builtin_amp:
+                # Используем встроенный PyTorch AMP
+                scaler.unscale_(optimizer)
                 grad_norm = torch.nn.utils.clip_grad_norm_(
                     model.parameters(), hparams.grad_clip_thresh)
                 is_overflow = math.isnan(grad_norm) or math.isinf(grad_norm)
-
-            if not is_overflow:
-                if hparams.fp16_run and hparams.use_builtin_amp:
+                
+                if not is_overflow:
                     scaler.step(optimizer)
                     scaler.update()
                 else:
+                    # При overflow все равно нужно вызвать update для сброса состояния scaler
+                    scaler.update()
+                    if rank == 0:
+                        print(f"Gradient overflow. Skipping step {iteration}...")
+            elif hparams.fp16_run:
+                # Используем apex AMP
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    amp.master_params(optimizer), hparams.grad_clip_thresh)
+                is_overflow = math.isnan(grad_norm) or math.isinf(grad_norm)
+                
+                if not is_overflow:
                     optimizer.step()
-            elif rank == 0:
-                print(f"Gradient overflow. Skipping step {iteration}...")
+                elif rank == 0:
+                    print(f"Gradient overflow. Skipping step {iteration}...")
+            else:
+                # Обычное обучение без FP16
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), hparams.grad_clip_thresh)
+                is_overflow = math.isnan(grad_norm) or math.isinf(grad_norm)
+                
+                if not is_overflow:
+                    optimizer.step()
+                elif rank == 0:
+                    print(f"Gradient overflow. Skipping step {iteration}...")
 
             if not is_overflow and rank == 0:
                 duration = time.perf_counter() - start

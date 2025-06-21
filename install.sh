@@ -539,6 +539,45 @@ print(f'База данных Optuna создана: {storage}')
     fi
 }
 
+# 7. Запуск Streamlit TTS Demo
+start_streamlit() {
+    header "Запуск Streamlit TTS Demo"
+    if ! pgrep -f "streamlit.*demo.py" > /dev/null; then
+        echo "Проверка наличия обученных моделей..."
+        if [ ! -d "output" ] || [ -z "$(ls -A output 2>/dev/null)" ]; then
+            echo "⚠️ Папка output пуста или не существует."
+            echo "Демо все равно запустится, но для генерации потребуются модели."
+        fi
+        
+        # Проверка установки Streamlit
+        if ! "$VENV_DIR/bin/python" -c "import streamlit" &>/dev/null; then
+            echo "Streamlit не установлен. Устанавливаем..."
+            "$VENV_DIR/bin/pip" install streamlit
+        fi
+        
+        # Определяем IP адрес
+        IP_ADDR=$(hostname -I | awk '{print $1}')
+        if [ -z "$IP_ADDR" ]; then
+            IP_ADDR="localhost"
+        fi
+        
+        echo "Запускаем Streamlit TTS Demo в фоновом режиме..."
+        nohup "$VENV_DIR/bin/streamlit" run demo.py \
+            --server.port 5003 \
+            --server.address 0.0.0.0 \
+            --browser.gatherUsageStats false > streamlit.log 2>&1 &
+        
+        sleep 3
+        if pgrep -f "streamlit.*demo.py" > /dev/null; then
+            echo "✅ Streamlit TTS Demo запущен на http://${IP_ADDR}:5003"
+        else
+            echo "❌ Ошибка запуска Streamlit. Проверьте streamlit.log"
+        fi
+    else
+        echo "ℹ️ Streamlit TTS Demo уже запущен."
+    fi
+}
+
 # --- Главное Меню ---
 main_menu() {
     while true; do
@@ -567,11 +606,13 @@ main_menu() {
                 prepare_services
                 start_mlflow
                 start_tensorboard
+                start_optuna
+                start_streamlit
                 
                 echo ""
                 echo "Система готова к запуску проактивного обучения."
                 echo "Процесс будет автоматически управляться, перезапускаться и настраиваться."
-                echo "Для мониторинга используйте TensorBoard и MLflow UI."
+                echo "Для мониторинга используйте TensorBoard, MLflow UI, Optuna Dashboard и TTS Demo."
                 echo "Все уведомления будут приходить в Telegram (если настроено)."
                 echo ""
                 read -p "Нажмите Enter для старта..."

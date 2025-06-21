@@ -40,6 +40,8 @@ class SmartTunerMain:
         
         self.trainer = TrainerWrapper(self.config)
         self.optimizer = OptimizationEngine(config_path)
+        # Создаем study для Optuna Dashboard
+        self.optimizer.create_study()
         self.alert_manager = AlertManager(self.config)
         
         # Инициализация веб-интерфейсов

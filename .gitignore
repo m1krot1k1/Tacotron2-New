@@ -41,3 +41,4 @@ Thumbs.db
 /hifigan/
 generated_audio.wav
 out.png
+*.db
