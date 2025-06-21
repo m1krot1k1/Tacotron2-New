@@ -38,9 +38,27 @@ class AlertManager:
         self.logger = self._setup_logger()
         
         # Настройки Telegram
-        self.bot_token = self.config.get('telegram', {}).get('bot_token')
-        self.chat_id = self.config.get('telegram', {}).get('chat_id')
-        self.enabled = self.config.get('telegram', {}).get('enabled', False)
+        telegram_config = self.config.get('telegram', {})
+        self.bot_token = telegram_config.get('bot_token')
+        self.chat_id = telegram_config.get('chat_id')
+        self.enabled = telegram_config.get('enabled', False)
+        self.parse_mode = telegram_config.get('parse_mode', 'Markdown')
+        self.notifications = telegram_config.get('notifications', {})
+        
+        # Настройки по умолчанию для уведомлений
+        default_notifications = {
+            'training_start': True,
+            'training_complete': True,
+            'early_stop': True,
+            'error_alerts': True,
+            'optimization_updates': True,
+            'metrics_summary': False
+        }
+        
+        # Объединяем с пользовательскими настройками
+        for key, default_value in default_notifications.items():
+            if key not in self.notifications:
+                self.notifications[key] = default_value
         
         # Буфер сообщений для batch отправки
         self.message_buffer = []
@@ -119,7 +137,7 @@ class AlertManager:
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         formatted_message += f"\n\n⏰ {timestamp}"
         
-        return self._send_telegram_message(formatted_message, parse_mode)
+        return self._send_telegram_message(formatted_message, self.parse_mode)
         
     def _send_telegram_message(self, message: str, parse_mode: str = 'Markdown') -> bool:
         """
@@ -159,6 +177,9 @@ class AlertManager:
         Args:
             config: Конфигурация обучения
         """
+        if not self.notifications.get('training_start', True):
+            return
+            
         message = "🚀 *Обучение началось*\n\n"
         message += f"📁 Эксперимент: `{config.get('experiment_name', 'Unknown')}`\n"
         message += f"🎯 Модель: `{config.get('model_name', 'Tacotron2')}`\n"
@@ -181,6 +202,9 @@ class AlertManager:
         Args:
             results: Результаты обучения
         """
+        if not self.notifications.get('training_complete', True):
+            return
+            
         message = "🎉 *Обучение завершено*\n\n"
         
         # Финальные метрики
@@ -233,7 +257,8 @@ class AlertManager:
         
     def send_error_notification(self, message: str):
         """Отправка уведомления об ошибке"""
-        self.send_message(message, priority='error')
+        if self.notifications.get('error_alerts', True):
+            self.send_message(message, priority='error')
         
     def send_optimization_update(self, trial_number: int, trial_value: float, 
                                best_value: float, params: Dict[str, Any]):

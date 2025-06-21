@@ -129,8 +129,22 @@ adaptive_advisor:
 
 # Настройки Telegram уведомлений
 telegram:
-  enabled: false
-  bot_token: ""
+  enabled: true                     # Включить/выключить уведомления
+  bot_token: "2010534305:AAHqgXYT5RPcLoJe-wNdFaFbIJvJsN2xUHA"                     # Токен бота (получить у @BotFather)
+  chat_id: "536955174"                       # Ваш Chat ID (получить у @userinfobot)
+  
+  # Настройки сообщений
+  parse_mode: "Markdown"            # Режим форматирования (Markdown/HTML)
+  disable_web_page_preview: true    # Отключить превью ссылок
+  
+  # Типы уведомлений (можно выборочно отключать)
+  notifications:
+    training_start: true            # Уведомление о начале обучения
+    training_complete: true         # Уведомление о завершении обучения
+    early_stop: true               # Уведомление об остановке
+    error_alerts: true             # Уведомления об ошибках
+    optimization_updates: true      # Обновления оптимизации
+    metrics_summary: false         # Периодические сводки метрик (может быть много)
 
 # Настройки реестра моделей
 model_registry:
