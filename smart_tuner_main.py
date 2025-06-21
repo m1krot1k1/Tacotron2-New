@@ -324,31 +324,30 @@ class SmartTunerMain:
 
 
 def main():
-    """Основная точка входа"""
-    parser = argparse.ArgumentParser(description="Smart Tuner V2 for Tacotron2")
-    parser.add_argument("--train", action="store_true", help="Запустить проактивное обучение.")
-    parser.add_argument("--optimize", action="store_true", help="Запустить оптимизацию с Optuna.")
-    parser.add_argument("--trials", type=int, default=10, help="Количество попыток для Optuna.")
-    parser.add_argument("--config", type=str, default="smart_tuner/config.yaml", help="Путь к файлу конфигурации.")
-    
-    args = parser.parse_args()
+    """Основная функция"""
+    parser = argparse.ArgumentParser(description="Smart Tuner V2 для Tacotron2")
+    parser.add_argument('--config', default='smart_tuner/config.yaml', help='Путь к файлу конфигурации')
+    parser.add_argument('--optimize', action='store_true', help='Запуск оптимизации гиперпараметров')
+    parser.add_argument('--train', action='store_true', help='Запуск одиночного полноценного обучения')
+    parser.add_argument('--n_trials', type=int, default=10, help='Количество trials для оптимизации')
 
+    args = parser.parse_args()
+    
+    tuner = SmartTunerMain(args.config)
+    
+    if args.optimize:
+        tuner.run_optimization(n_trials=args.n_trials)
+    elif args.train:
+        tuner.run_proactive_training()
+    else:
+        logger.info("Не выбран режим работы. Используйте --train или --optimize.")
+        parser.print_help()
+
+if __name__ == "__main__":
     try:
-        tuner = SmartTunerMain(config_path=args.config)
-        
-        if args.train:
-            tuner.run_proactive_training()
-        elif args.optimize:
-            tuner.run_optimization(n_trials=args.trials)
-        else:
-            logger.warning("Не выбрано действие. Используйте --train или --optimize.")
-            parser.print_help()
-            
+        main()
     except Exception as e:
         logger.critical(f"Неперехваченная ошибка в main: {e}", exc_info=True)
         sys.exit(1)
-
-if __name__ == "__main__":
-    main()
 
  
