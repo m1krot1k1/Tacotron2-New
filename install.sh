@@ -289,11 +289,33 @@ train_model() {
 
     nohup "$VENV_DIR/bin/mlflow" ui --host 0.0.0.0 --port 5000 --backend-store-uri "file://$(pwd)/mlruns" > mlflow.log 2>&1 &
     echo "✓ MLflow UI запущен на порту 5000"
+    
+    # Создание и запуск Optuna Dashboard
+    echo "✓ Создание базы данных Optuna..."
+    mkdir -p smart_tuner
+    if [ ! -f "smart_tuner/optuna_studies.db" ]; then
+        "$VENV_DIR/bin/python" -c "
+import optuna
+study_name = 'tacotron2_optimization'
+storage = 'sqlite:///smart_tuner/optuna_studies.db'
+study = optuna.create_study(
+    study_name=study_name,
+    storage=storage,
+    direction='minimize',
+    load_if_exists=True
+)
+print('База данных Optuna создана')
+"
+    fi
+    
+    nohup "$VENV_DIR/bin/optuna-dashboard" sqlite:///smart_tuner/optuna_studies.db --host 0.0.0.0 --port 5002 > optuna.log 2>&1 &
+    echo "✓ Optuna Dashboard запущен на порту 5002"
     sleep 3
 
     echo -e "\n${BLUE}📈 Мониторинг будет доступен по адресам (через ~1-2 минуты):${NC}"
-    echo -e "  MLflow:      ${GREEN}http://${IP_ADDR}:5000${NC}"
-    echo -e "  TensorBoard: ${GREEN}http://${IP_ADDR}:5001${NC}"
+    echo -e "  MLflow:           ${GREEN}http://${IP_ADDR}:5000${NC}"
+    echo -e "  TensorBoard:      ${GREEN}http://${IP_ADDR}:5001${NC}"
+    echo -e "  Optuna Dashboard: ${GREEN}http://${IP_ADDR}:5002${NC}"
     echo
 
     # 4. Запускаем основной процесс Smart Tuner
@@ -474,6 +496,49 @@ start_mlflow() {
     fi
 }
 
+# 6. Запуск Optuna Dashboard
+start_optuna() {
+    header "Запуск Optuna Dashboard"
+    if ! pgrep -f "optuna-dashboard" > /dev/null; then
+        echo "Создание базы данных Optuna..."
+        mkdir -p smart_tuner
+        
+        # Создаем базу данных если она не существует
+        if [ ! -f "smart_tuner/optuna_studies.db" ]; then
+            "$VENV_DIR/bin/python" -c "
+import optuna
+study_name = 'tacotron2_optimization'
+storage = 'sqlite:///smart_tuner/optuna_studies.db'
+study = optuna.create_study(
+    study_name=study_name,
+    storage=storage,
+    direction='minimize',
+    load_if_exists=True
+)
+print(f'База данных Optuna создана: {storage}')
+"
+        fi
+        
+        # Определяем IP адрес
+        IP_ADDR=$(hostname -I | awk '{print $1}')
+        if [ -z "$IP_ADDR" ]; then
+            IP_ADDR="localhost"
+        fi
+        
+        echo "Запускаем Optuna Dashboard в фоновом режиме..."
+        nohup "$VENV_DIR/bin/optuna-dashboard" sqlite:///smart_tuner/optuna_studies.db --host 0.0.0.0 --port 5002 > optuna.log 2>&1 &
+        
+        sleep 3
+        if pgrep -f "optuna-dashboard" > /dev/null; then
+            echo "✅ Optuna Dashboard запущен на http://${IP_ADDR}:5002"
+        else
+            echo "❌ Ошибка запуска Optuna Dashboard. Проверьте optuna.log"
+        fi
+    else
+        echo "ℹ️ Optuna Dashboard уже запущен."
+    fi
+}
+
 # --- Главное Меню ---
 main_menu() {
     while true; do
@@ -485,9 +550,10 @@ main_menu() {
         echo "3. 🚀 Начать интеллектуальное обучение 🚀"
         echo "4. Запустить/проверить TensorBoard"
         echo "5. Запустить/проверить MLflow UI"
-        echo "6. Выход"
+        echo "6. Запустить/проверить Optuna Dashboard"
+        echo "7. Выход"
         echo "----------------------------------------"
-        read -p "Выберите опцию [1-6]: " main_choice
+        read -p "Выберите опцию [1-7]: " main_choice
 
         case $main_choice in
             1)
@@ -522,6 +588,9 @@ main_menu() {
                 start_mlflow
                 ;;
             6)
+                start_optuna
+                ;;
+            7)
                 echo "Выход..."
                 exit 0
                 ;;
