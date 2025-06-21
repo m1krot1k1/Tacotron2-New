@@ -86,61 +86,47 @@ parameter_scheduling:
 parameter_scheduling_config:
   update_frequency: 10
 
-# Настройки раннего останова с проактивными мерами
-early_stopping:
-  patience_criterion:
-    enabled: true
-    type: "patience"
-    metric: "val_loss"
-    patience: 10
-    min_delta: 0.001
-    mode: "min"
-    
-  overfitting_criterion:
-    enabled: true
-    type: "overfitting"
-    train_metric: "train_loss"
-    val_metric: "val_loss"
-    overfitting_threshold: 0.2
-    window_size: 5
-    
-  divergence_criterion:
-    enabled: true
-    type: "loss_divergence"
-    metric: "train_loss"
-    divergence_threshold: 10.0
-
-# Проактивные меры предотвращения проблем
-proactive_measures:
-  enabled: true
+# Новая конфигурация для Адаптивного Советника
+adaptive_advisor:
+  db_path: "smart_tuner/advisor_kb.db"   # Путь к базе знаний
+  min_history_for_decision: 20           # Сколько шагов нужно накопить перед первым решением
+  evaluation_window: 15                  # Через сколько шагов оценивать результат действия
   
-  # 1. Стагнация (Validation Loss на плато)
-  stagnation_detection:
-    enabled: true
-    patience: 15  # после скольки шагов без улучшения считать стагнацией
-    min_delta: 0.005 # минимальное улучшение, которое не считается стагнацией
-    action:
-      learning_rate_multiplier: 1.5 # Увеличить LR в 1.5 раза
+  # Новая секция для настройки порогов диагностики
+  diagnostics:
+    instability:
+      grad_norm_threshold: 50.0
+    overfitting:
+      window_size: 10
+      threshold: 0.1
+    stagnation:
+      window_size: 20
+      min_delta: 0.005
 
-  # 2. Переобучение (Validation Loss растет, а Train Loss падает)
-  overfitting_detection:
-    enabled: true
-    patience: 5 # после скольки шагов с признаками переобучения вмешиваться
-    threshold: 0.1 # если val_loss > train_loss на 10%
-    action:
-      learning_rate_multiplier: 0.7 # Уменьшить LR на 30%
-      # В hparams.py нужно добавить параметр "dropout_rate"
-      dropout_rate_increase: 0.1 # Увеличить dropout
+  # Новая секция для настройки функции вознаграждения
+  reward_function:
+    action_inaction_threshold: 0.0001 # Порог для определения "бесполезного" действия
+    inaction_penalty: 0.01            # Штраф за бесполезное действие
+    weights:                          # Веса для разных компонентов "Индекса Здоровья"
+      val_loss: 1.0
+      overfitting_gap: 0.5
 
-  # 3. Нестабильность обучения (взрыв градиентов)
-  instability_detection:
-    enabled: true
-    grad_norm_threshold: 50.0 # порог для grad_norm
-    action:
-      enable_gradient_clipping: true # Включить/увеличить grad_clip_thresh
-      gradient_clip_thresh: 1.0
-      batch_size_multiplier: 1.5 # Увеличить batch_size в 1.5 раза (если позволяет память)
-      
+  # Действия по умолчанию (для "холодного старта", когда в базе знаний нет опыта)
+  default_actions:
+    stagnation:
+      name: "change_lr"                  # Название действия
+      params:
+        multiplier: 0.8                  # Уменьшить LR на 20%
+    
+    overfitting:
+      name: "increase_regularization"    # Пример другого действия
+      params:
+        dropout_increase: 0.05
+    
+    instability:
+      name: "stop_run"                   # В случае нестабильности - остановить
+      params: {}
+
 # Настройки Telegram уведомлений
 telegram:
   enabled: false

@@ -1,12 +1,16 @@
 """
 Early Stop Controller для Smart Tuner V2
 Интеллектуальный контроль раннего останова и проактивное вмешательство в обучение.
+Теперь с адаптивным советником на основе базы знаний.
 """
 
 import yaml
 import logging
 import numpy as np
 from typing import Dict, Any, List, Tuple
+import sqlite3
+import json
+import os
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - [%(levelname)s] - (EarlyStopController) - %(message)s')
 
@@ -15,153 +19,285 @@ class EarlyStopController:
     Контроллер, который совмещает:
     1. Проактивные меры: пытается "вылечить" обучение, если оно идет не так.
     2. Ранний останов: останавливает безнадежное обучение для экономии ресурсов.
+    3. Адаптивное обучение: использует базу знаний для принятия более умных решений со временем.
     """
     
     def __init__(self, config_path: str = "smart_tuner/config.yaml"):
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
         
-        self.proactive_config = self.config.get('proactive_measures', {})
-        self.early_stop_config = self.config.get('early_stopping', {})
+        self.advisor_config = self.config.get('adaptive_advisor', {})
+        self.db_path = self.advisor_config.get('db_path', 'smart_tuner/advisor_kb.db')
         
         self.metrics_history = []
-        self.logger = logging.getLogger(self.__class__.__name__)
-        
-        # Состояние для проактивных мер
-        self.stagnation_counter = 0
-        self.overfitting_counter = 0
+        self.last_action_step = 0 # Шаг, на котором было предпринято последнее действие
+        self.last_action_info = {} # Информация о последнем действии для последующей оценки
 
-        # Состояние для раннего останова
-        self.patience_counter = 0
-        self.best_val_loss = float('inf')
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self._init_kb()
         
-        self.logger.info("EarlyStopController с проактивными мерами инициализирован.")
+        self.logger.info("Adaptive EarlyStopController инициализирован с базой знаний.")
+
+    def _init_kb(self):
+        """Инициализирует базу знаний (SQLite)."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            # Создаем таблицу, если она не существует
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS knowledge_base (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                problem_context TEXT NOT NULL,
+                action_taken TEXT NOT NULL,
+                outcome_metrics TEXT,
+                reward REAL
+            )
+            ''')
+            conn.commit()
+            conn.close()
+            self.logger.info(f"База знаний успешно инициализирована по пути: {self.db_path}")
+        except Exception as e:
+            self.logger.error(f"Не удалось инициализировать базу знаний: {e}")
 
     def add_metrics(self, metrics: Dict[str, float]):
         """Добавляет новый набор метрик в историю."""
-        if 'train_loss' in metrics and 'val_loss' in metrics and 'grad_norm' in metrics:
+        required_metrics = ['train_loss', 'val_loss', 'grad_norm'] # Будет расширяться
+        if all(k in metrics for k in required_metrics):
             self.metrics_history.append(metrics)
     
-    def decide_next_step(self, current_hparams: Dict) -> Dict[str, Any]:
+    def decide_next_step(self, current_hparams: Dict[str, Any]) -> Dict[str, Any]:
         """
         Главный метод, принимающий решение о следующем шаге.
-        Возвращает словарь с действием: 'continue', 'stop' или 'restart'.
         """
-        if len(self.metrics_history) < self.proactive_config.get('min_history_points', 5):
-            return {'action': 'continue', 'reason': 'Not enough data for a decision'}
-
-        # 1. Сначала проверяем, нужны ли проактивные меры
-        if self.proactive_config.get('enabled', False):
-            proactive_decision = self._check_proactive_measures(current_hparams)
-            if proactive_decision['action'] != 'continue':
-                self.reset_counters() # Сбрасываем счетчики после вмешательства
-                return proactive_decision
-
-        # 2. Если вмешательство не требуется, проверяем условия для полной остановки
-        stop_decision = self._check_hard_stop_conditions()
-        return stop_decision
-
-    def _check_proactive_measures(self, hparams: Dict) -> Dict[str, Any]:
-        """Анализирует метрики и решает, нужно ли "лечить" обучение."""
+        current_step = len(self.metrics_history)
+        if current_step < self.advisor_config.get('min_history_for_decision', 10):
+            return {'action': 'continue', 'reason': 'Накопление данных для принятия решения'}
         
-        last_metrics = self.metrics_history[-1]
-        
-        # --- Проверка №1: Стагнация ---
-        stagnation_conf = self.proactive_config.get('stagnation_detection', {})
-        if stagnation_conf.get('enabled', False):
-            if len(self.metrics_history) > 1:
-                # Считаем среднее улучшение за последние N шагов
-                recent_losses = [m['val_loss'] for m in self.metrics_history[-stagnation_conf.get('patience', 15):]]
-                if len(recent_losses) == stagnation_conf.get('patience', 15):
-                    improvement = recent_losses[0] - recent_losses[-1]
-                    if improvement < stagnation_conf.get('min_delta', 0.001):
-                        self.stagnation_counter += 1
-                    else:
-                        self.stagnation_counter = 0
+        # 1. Если пришло время, оцениваем результат предыдущего действия
+        evaluation_window = self.advisor_config.get('evaluation_window', 10)
+        if self.last_action_step > 0 and (current_step - self.last_action_step) >= evaluation_window:
+            self._evaluate_last_action()
 
-                if self.stagnation_counter >= 3: # Если стагнация наблюдается 3 окна подряд
-                    new_hparams = hparams.copy()
-                    new_hparams['learning_rate'] *= stagnation_conf['action'].get('learning_rate_multiplier', 1.2)
-                    self.logger.warning("Обнаружена стагнация! Увеличиваю learning_rate.")
-                    return {
-                        'action': 'restart',
-                        'reason': 'Stagnation detected',
-                        'new_params': new_hparams
+        # 2. Анализируем текущую ситуацию, только если не ждем оценки прошлого действия
+        if self.last_action_step == 0:
+            problem_context = self._diagnose_problem()
+            if problem_context:
+                # 3. Обращаемся к "советнику" за лучшим действием
+                recommended_action = self._get_best_action(problem_context)
+                
+                if recommended_action and recommended_action.get('name') != 'continue':
+                    # 4. Применяем действие
+                    self.last_action_step = current_step
+                    # Запоминаем всю необходимую информацию для будущей оценки
+                    self.last_action_info = {
+                        "context": problem_context,
+                        "action": recommended_action,
+                        "start_metrics": self.metrics_history[-1]
                     }
+                    
+                    # Логируем само намерение, но без результата и оценки
+                    db_id = self._log_event_to_kb(problem_context, recommended_action)
+                    self.last_action_info['db_id'] = db_id
 
-        # --- Проверка №2: Переобучение ---
-        overfitting_conf = self.proactive_config.get('overfitting_detection', {})
-        if overfitting_conf.get('enabled', False):
-            gap = last_metrics['val_loss'] - last_metrics['train_loss']
-            if gap > overfitting_conf.get('threshold', 0.1):
-                self.overfitting_counter += 1
-            else:
-                self.overfitting_counter = 0
+                    return self._create_response_from_action(recommended_action, current_hparams)
 
-            if self.overfitting_counter >= overfitting_conf.get('patience', 5):
-                new_hparams = hparams.copy()
-                new_hparams['learning_rate'] *= overfitting_conf['action'].get('learning_rate_multiplier', 0.7)
-                # Предполагаем, что hparams.py имеет 'dropout_rate'
-                new_hparams['dropout_rate'] = min(hparams.get('dropout_rate', 0.5) + overfitting_conf['action'].get('dropout_rate_increase', 0.1), 0.9)
-                self.logger.warning("Обнаружено переобучение! Уменьшаю LR, увеличиваю dropout.")
-                return {
-                    'action': 'restart',
-                    'reason': 'Overfitting detected',
-                    'new_params': new_hparams
-                }
+        return {'action': 'continue', 'reason': 'Ситуация стабильна или ожидается оценка действия'}
+    
+    def _diagnose_problem(self) -> Dict[str, Any] or None:
+        """
+        Анализирует "приборную панель" и ставит "диагноз".
+        Возвращает словарь с описанием проблемы или None, если все в порядке.
+        """
+        conf = self.advisor_config.get('diagnostics', {})
+        history_len = len(self.metrics_history)
+        last_metrics = self.metrics_history[-1]
 
-        # --- Проверка №3: Нестабильность ---
-        instability_conf = self.proactive_config.get('instability_detection', {})
-        if instability_conf.get('enabled', False) and 'grad_norm' in last_metrics:
-            if last_metrics['grad_norm'] > instability_conf.get('grad_norm_threshold', 50.0):
-                new_hparams = hparams.copy()
-                if instability_conf['action'].get('enable_gradient_clipping', True):
-                    new_hparams['grad_clip_thresh'] = instability_conf['action'].get('gradient_clip_thresh', 1.0)
-                new_hparams['batch_size'] = int(hparams.get('batch_size', 16) * instability_conf['action'].get('batch_size_multiplier', 1.2))
-                self.logger.warning("Обнаружена нестабильность! Включаю clipping, увеличиваю batch_size.")
-                return {
-                    'action': 'restart',
-                    'reason': 'Instability detected (gradient explosion)',
-                    'new_params': new_hparams
-                }
+        # --- Диагноз №1: Нестабильность (самый высокий приоритет) ---
+        instability_conf = conf.get('instability', {})
+        if last_metrics['grad_norm'] > instability_conf.get('grad_norm_threshold', 50.0):
+            self.logger.warning("Диагноз: Нестабильность (взрыв градиентов).")
+            return {"problem_type": "instability", "grad_norm": last_metrics['grad_norm']}
 
-        return {'action': 'continue'}
-
-    def _check_hard_stop_conditions(self) -> Dict[str, Any]:
-        """Проверяет классические условия для полной остановки обучения."""
-        patience = self.early_stop_config.get('patience', 25) # Увеличим терпение
-        min_delta = self.early_stop_config.get('min_delta', 0.001)
-        metric_to_check = self.early_stop_config.get('metric', 'val_loss')
+        # --- Диагноз №2: Переобучение ---
+        overfitting_conf = conf.get('overfitting', {})
+        window = overfitting_conf.get('window_size', 10)
+        if history_len >= window:
+            overfitting_gap = last_metrics['val_loss'] - last_metrics['train_loss']
+            if overfitting_gap > overfitting_conf.get('threshold', 0.1):
+                # Проверяем, что разрыв устойчиво растет
+                past_gaps = [m['val_loss'] - m['train_loss'] for m in self.metrics_history[-window:]]
+                if all(g1 <= g2 for g1, g2 in zip(past_gaps, past_gaps[1:])):
+                     self.logger.warning("Диагноз: Переобучение (разрыв между train/val loss растет).")
+                     return {"problem_type": "overfitting", "gap": overfitting_gap}
         
-        current_metric_val = self.metrics_history[-1].get(metric_to_check)
-        if current_metric_val is None:
-            return {'action': 'continue'} 
-
-        if current_metric_val < self.best_val_loss - min_delta:
-            self.best_val_loss = current_metric_val
-            self.patience_counter = 0
-        else:
-            self.patience_counter += 1
-
-        if self.patience_counter >= patience:
-            self.logger.info(f"Early stopping triggered after {patience} checks without improvement.")
-            return {
-                'action': 'stop',
-                'reason': f'Metric {metric_to_check} did not improve for {patience} checks.'
-            }
+        # --- Диагноз №3: Стагнация ---
+        stagnation_conf = conf.get('stagnation', {})
+        window = stagnation_conf.get('window_size', 20)
+        if history_len >= window:
+            recent_val_losses = [m['val_loss'] for m in self.metrics_history[-window:]]
+            improvement = recent_val_losses[0] - recent_val_losses[-1]
+            if improvement < stagnation_conf.get('min_delta', 0.005):
+                self.logger.warning("Диагноз: Стагнация (val_loss на плато).")
+                return {"problem_type": "stagnation", "improvement": improvement}
+        
+        return None
+    
+    def _get_best_action(self, context: Dict) -> Dict[str, Any]:
+        """
+        Запрашивает у базы знаний лучшее действие для данного контекста.
+        Если релевантного опыта нет, возвращает действие по умолчанию.
+        """
+        problem_type = context.get("problem_type")
+        
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
             
-        return {'action': 'continue'}
+            # Ищем все релевантные действия и их награды для данного типа проблемы
+            cursor.execute("""
+                SELECT action_taken, reward FROM knowledge_base
+                WHERE json_extract(problem_context, '$.problem_type') = ? AND reward IS NOT NULL
+            """, (problem_type,))
+            
+            records = cursor.fetchall()
+            conn.close()
 
-    def reset_counters(self):
-        """Сбрасывает счетчики после вмешательства, чтобы дать изменениям время подействовать."""
-        self.stagnation_counter = 0
-        self.overfitting_counter = 0
-        self.logger.info("Счетчики проактивных мер сброшены.")
+            if not records:
+                self.logger.warning(f"Для проблемы '{problem_type}' в базе знаний нет опыта. Использую действие по умолчанию.")
+                return self._get_default_action(problem_type)
+
+            # Агрегируем опыт: считаем среднюю награду для каждого уникального действия
+            action_rewards = {}
+            for action_str, reward in records:
+                action = json.loads(action_str)
+                action_name = action['name'] # Уникальный ключ для действия
+                if action_name not in action_rewards:
+                    action_rewards[action_name] = []
+                action_rewards[action_name].append(reward)
+            
+            # Находим действие с лучшей средней наградой
+            best_action_name = None
+            max_avg_reward = -float('inf')
+            
+            for action_name, rewards in action_rewards.items():
+                avg_reward = sum(rewards) / len(rewards)
+                self.logger.info(f"Анализ опыта для '{problem_type}': Действие '{action_name}' имеет среднюю награду {avg_reward:.4f} на основе {len(rewards)} случаев.")
+                if avg_reward > max_avg_reward:
+                    max_avg_reward = avg_reward
+                    best_action_name = action_name
+            
+            # Если лучшее действие имеет отрицательную награду, возможно, лучше ничего не делать
+            if max_avg_reward < self.advisor_config.get('min_reward_threshold', 0):
+                 self.logger.warning(f"Лучшее действие '{best_action_name}' имеет отрицательную среднюю награду. Пропускаю ход.")
+                 return {'name': 'continue'}
+
+            # Загружаем полное описание лучшего действия из конфига (или можно хранить в БЗ)
+            # Для простоты пока ищем в default_actions
+            # TODO: Сделать действия более независимыми от конфига
+            for action_type, action_details in self.advisor_config.get('default_actions', {}).items():
+                if action_details['name'] == best_action_name:
+                    self.logger.info(f"На основе исторического опыта выбрано действие: '{best_action_name}'")
+                    return action_details
+
+        except Exception as e:
+            self.logger.error(f"Ошибка при запросе к базе знаний: {e}. Использую действие по умолчанию.")
+            return self._get_default_action(problem_type)
+
+        return self._get_default_action(problem_type) # На случай если что-то пошло не так
+
+    def _get_default_action(self, problem_type: str) -> Dict[str, Any]:
+        """Возвращает действие по умолчанию из конфигурации."""
+        default_actions = self.advisor_config.get('default_actions', {})
+        if problem_type in default_actions:
+            self.logger.info(f"Применяю действие по умолчанию для '{problem_type}' из конфига.")
+            return default_actions[problem_type]
+        
+        self.logger.warning(f"Не найдено действий по умолчанию для проблемы: {problem_type}. Продолжаю без изменений.")
+        return {'name': 'continue'}
+
+    def _evaluate_last_action(self):
+        """Оценивает результат последнего действия и записывает "награду" в базу знаний."""
+        start_metrics = self.last_action_info['start_metrics']
+        end_metrics = self.metrics_history[-1]
+        action_name = self.last_action_info['action']['name']
+        
+        conf = self.advisor_config.get('reward_function', {})
+        weights = conf.get('weights', {'val_loss': 1.0, 'overfitting_gap': 0.5})
+
+        # Компонент 1: Улучшение val_loss
+        val_loss_improvement = start_metrics['val_loss'] - end_metrics['val_loss']
+        
+        # Компонент 2: Улучшение разрыва переобучения
+        start_gap = start_metrics['val_loss'] - start_metrics['train_loss']
+        end_gap = end_metrics['val_loss'] - end_metrics['train_loss']
+        gap_improvement = start_gap - end_gap
+        
+        # Компонент 3 (опционально): Стабилизация градиентов
+        # ... можно добавить в будущем ...
+
+        # Итоговая награда
+        reward = (weights.get('val_loss', 1.0) * val_loss_improvement +
+                  weights.get('overfitting_gap', 0.5) * gap_improvement)
+
+        # Штраф за бесполезное действие
+        if abs(val_loss_improvement) < conf.get('action_inaction_threshold', 0.0001):
+            reward -= conf.get('inaction_penalty', 0.01)
+            self.logger.info(f"Действие '{action_name}' было практически бесполезным, применен штраф.")
+
+        self.logger.info(f"Оценка действия '{action_name}': val_loss_imp={val_loss_improvement:.4f}, gap_imp={gap_improvement:.4f}. Итоговая награда: {reward:.4f}")
+
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+            UPDATE knowledge_base 
+            SET outcome_metrics = ?, reward = ?
+            WHERE id = ?
+            ''', (json.dumps(end_metrics), reward, self.last_action_info['db_id']))
+            conn.commit()
+            conn.close()
+            self.logger.info(f"База знаний обновлена с результатом для действия ID: {self.last_action_info['db_id']}.")
+        except Exception as e:
+            self.logger.error(f"Не удалось обновить запись в базе знаний: {e}")
+
+        # Сбрасываем, чтобы система могла анализировать ситуацию заново
+        self.last_action_step = 0
+        self.last_action_info = {}
+        
+    def _log_event_to_kb(self, context: Dict, action: Dict) -> int:
+        """Записывает событие (контекст и предпринятое действие) в базу знаний."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO knowledge_base (problem_context, action_taken) VALUES (?, ?)",
+                           (json.dumps(context), json.dumps(action)))
+            conn.commit()
+            last_id = cursor.lastrowid
+            conn.close()
+            return last_id
+        except Exception as e:
+            self.logger.error(f"Не удалось записать событие в базу знаний: {e}")
+            return -1
+
+    def _create_response_from_action(self, action: Dict, hparams: Dict) -> Dict:
+        """Формирует ответ для trainer_wrapper на основе рекомендованного действия."""
+        action_name = action.get('name')
+        params = action.get('params', {})
+        self.logger.info(f"Применяю рекомендованное действие: '{action_name}' с параметрами {params}")
+
+        if action_name == 'change_lr':
+            new_hparams = hparams.copy()
+            new_hparams['learning_rate'] *= params.get('multiplier', 1.0)
+            return {'action': 'restart', 'reason': f'AdaptiveAdvisor: {action_name}', 'new_params': new_hparams}
+        elif action_name == 'stop_run':
+            return {'action': 'stop', 'reason': 'AdaptiveAdvisor: остановка на основе исторического опыта'}
+        
+        return {'action': 'continue'}
 
     def reset(self):
         """Полностью сбрасывает состояние контроллера для нового запуска."""
         self.metrics_history = []
-        self.patience_counter = 0
-        self.best_val_loss = float('inf')
-        self.reset_counters()
-        self.logger.info("EarlyStopController был полностью сброшен в исходное состояние.")
+        self.last_action_step = 0
+        self.last_action_info = {}
+        self.logger.info("Adaptive EarlyStopController был полностью сброшен.")
