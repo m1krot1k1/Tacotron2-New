@@ -66,12 +66,12 @@ class TrainerWrapper:
         else:
             logging.info("✅ MLflow уже запущен")
 
-    def start_training(self, hparams_override=None, checkpoint_path=None):
+    def start_training(self, hparams_override=None, checkpoint_path=None, run_name_prefix="proactive_run"):
         """
         Запускает train.py с заданными параметрами.
         Возвращает процесс, MLflow run_id и пути к директориям.
         """
-        run_name = f"proactive_run_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
+        run_name = f"{run_name_prefix}_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
         
         output_dir = os.path.join(self.config.get('output_dir', 'output'), run_name)
         log_dir = os.path.join(output_dir, "logs")
@@ -164,7 +164,114 @@ class TrainerWrapper:
                 self.current_run_id = None
 
     def train_with_params(self, hyperparams: dict):
-        """Функция для Optuna: запускает обучение и возвращает метрики."""
-        # Эта функция требует более сложной реализации для реальной оптимизации
-        logging.info(f"Заглушка для train_with_params с параметрами: {hyperparams}")
-        return {"val_loss": 1.0} 
+        """
+        Функция для Optuna: запускает полноценное обучение с заданными гиперпараметрами.
+        Интегрирована с нашим усовершенствованным EarlyStopController.
+        """
+        from smart_tuner.early_stop_controller import EarlyStopController
+        from smart_tuner.log_watcher import LogWatcher
+        from smart_tuner.metrics_store import MetricsStore
+        
+        logging.info(f"🧪 Запуск Optuna trial с параметрами: {hyperparams}")
+        
+        # Создаем уникальное имя для этого trial
+        trial_name = f"optuna_trial_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        
+        # Запускаем обучение
+        process, run_id, output_dir, log_dir = self.start_training(
+            hparams_override=hyperparams,
+            checkpoint_path=None,  # Optuna trials начинают с нуля
+            run_name_prefix="optuna_trial"
+        )
+        
+        if not process or not run_id:
+            logging.error("Не удалось запустить обучение для Optuna trial")
+            return None
+            
+        # Инициализируем наш усовершенствованный контроллер и мониторинг
+        controller = EarlyStopController()
+        metrics_store = MetricsStore()
+        log_watcher = LogWatcher(
+            metrics_store=metrics_store,
+            tracking_uri=self.config.get('mlflow', {}).get('tracking_uri', 'mlruns')
+        )
+        log_watcher.set_run_id(run_id)
+        
+        # Мониторинг процесса обучения
+        final_metrics = None
+        check_interval = 30  # Проверяем каждые 30 секунд для Optuna
+        
+        try:
+            while process.poll() is None:
+                # Получаем новые метрики
+                log_watcher.check_for_new_metrics()
+                raw_metrics = metrics_store.get_latest_metrics()
+                
+                if raw_metrics:
+                    # Преобразуем метрики для нашего контроллера
+                    converted_metrics = self._convert_metrics_for_optuna(raw_metrics)
+                    if converted_metrics:
+                        controller.add_metrics(converted_metrics)
+                        final_metrics = converted_metrics  # Сохраняем последние метрики
+                        
+                        # Проверяем, нужно ли остановить trial
+                        decision = controller.decide_next_step(hyperparams)
+                        if decision.get('action') == 'stop':
+                            logging.info(f"EarlyStopController рекомендует остановить trial: {decision.get('reason')}")
+                            self.stop_training()
+                            break
+                
+                time.sleep(check_interval)
+                
+            # Ждем завершения процесса
+            if process.poll() is None:
+                process.wait(timeout=60)
+                
+        except Exception as e:
+            logging.error(f"Ошибка во время мониторинга Optuna trial: {e}")
+            self.stop_training()
+            return None
+        finally:
+            # Убеждаемся, что процесс остановлен
+            if process.poll() is None:
+                self.stop_training()
+        
+        # Возвращаем финальные метрики для Optuna
+        if final_metrics:
+            logging.info(f"✅ Trial завершен. Финальные метрики: {final_metrics}")
+            return final_metrics
+        else:
+            logging.warning("❌ Trial завершен без метрик")
+            return {"val_loss": float('inf')}  # Большое значение для неудачного trial
+    
+    def _convert_metrics_for_optuna(self, raw_metrics: dict) -> dict:
+        """
+        Преобразует метрики из MetricsStore в формат для EarlyStopController.
+        Аналогично методу в SmartTunerMain, но адаптирован для TrainerWrapper.
+        """
+        if not raw_metrics:
+            return None
+            
+        metrics_mapping = {
+            'training.loss': 'train_loss',
+            'validation.loss': 'val_loss', 
+            'grad_norm': 'grad_norm'
+        }
+        
+        converted = {}
+        for mlflow_name, advisor_name in metrics_mapping.items():
+            if mlflow_name in raw_metrics:
+                value = raw_metrics[mlflow_name]
+                if isinstance(value, list) and len(value) > 0:
+                    converted[advisor_name] = float(value[-1])
+                elif isinstance(value, (int, float)):
+                    converted[advisor_name] = float(value)
+        
+        # Проверяем наличие необходимых метрик
+        required_metrics = ['train_loss', 'val_loss', 'grad_norm']
+        if all(metric in converted for metric in required_metrics):
+            return converted
+        else:
+            missing = [m for m in required_metrics if m not in converted]
+            logging.debug(f"Не хватает метрик для EarlyStopController: {missing}")
+            return None 

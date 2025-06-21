@@ -320,7 +320,7 @@ print('База данных Optuna создана')
 
     # 4. Запускаем основной процесс Smart Tuner
     echo -e "${GREEN}🚀 Запуск Smart Tuner...${NC}"
-    "$VENV_DIR/bin/python" smart_tuner_main.py --mode train
+    "$VENV_DIR/bin/python" smart_tuner_main.py --train
 
     if [ $? -eq 0 ]; then
         echo -e "\n${GREEN}🎉 Обучение успешно завершено!${NC}"

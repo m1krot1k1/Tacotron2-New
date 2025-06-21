@@ -18,6 +18,7 @@ from smart_tuner.early_stop_controller import EarlyStopController
 from smart_tuner.log_watcher import LogWatcher
 from smart_tuner.metrics_store import MetricsStore
 from utils import find_latest_checkpoint, load_hparams, save_hparams
+from typing import Dict
 
 logging.basicConfig(
     level=logging.INFO,
@@ -62,35 +63,53 @@ class SmartTunerMain:
             return False
     
     def ensure_mlflow_running(self):
-        """Убеждается, что MLflow сервер запущен"""
-        if not self.is_mlflow_running():
-            logger.info("MLflow не запущен. Запускаем...")
-            try:
-                # Создаем директорию для логов если её нет
-                os.makedirs("mlruns", exist_ok=True)
-                
-                # Запускаем MLflow в фоновом режиме
-                subprocess.Popen([
-                    sys.executable, "-m", "mlflow", "ui",
-                    "--host", "0.0.0.0",
-                    "--port", "5000",
-                    "--backend-store-uri", f"file://{os.path.abspath('mlruns')}"
-                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                
-                # Ждем запуска
-                for _ in range(10):
-                    time.sleep(1)
-                    if self.is_mlflow_running():
-                        logger.info("✅ MLflow успешно запущен на порту 5000")
-                        return
-                
-                logger.warning("⚠️ MLflow запущен, но проверка подключения не прошла")
-                
-            except Exception as e:
-                logger.error(f"❌ Ошибка запуска MLflow: {e}")
+        """Проверяет и при необходимости запускает MLflow UI"""
+        mlflow_port = self.config.get('ports', {}).get('mlflow', 5000)
+        if not self.is_mlflow_running(mlflow_port):
+            logger.warning(f"MLflow UI не запущен на порту {mlflow_port}. Запустите его через install.sh")
         else:
-            logger.info("✅ MLflow уже запущен")
+            logger.info(f"✅ MLflow UI уже запущен на порту {mlflow_port}")
+
+    def _convert_metrics_for_advisor(self, raw_metrics: Dict) -> Dict[str, float] or None:
+        """
+        Преобразует метрики из MetricsStore в формат, ожидаемый EarlyStopController.
         
+        Args:
+            raw_metrics: Сырые метрики из MetricsStore
+            
+        Returns:
+            Словарь с метриками в формате {train_loss, val_loss, grad_norm} или None
+        """
+        if not raw_metrics:
+            return None
+            
+        # Маппинг названий метрик из train.py в формат EarlyStopController
+        metrics_mapping = {
+            'training.loss': 'train_loss',
+            'validation.loss': 'val_loss', 
+            'grad_norm': 'grad_norm'
+        }
+        
+        converted = {}
+        for mlflow_name, advisor_name in metrics_mapping.items():
+            if mlflow_name in raw_metrics:
+                # Если метрика представлена как список (история), берем последнее значение
+                value = raw_metrics[mlflow_name]
+                if isinstance(value, list) and len(value) > 0:
+                    converted[advisor_name] = float(value[-1])
+                elif isinstance(value, (int, float)):
+                    converted[advisor_name] = float(value)
+        
+        # Проверяем, что у нас есть все необходимые метрики
+        required_metrics = ['train_loss', 'val_loss', 'grad_norm']
+        if all(metric in converted for metric in required_metrics):
+            logger.debug(f"Метрики успешно преобразованы для Advisor: {converted}")
+            return converted
+        else:
+            missing = [m for m in required_metrics if m not in converted]
+            logger.warning(f"Не хватает метрик для Advisor: {missing}. Доступные: {list(converted.keys())}")
+            return None
+
     def start_web_interfaces(self):
         """Запуск всех веб-интерфейсов в фоновом режиме."""
         try:
@@ -184,7 +203,9 @@ class SmartTunerMain:
                 if not new_metrics:
                     continue
 
-                controller.add_metrics(new_metrics)
+                converted_metrics = self._convert_metrics_for_advisor(new_metrics)
+                if converted_metrics:
+                    controller.add_metrics(converted_metrics)
                 
                 decision = controller.decide_next_step(hparams)
                 action = decision.get('action', 'continue')
@@ -303,16 +324,17 @@ class SmartTunerMain:
                 # В случае сбоя возвращаем большое значение, чтобы Optuna избегала этих параметров
                 return float('inf')
 
-            # Получаем целевую метрику из результатов
-            objective_metric = self.config.get("optimization", {}).get("objective_metric", "val_loss")
+            # Используем OptimizationEngine для расчета целевой функции
+            objective_value = self.optimizer.calculate_objective_value(metrics)
             
             # Отправляем уведомление о завершении trial
             self.alert_manager.send_success_notification(
                 f"✅ Trial #{trial.number} завершен\n\n"
-                f"🏆 Результат ({objective_metric}): {metrics.get(objective_metric, 'N/A'):.4f}"
+                f"🏆 Результат: {objective_value:.4f}\n"
+                f"📊 Метрики: {metrics}"
             )
 
-            return metrics.get(objective_metric, float('inf'))
+            return objective_value
             
         except Exception as e:
             logger.error(f"Критическая ошибка в objective function для trial {trial.number}: {e}")
