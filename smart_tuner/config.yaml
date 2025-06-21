@@ -163,18 +163,18 @@ mlflow:
   tracking_uri: "mlruns"
   experiment_name: "tacotron2_optimization"
 
-# Порты для компонентов Smart Tuner V2 (последовательно 5000-5009)
+# Порты для компонентов Smart Tuner V2 (последовательно 5000-5010)
 ports:
   mlflow: 5000              # Эксперименты и метрики  
   tensorboard: 5001         # Графики обучения
-  streamlit: 5002           # TTS Demo
-  log_watcher: 5003         # Мониторинг логов в реальном времени
-  metrics_store: 5004       # API для метрик и статистики
-  optimization_engine: 5005 # Optuna Dashboard
-  param_scheduler: 5006     # Планировщик гиперпараметров
-  early_stop_controller: 5007  # Контроллер раннего останова
-  alert_manager: 5008       # Управление уведомлениями
-  model_registry: 5009      # Реестр моделей
+  streamlit: 5003           # TTS Demo (перенесен на 5003)
+  log_watcher: 5004         # Мониторинг логов в реальном времени  
+  metrics_store: 5005       # API для метрик и статистики
+  optimization_engine: 5006 # Optuna Dashboard
+  param_scheduler: 5007     # Планировщик гиперпараметров
+  early_stop_controller: 5008  # Контроллер раннего останова
+  alert_manager: 5009       # Управление уведомлениями
+  model_registry: 5010      # Реестр моделей
 
 # Настройки ресурсов
 resources:

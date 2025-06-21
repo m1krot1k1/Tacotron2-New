@@ -341,14 +341,14 @@ run_tts_demo() {
         IP_ADDR="localhost"
     fi
     
-    echo -e "${GREEN}🎤 Запуск TTS Demo на порту 5005...${NC}"
-    echo -e "${BLUE}Откройте в браузере: ${GREEN}http://${IP_ADDR}:5005${NC}"
+    echo -e "${GREEN}🎤 Запуск TTS Demo на порту 5003...${NC}"
+    echo -e "${BLUE}Откройте в браузере: ${GREEN}http://${IP_ADDR}:5003${NC}"
     echo -e "${YELLOW}Для остановки нажмите Ctrl+C${NC}"
     echo
     
     # Запуск Streamlit
     "$VENV_DIR/bin/streamlit" run demo.py \
-        --server.port 5005 \
+        --server.port 5003 \
         --server.address 0.0.0.0 \
         --browser.gatherUsageStats false
 }
@@ -449,11 +449,11 @@ start_tensorboard() {
         fi
         
         # Запускаем TensorBoard из виртуального окружения на всех интерфейсах
-        nohup "$VENV_DIR/bin/python" -m tensorboard.main --logdir=output --host=0.0.0.0 --port=6006 --reload_interval=5 > tensorboard.log 2>&1 &
+        nohup "$VENV_DIR/bin/python" -m tensorboard.main --logdir=output --host=0.0.0.0 --port=5001 --reload_interval=5 > tensorboard.log 2>&1 &
         
         sleep 3
         if pgrep -f "tensorboard" > /dev/null; then
-            echo "✅ TensorBoard запущен на http://${IP_ADDR}:6006"
+            echo "✅ TensorBoard запущен на http://${IP_ADDR}:5001"
         else
             echo "❌ Ошибка запуска TensorBoard. Проверьте tensorboard.log"
         fi
