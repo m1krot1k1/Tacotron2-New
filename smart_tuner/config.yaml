@@ -116,7 +116,7 @@ adaptive_advisor:
     stagnation:
       name: "change_lr"                  # Название действия
       params:
-        multiplier: 0.8                  # Уменьшить LR на 20%
+        multiplier: 1.2                  # Увеличиваем LR на 20%, чтобы выбить из плато
     
     overfitting:
       name: "increase_regularization"    # Пример другого действия
@@ -124,8 +124,9 @@ adaptive_advisor:
         dropout_increase: 0.05
     
     instability:
-      name: "stop_run"                   # В случае нестабильности - остановить
-      params: {}
+      name: "change_lr"                  # Вместо остановки, пробуем "вылечить"
+      params:
+        multiplier: 0.5                  # Резко уменьшаем LR в 2 раза
 
 # Настройки Telegram уведомлений
 telegram:

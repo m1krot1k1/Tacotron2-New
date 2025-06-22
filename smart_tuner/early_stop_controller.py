@@ -281,22 +281,40 @@ class EarlyStopController:
             return -1
 
     def _create_response_from_action(self, action: Dict, hparams: Dict) -> Dict:
-        """Формирует ответ для trainer_wrapper на основе рекомендованного действия."""
+        """Создает стандартизированный ответ на основе выбранного действия."""
         action_name = action.get('name')
         params = action.get('params', {})
-        self.logger.info(f"Применяю рекомендованное действие: '{action_name}' с параметрами {params}")
 
-        if action_name == 'change_lr':
-            new_hparams = hparams.copy()
-            new_hparams['learning_rate'] *= params.get('multiplier', 1.0)
-            return {'action': 'restart', 'reason': f'AdaptiveAdvisor: {action_name}', 'new_params': new_hparams}
-        elif action_name == 'stop_run':
-            return {'action': 'stop', 'reason': 'AdaptiveAdvisor: остановка на основе исторического опыта'}
+        if action_name == 'stop_run':
+            problem_type = self.last_action_info.get("context", {}).get("problem_type", "неизвестная проблема")
+            self.logger.critical(f"Действие: ОСТАНОВКА ОБУЧЕНИЯ. Причина: диагностирована проблема '{problem_type}'.")
+            return {'action': 'stop', 'reason': f'Диагностирована критическая проблема: {problem_type}'}
         
-        return {'action': 'continue'}
+        if action_name == 'change_lr':
+            multiplier = params.get('multiplier', 0.5)
+            # Убедимся, что learning_rate есть в hparams
+            if 'learning_rate' not in hparams:
+                 self.logger.error("Невозможно изменить learning_rate, так как он отсутствует в переданных гиперпараметрах.")
+                 return {'action': 'continue', 'reason': 'Ошибка при изменении LR: ключ отсутствует в hparams.'}
+
+            current_lr = hparams['learning_rate']
+            new_lr = current_lr * multiplier
+            
+            problem_type = self.last_action_info.get("context", {}).get("problem_type", "неизвестная")
+            self.logger.info(f"Действие: изменяю learning_rate с {current_lr:.6f} на {new_lr:.6f} из-за проблемы '{problem_type}'")
+            return {
+                'action': 'update_hparams',
+                'params': {'learning_rate': new_lr},
+                'reason': f'Снижение LR для борьбы с проблемой: {problem_type}'
+            }
+            
+        # Сюда можно будет добавить другие действия, например, 'increase_regularization'
+        
+        self.logger.warning(f"Получено неизвестное действие '{action_name}'. Продолжаю без изменений.")
+        return {'action': 'continue', 'reason': f'Неизвестное действие: {action_name}'}
 
     def reset(self):
-        """Полностью сбрасывает состояние контроллера для нового запуска."""
+        """Сбрасывает состояние контроллера для нового run."""
         self.metrics_history = []
         self.last_action_step = 0
         self.last_action_info = {}
