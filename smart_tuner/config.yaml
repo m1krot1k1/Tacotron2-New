@@ -1,184 +1,158 @@
-# Конфигурация Smart Tuner V2
-experiment_name: "tacotron2_production"
-hparams_path: "hparams.py"
-dataset_path: "data/dataset"
-checkpoint_path: "data/checkpoint"
-output_dir: "output"
-
-# Настройки обучения
-training:
-  script_path: "train.py"
-  python_executable: "python"
-  base_command: "python train.py"
-  continue_from_checkpoint: true
-  full_training: true
-  
-# Пространство поиска гиперпараметров
-search_space:
-  learning_rate:
-    type: "float"
-    min: 0.0001
-    max: 0.01
-    log: true
-    default: 0.001
-    
-  batch_size:
-    type: "categorical"
-    choices: [16, 32, 64]
-    default: 32
-    
-  epochs:
-    type: "int"
-    min: 50
-    max: 200
-    default: 100
-    
-  warmup_steps:
-    type: "int"
-    min: 500
-    max: 2000
-    default: 1000
-
-# Дублируем для совместимости с OptimizationEngine
+adaptive_advisor:
+  db_path: smart_tuner/advisor_kb.db
+  default_actions:
+    instability:
+      name: change_lr
+      params:
+        multiplier: 0.5
+    overfitting:
+      name: increase_regularization
+      params:
+        dropout_increase: 0.05
+    stagnation:
+      name: change_lr
+      params:
+        multiplier: 1.2
+  diagnostics:
+    instability:
+      grad_norm_threshold: 200.0
+    overfitting:
+      threshold: 5.0
+      window_size: 30
+    stagnation:
+      min_delta: 0.001
+      window_size: 100
+  enabled: false
+  evaluation_window: 50
+  min_history_for_decision: 100
+  reward_function:
+    action_inaction_threshold: 0.0001
+    inaction_penalty: 0.01
+    weights:
+      overfitting_gap: 0.5
+      val_loss: 1.0
+checkpoint_path: data/checkpoint
+dataset_path: data/dataset
+early_stopping:
+  enabled: true
+  min_delta: 0.001
+  mode: min
+  monitor: validation.loss
+  patience: 100
+experiment_name: tacotron2_production
+final_training:
+  epochs: 200
+hparams_path: hparams.py
 hyperparameter_search_space:
-  learning_rate:
-    type: "float"
-    min: 0.0001
-    max: 0.01
-    log: true
-    default: 0.001
-    
   batch_size:
-    type: "categorical"
-    choices: [16, 32, 64]
+    choices:
+    - 16
+    - 32
+    - 64
     default: 32
-    
+    type: categorical
   epochs:
-    type: "int"
-    min: 50
-    max: 200
     default: 100
-    
+    max: 200
+    min: 50
+    type: int
+  learning_rate:
+    default: 0.001
+    log: true
+    max: 0.01
+    min: 0.0001
+    type: float
   warmup_steps:
-    type: "int"
-    min: 500
-    max: 2000
     default: 1000
-
-# Настройки оптимизации
+    max: 2000
+    min: 500
+    type: int
+mlflow:
+  experiment_name: tacotron2_optimization
+  tracking_uri: mlruns
+model_registry:
+  best_model_name: best_model.pt
+  max_models: 5
+  minimize_metric: true
+  path: smart_tuner/models
+  primary_metric: val_loss
 optimization:
-  direction: "minimize"
-  objective_metric: "val_loss"
-  n_trials: 20
-  overfitting_penalty: 0.1
   continue_training: true
+  direction: minimize
   full_epochs_per_trial: 50
-
-# Настройки планирования параметров
+  n_trials: 20
+  objective_metric: val_loss
+  overfitting_penalty: 0.1
+output_dir: output
 parameter_scheduling:
   learning_rate:
     enabled: true
-    strategy: "cosine"
-    start_value: 0.001
     end_value: 0.0001
+    start_value: 0.001
+    strategy: cosine
     total_steps: 10000
-    
 parameter_scheduling_config:
   update_frequency: 10
-
-# Новая конфигурация для Адаптивного Советника
-adaptive_advisor:
-  db_path: "smart_tuner/advisor_kb.db"   # Путь к базе знаний
-  min_history_for_decision: 20           # Сколько шагов нужно накопить перед первым решением
-  evaluation_window: 15                  # Через сколько шагов оценивать результат действия
-  
-  # Новая секция для настройки порогов диагностики
-  diagnostics:
-    instability:
-      grad_norm_threshold: 50.0
-    overfitting:
-      window_size: 10
-      threshold: 0.1
-    stagnation:
-      window_size: 20
-      min_delta: 0.005
-
-  # Новая секция для настройки функции вознаграждения
-  reward_function:
-    action_inaction_threshold: 0.0001 # Порог для определения "бесполезного" действия
-    inaction_penalty: 0.01            # Штраф за бесполезное действие
-    weights:                          # Веса для разных компонентов "Индекса Здоровья"
-      val_loss: 1.0
-      overfitting_gap: 0.5
-
-  # Действия по умолчанию (для "холодного старта", когда в базе знаний нет опыта)
-  default_actions:
-    stagnation:
-      name: "change_lr"                  # Название действия
-      params:
-        multiplier: 1.2                  # Увеличиваем LR на 20%, чтобы выбить из плато
-    
-    overfitting:
-      name: "increase_regularization"    # Пример другого действия
-      params:
-        dropout_increase: 0.05
-    
-    instability:
-      name: "change_lr"                  # Вместо остановки, пробуем "вылечить"
-      params:
-        multiplier: 0.5                  # Резко уменьшаем LR в 2 раза
-
-# Настройки Telegram уведомлений
-telegram:
-  enabled: true                     # Включить/выключить уведомления
-  bot_token: "2010534305:AAHqgXYT5RPcLoJe-wNdFaFbIJvJsN2xUHA"                     # Токен бота (получить у @BotFather)
-  chat_id: "536955174"                       # Ваш Chat ID (получить у @userinfobot)
-  
-  # Настройки сообщений
-  parse_mode: "Markdown"            # Режим форматирования (Markdown/HTML)
-  disable_web_page_preview: true    # Отключить превью ссылок
-  
-  # Типы уведомлений (можно выборочно отключать)
-  notifications:
-    training_start: true            # Уведомление о начале обучения
-    training_complete: true         # Уведомление о завершении обучения
-    early_stop: true               # Уведомление об остановке
-    error_alerts: true             # Уведомления об ошибках
-    optimization_updates: true      # Обновления оптимизации
-    metrics_summary: false         # Периодические сводки метрик (может быть много)
-
-# Настройки реестра моделей
-model_registry:
-  path: "smart_tuner/models"
-  max_models: 5
-  best_model_name: "best_model.pt"
-  primary_metric: "val_loss"
-  minimize_metric: true
-
-# Настройки финального обучения
-final_training:
-  epochs: 200
-
-# Настройки MLflow
-mlflow:
-  tracking_uri: "mlruns"
-  experiment_name: "tacotron2_optimization"
-
-# Порты для компонентов Smart Tuner V2 (последовательно 5000-5010)
 ports:
-  mlflow: 5000              # Эксперименты и метрики  
-  tensorboard: 5001         # Графики обучения
-  optimization_engine: 5002 # Optuna Dashboard
-  streamlit: 5003           # TTS Demo
-  # Пропускаем 5004 - зарезервирован
-  log_watcher: 5005         # Мониторинг логов в реальном времени  
-  metrics_store: 5006       # API для метрик и статистики
-  param_scheduler: 5007     # Планировщик гиперпараметров
-  early_stop_controller: 5008  # Контроллер раннего останова
-  alert_manager: 5009       # Управление уведомлениями
-  model_registry: 5010      # Реестр моделей
-
-# Настройки ресурсов
+  alert_manager: 5009
+  early_stop_controller: 5008
+  log_watcher: 5005
+  metrics_store: 5006
+  mlflow: 5000
+  model_registry: 5010
+  optimization_engine: 5002
+  param_scheduler: 5007
+  streamlit: 5003
+  tensorboard: 5001
 resources:
   checkpointing:
-    path: "output" 
+    path: output
+search_space:
+  batch_size:
+    choices:
+    - 16
+    - 32
+    - 64
+    default: 32
+    type: categorical
+  epochs:
+    default: 100
+    max: 200
+    min: 50
+    type: int
+  learning_rate:
+    default: 0.001
+    log: true
+    max: 0.01
+    min: 0.0001
+    type: float
+  warmup_steps:
+    default: 1000
+    max: 2000
+    min: 500
+    type: int
+telegram:
+  bot_token: 2010534305:AAHqgXYT5RPcLoJe-wNdFaFbIJvJsN2xUHA
+  chat_id: '536955174'
+  disable_web_page_preview: true
+  enabled: true
+  notifications:
+    early_stop: true
+    error_alerts: true
+    metrics_summary: false
+    optimization_updates: true
+    training_complete: true
+    training_start: true
+  parse_mode: Markdown
+training:
+  base_command: python train.py
+  continue_from_checkpoint: true
+  full_training: true
+  python_executable: python
+  script_path: train.py
+training_safety:
+  enabled: true
+  max_training_hours: 15.0
+  max_validation_loss: 100.0
+  min_training_hours: 4.0
+  min_training_steps: 5000

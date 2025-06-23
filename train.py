@@ -25,8 +25,19 @@ try:
     import mlflow
     import mlflow.pytorch  # позволяет логировать модели PyTorch
     MLFLOW_AVAILABLE = True
+    
+    # Импортируем улучшенное логирование
+    try:
+        from mlflow_metrics_enhancer import log_enhanced_training_metrics, log_system_metrics
+        ENHANCED_LOGGING = True
+        print("✅ Улучшенное MLflow логирование активировано")
+    except ImportError:
+        ENHANCED_LOGGING = False
+        print("⚠️ Стандартное MLflow логирование")
+        
 except ImportError:
     MLFLOW_AVAILABLE = False
+    ENHANCED_LOGGING = False
 
 
 def reduce_tensor(tensor, n_gpus):
@@ -171,7 +182,27 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
         if logger:
             logger.log_validation(val_loss, model, y, y_pred, iteration)
         if MLFLOW_AVAILABLE:
-            mlflow.log_metric("validation.loss", val_loss, step=iteration)
+            if ENHANCED_LOGGING:
+                # Расширенное логирование validation метрик
+                validation_metrics = {
+                    "validation.loss": val_loss,
+                    "validation.step": iteration
+                }
+                log_enhanced_training_metrics(validation_metrics, iteration)
+                
+                # Дополнительные метрики из модели
+                if hasattr(model, 'decoder') and hasattr(model.decoder, 'attention_weights'):
+                    try:
+                        # Логируем метрики attention
+                        attention_weights = model.decoder.attention_weights
+                        if attention_weights is not None:
+                            validation_metrics["validation.attention_entropy"] = float(
+                                torch.mean(torch.sum(-attention_weights * torch.log(attention_weights + 1e-8), dim=-1))
+                            )
+                    except:
+                        pass
+            else:
+                mlflow.log_metric("validation.loss", val_loss, step=iteration)
     
     return val_loss  # Возвращаем validation loss для scheduler'а
 
@@ -463,9 +494,9 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
                     reduced_loss, taco_loss, mi_loss, guide_loss, gate_loss, emb_loss, grad_norm,
                     learning_rate, duration, iteration, guide_loss_weight)
 
-                # MLflow metrics
+                # MLflow metrics (улучшенное логирование)
                 if MLFLOW_AVAILABLE:
-                    mlflow.log_metrics({
+                    metrics_to_log = {
                         "training.loss": reduced_loss,
                         "training.taco_loss": taco_loss,
                         "training.mi_loss": mi_loss,
@@ -476,7 +507,14 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
                         "learning_rate": learning_rate,
                         "duration": duration,
                         "guide_loss_weight": guide_loss_weight
-                    }, step=iteration)
+                    }
+                    
+                    if ENHANCED_LOGGING:
+                        # Используем улучшенное логирование с системными метриками
+                        log_enhanced_training_metrics(metrics_to_log, iteration)
+                    else:
+                        # Стандартное логирование
+                        mlflow.log_metrics(metrics_to_log, step=iteration)
 
             if not is_overflow and (iteration % hparams.iters_per_checkpoint == 0):
                 val_loss = validate(model, criterion, valset, iteration,

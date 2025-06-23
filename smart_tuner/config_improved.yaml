@@ -1,0 +1,244 @@
+# Улучшенная конфигурация Smart Tuner V2 для TTS обучения
+# Автор: AI Assistant
+# Дата: 2025-06-23
+# Назначение: Устранение проблем с преждевременной остановкой обучения
+
+experiment_name: "tacotron2_production"
+hparams_path: "hparams.py"
+dataset_path: "data/dataset"
+checkpoint_path: "data/checkpoint"
+output_dir: "output"
+
+# Настройки обучения
+training:
+  script_path: "train.py"
+  python_executable: "python"
+  base_command: "python train.py"
+  continue_from_checkpoint: true
+  full_training: true
+  # НОВОЕ: Увеличиваем максимальное время обучения
+  max_training_hours: 12           # Увеличено с 3 до 12 часов
+  min_training_hours: 4            # Минимум 4 часа для TTS
+  
+# Пространство поиска гиперпараметров
+search_space:
+  learning_rate:
+    type: "float"
+    min: 0.0001
+    max: 0.003                     # Уменьшено с 0.01 до 0.003
+    log: true
+    default: 0.001
+    
+  batch_size:
+    type: "categorical"
+    choices: [16, 32, 64]
+    default: 32
+    
+  epochs:
+    type: "int"
+    min: 100                       # Увеличено с 50 до 100
+    max: 500                       # Увеличено с 200 до 500
+    default: 200
+    
+  warmup_steps:
+    type: "int"
+    min: 1000                      # Увеличено с 500 до 1000
+    max: 5000                      # Увеличено с 2000 до 5000
+    default: 2000
+
+# Дублируем для совместимости с OptimizationEngine
+hyperparameter_search_space:
+  learning_rate:
+    type: "float"
+    min: 0.0001
+    max: 0.003
+    log: true
+    default: 0.001
+    
+  batch_size:
+    type: "categorical"
+    choices: [16, 32, 64]
+    default: 32
+    
+  epochs:
+    type: "int"
+    min: 100
+    max: 500
+    default: 200
+    
+  warmup_steps:
+    type: "int"
+    min: 1000
+    max: 5000
+    default: 2000
+
+# Настройки оптимизации
+optimization:
+  direction: "minimize"
+  objective_metric: "val_loss"
+  n_trials: 10                     # Уменьшено с 20 до 10
+  overfitting_penalty: 0.05        # Уменьшено с 0.1 до 0.05
+  continue_training: true
+  full_epochs_per_trial: 100       # Увеличено с 50 до 100
+
+# Настройки планирования параметров
+parameter_scheduling:
+  learning_rate:
+    enabled: true
+    strategy: "cosine"
+    start_value: 0.001
+    end_value: 0.0001
+    total_steps: 20000             # Увеличено с 10000 до 20000
+    
+parameter_scheduling_config:
+  update_frequency: 20             # Увеличено с 10 до 20
+
+# УЛУЧШЕННАЯ конфигурация для Адаптивного Советника
+adaptive_advisor:
+  enabled: false                   # ВРЕМЕННО ОТКЛЮЧАЕМ aggressive advisor
+  db_path: "smart_tuner/advisor_kb.db"
+  min_history_for_decision: 50     # Увеличено с 20 до 50
+  evaluation_window: 30            # Увеличено с 15 до 30
+  
+  # Более мягкие пороги диагностики для TTS
+  diagnostics:
+    instability:
+      grad_norm_threshold: 100.0   # Увеличено с 50.0 до 100.0
+    overfitting:
+      window_size: 20              # Увеличено с 10 до 20
+      threshold: 2.0               # Увеличено с 0.1 до 2.0 (TTS естественно переобучается)
+    stagnation:
+      window_size: 50              # Увеличено с 20 до 50
+      min_delta: 0.001             # Уменьшено с 0.005 до 0.001
+
+  # Настройки функции вознаграждения
+  reward_function:
+    action_inaction_threshold: 0.001
+    inaction_penalty: 0.001        # Уменьшено с 0.01 до 0.001
+    weights:
+      val_loss: 0.7                # Уменьшено с 1.0 до 0.7
+      overfitting_gap: 0.3         # Уменьшено с 0.5 до 0.3
+
+  # Более консервативные действия по умолчанию
+  default_actions:
+    stagnation:
+      name: "continue"             # Вместо изменения LR - продолжаем
+      params:
+        reason: "TTS требует длительного обучения"
+    
+    overfitting:
+      name: "continue"             # Переобучение нормально для TTS
+      params:
+        reason: "Небольшой overfitting допустим для TTS"
+    
+    instability:
+      name: "change_lr"
+      params:
+        multiplier: 0.8            # Более мягкое изменение: 0.8 вместо 0.5
+
+# НОВАЯ секция: Настройки безопасности обучения
+training_safety:
+  enabled: true
+  max_validation_loss: 50.0        # Останавливаем только при критических значениях
+  min_training_steps: 5000         # Минимум 5000 шагов перед остановкой
+  validation_patience: 100         # Терпение при плохом validation loss
+  gradient_explosion_threshold: 200.0  # Критический порог для градиентов
+
+# Настройки раннего останова (более мягкие)
+early_stopping:
+  enabled: true
+  patience: 50                     # Увеличено с 20 до 50
+  min_delta: 0.001                 # Уменьшено с 0.01 до 0.001
+  monitor: "validation.loss"
+  mode: "min"
+  restore_best_weights: true
+  verbose: true
+
+# Настройки Telegram уведомлений
+telegram:
+  enabled: true
+  bot_token: "2010534305:AAHqgXYT5RPcLoJe-wNdFaFbIJvJsN2xUHA"
+  chat_id: "536955174"
+  
+  parse_mode: "Markdown"
+  disable_web_page_preview: true
+  
+  notifications:
+    training_start: true
+    training_complete: true
+    early_stop: true
+    error_alerts: true
+    optimization_updates: true
+    metrics_summary: true          # Включаем для контроля
+
+# Настройки реестра моделей
+model_registry:
+  path: "smart_tuner/models"
+  max_models: 10                   # Увеличено с 5 до 10
+  best_model_name: "best_model.pt"
+  primary_metric: "val_loss"
+  minimize_metric: true
+  save_frequency: 1000             # Сохраняем каждые 1000 шагов
+
+# Настройки финального обучения
+final_training:
+  epochs: 500                      # Увеличено с 200 до 500
+
+# Настройки MLflow
+mlflow:
+  tracking_uri: "mlruns"
+  experiment_name: "tacotron2_production_improved"  # Новое имя
+
+# НОВАЯ секция: Мониторинг и диагностика
+monitoring:
+  enabled: true
+  log_frequency: 10                # Логируем каждые 10 шагов
+  metrics_to_track:
+    - "training.loss"
+    - "validation.loss"
+    - "learning_rate"
+    - "grad_norm"
+    - "training.gate_loss"
+    - "training.taco_loss"
+  
+  # Пороги для предупреждений (не остановки!)
+  warning_thresholds:
+    validation_loss: 30.0
+    grad_norm: 50.0
+    training_stagnation_steps: 1000
+
+# Порты для компонентов Smart Tuner V2
+ports:
+  mlflow: 5000
+  tensorboard: 5001
+  optimization_engine: 5002
+  streamlit: 5003
+  log_watcher: 5005
+  metrics_store: 5006
+  param_scheduler: 5007
+  early_stop_controller: 5008
+  alert_manager: 5009
+  model_registry: 5010
+
+# Настройки ресурсов
+resources:
+  checkpointing:
+    path: "output"
+    frequency: 500                 # Чекпоинт каждые 500 шагов
+    keep_best_n: 3                 # Храним 3 лучших чекпоинта
+    
+  memory_management:
+    clear_cache_frequency: 1000    # Очищаем кеш каждые 1000 шагов
+    
+  disk_space:
+    min_free_gb: 10               # Минимум 10GB свободно
+
+# НОВАЯ секция: Восстановление обучения
+recovery:
+  enabled: true
+  auto_resume: true
+  resume_from_best_checkpoint: true
+  resume_conditions:
+    - "process_died"
+    - "out_of_memory"
+    - "timeout" 

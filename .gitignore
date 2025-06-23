@@ -42,3 +42,9 @@ Thumbs.db
 generated_audio.wav
 out.png
 *.db
+*.json
+*.backup
+*.png
+*.txt
+*.db
+smart_tuner/optuna_studies.db
