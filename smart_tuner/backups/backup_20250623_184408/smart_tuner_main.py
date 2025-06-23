@@ -225,25 +225,10 @@ class SmartTunerMain:
     def _check_tts_quality_thresholds(self, metrics: Dict[str, float]) -> bool:
         """
         🎯 УЛУЧШЕННАЯ проверка TTS метрик на соответствие качественным требованиям
-        Теперь более реалистичная и адаптивная + защита от преждевременного завершения
+        Теперь более реалистичная и адаптивная
         """
         if not metrics:
             self.logger.warning("Пустые метрики для проверки качества")
-            return False
-        
-        # 🛡️ ДОПОЛНИТЕЛЬНАЯ ЗАЩИТА: минимальное время и шаги обучения
-        if hasattr(self, 'training_start_time'):
-            training_duration = (datetime.now() - self.training_start_time).total_seconds()
-            min_training_time = 600  # 10 минут минимум
-            if training_duration < min_training_time:
-                self.logger.info(f"⏰ Обучение слишком короткое ({training_duration/60:.1f} мин < {min_training_time/60:.1f} мин). Продолжаем...")
-                return False
-        
-        # Проверяем минимальное количество validation шагов
-        validation_step = metrics.get('validation.step', 0)
-        min_validation_steps = 3  # Минимум 3 validation шага
-        if validation_step < min_validation_steps:
-            self.logger.info(f"📊 Недостаточно validation шагов ({validation_step} < {min_validation_steps}). Продолжаем...")
             return False
             
         quality_checks = self.config.get('training_safety', {}).get('tts_quality_checks', {})
@@ -293,22 +278,19 @@ class SmartTunerMain:
         passed_checks = sum(checks)
         total_checks = len(checks)
         
-        # 🎯 БОЛЕЕ СТРОГАЯ ЛОГИКА: требуем прохождения минимум 80% проверок + все критические
-        min_required_checks = max(2, int(total_checks * 0.8))  # Минимум 80% проверок
-        critical_checks_passed = attention_check and gate_check and val_loss_check  # Критические проверки
-        
-        quality_passed = passed_checks >= min_required_checks and critical_checks_passed
+        # 🎯 НОВАЯ ЛОГИКА: требуем прохождения минимум 60% проверок (вместо 100%)
+        min_required_checks = max(1, int(total_checks * 0.6))  # Минимум 60% проверок
+        quality_passed = passed_checks >= min_required_checks
         
         # Подробный лог результатов
         self.logger.info(f"🔍 Проверка качества TTS:")
         for detail in check_details:
             self.logger.info(f"  • {detail}")
-        self.logger.info(f"⏰ Время обучения: {training_duration/60:.1f} мин, validation шагов: {validation_step}")
         
         if quality_passed:
             self.logger.info(f"✅ Качество достаточное: {passed_checks}/{total_checks} проверок пройдено ({passed_checks/total_checks*100:.1f}%)")
         else:
-            self.logger.warning(f"⚠️ Проблемы качества: {passed_checks}/{total_checks} проверок пройдено, требуется минимум {min_required_checks} + все критические проверки")
+            self.logger.warning(f"⚠️ Проблемы качества: {passed_checks}/{total_checks} проверок пройдено, требуется минимум {min_required_checks}")
         
         return quality_passed
     
@@ -506,26 +488,11 @@ class SmartTunerMain:
     def _should_restart_training(self, results: Dict[str, Any]) -> bool:
         """
         🚀 УЛУЧШЕННАЯ функция определения необходимости перезапуска обучения
-        Теперь более умная и адаптивная логика принятия решений + защита от раннего завершения
+        Теперь более умная и адаптивная логика принятия решений
         """
         if not results:
             self.logger.info("📊 Пустые результаты - рекомендуется перезапуск")
             return True
-            
-        # 🛡️ ДОПОЛНИТЕЛЬНАЯ ЗАЩИТА: принудительное продолжение если обучение слишком короткое
-        if hasattr(self, 'training_start_time'):
-            training_duration = (datetime.now() - self.training_start_time).total_seconds()
-            min_training_time = 600  # 10 минут минимум
-            if training_duration < min_training_time:
-                self.logger.info(f"⏰ Обучение слишком короткое ({training_duration/60:.1f} мин < {min_training_time/60:.1f} мин). ПРИНУДИТЕЛЬНОЕ продолжение...")
-                return True  # Принудительно перезапускаем (продолжаем)
-        
-        # Проверяем минимальное количество validation шагов
-        validation_step = results.get('validation.step', 0)
-        min_validation_steps = 3  # Минимум 3 validation шага
-        if validation_step < min_validation_steps:
-            self.logger.info(f"📊 Недостаточно validation шагов ({validation_step} < {min_validation_steps}). ПРИНУДИТЕЛЬНОЕ продолжение...")
-            return True  # Принудительно перезапускаем (продолжаем)
             
         # 📊 Получаем основные метрики
         val_loss = results.get('val_loss', float('inf'))
@@ -600,9 +567,9 @@ class SmartTunerMain:
             self.logger.info(f"  • attention_score: {attention_score:.3f}")
             self.logger.info(f"  • gate_accuracy: {gate_accuracy:.3f}")
             self.logger.info(f"  • mel_quality: {mel_quality:.3f}")
-            progress_pct = (initial_loss - training_loss) / initial_loss * 100 if initial_loss > 0 else float('nan')
-            self.logger.info(f"  • прогресс: {progress_pct:.1f}%")
-            
+            if initial_loss > 0:
+                self.logger.info(f"  • прогресс: {progress*100:.1f}%")
+        
         return should_restart
     
     def _get_default_hyperparams(self) -> Dict[str, Any]:
@@ -724,99 +691,6 @@ class SmartTunerMain:
             
         except Exception as e:
             self.logger.error(f"Ошибка очистки: {e}")
-    
-    def run_automatic_mode(self, n_trials: int = 15) -> Dict[str, Any]:
-        """
-        🤖 ПОЛНОСТЬЮ АВТОМАТИЧЕСКИЙ РЕЖИМ
-        Сначала оптимизация гиперпараметров, затем обучение с лучшими параметрами
-        """
-        self.logger.info("🤖 Запуск полностью автоматического режима TTS обучения")
-        self.logger.info("=" * 80)
-        
-        total_start_time = datetime.now()
-        final_results = {}
-        
-        try:
-            # ЭТАП 1: Оптимизация гиперпараметров
-            self.logger.info("🎯 ЭТАП 1/2: Оптимизация гиперпараметров")
-            self.logger.info("=" * 50)
-            
-            optimization_results = self.run_optimization()
-            
-            if optimization_results and optimization_results.get('best_parameters'):
-                best_params = optimization_results['best_parameters']
-                best_score = optimization_results.get('best_value', float('inf'))
-                
-                self.logger.info(f"✅ Оптимизация завершена успешно!")
-                self.logger.info(f"🏆 Лучшие параметры: {best_params}")
-                self.logger.info(f"📊 Лучшая оценка: {best_score:.4f}")
-                
-                # Сохраняем результаты оптимизации
-                self._save_tts_optimization_results(optimization_results)
-                final_results['optimization'] = optimization_results
-                
-                # Пауза между этапами
-                self.logger.info("⏳ Пауза между этапами (30 сек)...")
-                time.sleep(30)
-                
-                # ЭТАП 2: Обучение с лучшими параметрами
-                self.logger.info("🚀 ЭТАП 2/2: Обучение с лучшими параметрами")
-                self.logger.info("=" * 50)
-                
-                training_results = self.run_single_training(best_params)
-                
-                if training_results:
-                    final_results['training'] = training_results
-                    self.logger.info("✅ Обучение с оптимальными параметрами завершено!")
-                    
-                    # Анализ финального качества
-                    final_score = self.optimization_engine.calculate_composite_tts_objective(training_results)
-                    improvement = ((best_score - final_score) / best_score * 100) if best_score > 0 else 0
-                    
-                    self.logger.info(f"📈 Улучшение качества: {improvement:.1f}%")
-                    self.logger.info(f"🎯 Финальная оценка: {final_score:.4f}")
-                    
-                    final_results['improvement_percent'] = improvement
-                    final_results['final_score'] = final_score
-                else:
-                    self.logger.error("❌ Обучение с лучшими параметрами не удалось")
-                    final_results['training_error'] = True
-            else:
-                self.logger.error("❌ Оптимизация не дала результатов")
-                final_results['optimization_error'] = True
-                
-                # Запускаем обучение с параметрами по умолчанию
-                self.logger.info("🔄 Запуск обучения с параметрами по умолчанию...")
-                default_params = self._get_default_hyperparams()
-                training_results = self.run_single_training(default_params)
-                final_results['training'] = training_results
-            
-            # Общая статистика
-            total_duration = datetime.now() - total_start_time
-            final_results['total_duration'] = str(total_duration)
-            
-            self.logger.info("=" * 80)
-            self.logger.info("🎉 АВТОМАТИЧЕСКИЙ РЕЖИМ ЗАВЕРШЕН!")
-            self.logger.info("=" * 80)
-            self.logger.info(f"⏱️ Общее время: {total_duration}")
-            
-            if 'improvement_percent' in final_results:
-                self.logger.info(f"📈 Улучшение: {final_results['improvement_percent']:.1f}%")
-            
-            # Создаем экспорт итогового результата
-            try:
-                export_path = export_current_training()
-                self.logger.info(f"📤 Итоговый экспорт создан: {export_path}")
-                final_results['export_path'] = export_path
-            except Exception as e:
-                self.logger.warning(f"Ошибка создания экспорта: {e}")
-                
-            return final_results
-            
-        except Exception as e:
-            self.logger.error(f"❌ Ошибка в автоматическом режиме: {e}")
-            final_results['error'] = str(e)
-            return final_results
 
 def main():
     """Главная функция запуска Smart Tuner V2 TTS"""
@@ -825,9 +699,9 @@ def main():
                        default='smart_tuner/config.yaml',
                        help='Путь к файлу конфигурации')
     parser.add_argument('--mode', '-m',
-                       choices=['optimize', 'train', 'monitor', 'auto'],
+                       choices=['optimize', 'train', 'monitor'],
                        default='train',
-                       help='Режим работы: optimize - оптимизация гиперпараметров, train - обучение, monitor - мониторинг, auto - автоматический режим')
+                       help='Режим работы: optimize - оптимизация гиперпараметров, train - обучение, monitor - мониторинг')
     parser.add_argument('--trials', '-t',
                        type=int,
                        help='Количество trials для оптимизации (перекрывает настройку в конфиге)')
@@ -876,12 +750,6 @@ def main():
         elif args.mode == 'monitor':
             print("👁️ Режим: TTS Мониторинг")
             smart_tuner.run_monitoring_mode()
-            
-        elif args.mode == 'auto':
-            print("🤖 Режим: TTS Автоматический режим")
-            n_trials = args.trials or 15  # Используем переданное значение или по умолчанию 15
-            results = smart_tuner.run_automatic_mode(n_trials)
-            print(f"🎉 Автоматический режим завершен! Результаты: {results}")
             
         return 0
         

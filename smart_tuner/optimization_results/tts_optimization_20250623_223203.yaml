@@ -1,0 +1,48 @@
+best_parameters:
+  batch_size: 16
+  dropout_rate: 0.34973279224012654
+  epochs: 89
+  gate_threshold: 0.6879639408647977
+  guide_loss_weight: 2.2701814444901136
+  guided_attention_enabled: true
+  learning_rate: 0.0003304463634024569
+  p_attention_dropout: 0.004116898859160489
+  postnet_dropout_rate: 0.04246782213565523
+  warmup_steps: 645
+best_value: .inf
+metadata:
+  config_path: smart_tuner/config.yaml
+  optimization_type: composite_tts_objective
+  timestamp: '20250623_223203'
+  tts_version: Smart Tuner V2 TTS
+n_trials: 15
+study_name: tacotron2_tts_20250623_215425
+tts_analysis:
+  best_value: .inf
+  completed_trials: 15
+  improvement_rate: 0.0
+  mean_value: !!python/object/apply:numpy._core.multiarray.scalar
+  - &id001 !!python/object/apply:numpy.dtype
+    args:
+    - f8
+    - false
+    - true
+    state: !!python/tuple
+    - 3
+    - <
+    - null
+    - null
+    - null
+    - -1
+    - -1
+    - 0
+  - !!binary |
+    AAAAAAAA8H8=
+  std_value: !!python/object/apply:numpy._core.multiarray.scalar
+  - *id001
+  - !!binary |
+    AAAAAAAA+P8=
+  total_trials: 15
+  tts_recommendations:
+  - Рассмотрите увеличение learning_rate для ускорения сходимости
+  worst_value: .inf

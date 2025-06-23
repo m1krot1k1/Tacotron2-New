@@ -1,0 +1,93 @@
+best_parameters:
+  batch_size: 48
+  dropout_rate: 0.464526911140863
+  epochs: 217
+  gate_threshold: 0.3185801650879991
+  guide_loss_weight: 2.814054972861252
+  guided_attention_enabled: true
+  learning_rate: 0.0005404103854647331
+  p_attention_dropout: 0.17772437065861274
+  postnet_dropout_rate: 0.051157237106187456
+  warmup_steps: 2824
+best_value: 1.2159697839399382
+metadata:
+  config_path: smart_tuner/config.yaml
+  optimization_type: composite_tts_objective
+  timestamp: '20250623_163908'
+  tts_version: Smart Tuner V2 TTS
+n_trials: 20
+study_name: tacotron2_tts_20250623_154856
+tts_analysis:
+  best_value: 1.2159697839399382
+  completed_trials: 20
+  improvement_rate: !!python/object/apply:numpy._core.multiarray.scalar
+  - &id001 !!python/object/apply:numpy.dtype
+    args:
+    - f8
+    - false
+    - true
+    state: !!python/tuple
+    - 3
+    - <
+    - null
+    - null
+    - null
+    - -1
+    - -1
+    - 0
+  - !!binary |
+    EGor29UGZD8=
+  mean_value: !!python/object/apply:numpy._core.multiarray.scalar
+  - *id001
+  - !!binary |
+    7hEHOmuQ9D8=
+  parameter_importance:
+    batch_size: !!python/object/apply:numpy._core.multiarray.scalar
+    - *id001
+    - !!binary |
+      ehel8gXApD8=
+    dropout_rate: !!python/object/apply:numpy._core.multiarray.scalar
+    - *id001
+    - !!binary |
+      Dlzafx6Nkz8=
+    epochs: !!python/object/apply:numpy._core.multiarray.scalar
+    - *id001
+    - !!binary |
+      qm1N9q6ekj8=
+    gate_threshold: !!python/object/apply:numpy._core.multiarray.scalar
+    - *id001
+    - !!binary |
+      b+KQuId5rD8=
+    guide_loss_weight: !!python/object/apply:numpy._core.multiarray.scalar
+    - *id001
+    - !!binary |
+      vEnA6bxOjD8=
+    guided_attention_enabled: !!python/object/apply:numpy._core.multiarray.scalar
+    - *id001
+    - !!binary |
+      o0Eqx/yWlz8=
+    learning_rate: !!python/object/apply:numpy._core.multiarray.scalar
+    - *id001
+    - !!binary |
+      FwPkg0aP6D8=
+    p_attention_dropout: !!python/object/apply:numpy._core.multiarray.scalar
+    - *id001
+    - !!binary |
+      ilObTnWffj8=
+    postnet_dropout_rate: !!python/object/apply:numpy._core.multiarray.scalar
+    - *id001
+    - !!binary |
+      V3V698Tupz8=
+    warmup_steps: !!python/object/apply:numpy._core.multiarray.scalar
+    - *id001
+    - !!binary |
+      yHKLcAhpgD8=
+  std_value: !!python/object/apply:numpy._core.multiarray.scalar
+  - *id001
+  - !!binary |
+    4i2d3IwVqz8=
+  total_trials: 20
+  tts_insights:
+  - Learning rate критично важен для данного TTS датасета
+  tts_recommendations: []
+  worst_value: 1.413550699358442
