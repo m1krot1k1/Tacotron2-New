@@ -1,377 +1,667 @@
 #!/usr/bin/env python3
-"""Smart Tuner V2 Main"""
+"""
+Smart Tuner V2 - Main Entry Point
+Автоматизированная система обучения Tacotron2 с TTS-специфичными возможностями
+
+Основные функции:
+- TTS-оптимизированная оптимизация гиперпараметров 
+- Интеллектуальное управление обучением с композитными метриками
+- Фазовое обучение с адаптацией к стадиям TTS
+- Проактивное устранение проблем обучения
+- Автоматическое логирование и экспорт результатов
+"""
 
 import os
 import sys
+import yaml
 import logging
 import argparse
-import yaml
-import threading
 import time
-import subprocess
-import requests
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, Any, Optional
+
+# Добавляем корневую директорию в путь
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+# Импорты компонентов Smart Tuner
 from smart_tuner.trainer_wrapper import TrainerWrapper
 from smart_tuner.optimization_engine import OptimizationEngine
-from smart_tuner.alert_manager import AlertManager
-from smart_tuner.web_interfaces import WebInterfaceManager
 from smart_tuner.early_stop_controller import EarlyStopController
-from smart_tuner.log_watcher import LogWatcher
-from smart_tuner.metrics_store import MetricsStore
-from utils import find_latest_checkpoint, load_hparams, save_hparams
-from typing import Dict
+from smart_tuner.alert_manager import AlertManager
+from smart_tuner.model_registry import ModelRegistry
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - [%(levelname)s] - (%(name)s) - %(message)s',
-    handlers=[
-        logging.FileHandler('smart_tuner_main.log'),
-        logging.StreamHandler()
-    ]
+# Импорты систем логирования
+from training_integration import (
+    setup_training_logging, 
+    finish_training_logging,
+    export_current_training
 )
-logger = logging.getLogger(__name__)
 
 class SmartTunerMain:
-    def __init__(self, config_path="smart_tuner/config.yaml"):
-        self.config_path = config_path
-        with open(config_path, 'r') as f:
-            self.config = yaml.safe_load(f)
-        
-        # Проверяем и запускаем MLflow если нужно
-        self.ensure_mlflow_running()
-        
-        self.trainer = TrainerWrapper(self.config)
-        self.optimizer = OptimizationEngine(config_path)
-        # Создаем study для Optuna Dashboard
-        self.optimizer.create_study()
-        self.alert_manager = AlertManager(self.config)
-        
-        # Инициализация веб-интерфейсов
-        self.web_manager = WebInterfaceManager(config_path)
-        self.web_manager.create_interfaces()
-        
-        logger.info("SmartTunerMain инициализирован")
-        
-        # Запуск веб-интерфейсов в фоновом режиме
-        self.start_web_interfaces()
-        
-    def is_mlflow_running(self, port=5000):
-        """Проверяет, запущен ли MLflow на указанном порту"""
-        try:
-            response = requests.get(f"http://localhost:{port}", timeout=3)
-            return response.status_code == 200
-        except:
-            return False
+    """
+    Главный контроллер TTS-оптимизированной системы умного обучения
+    """
     
-    def ensure_mlflow_running(self):
-        """Проверяет и при необходимости запускает MLflow UI"""
-        mlflow_port = self.config.get('ports', {}).get('mlflow', 5000)
-        if not self.is_mlflow_running(mlflow_port):
-            logger.warning(f"MLflow UI не запущен на порту {mlflow_port}. Запустите его через install.sh")
-        else:
-            logger.info(f"✅ MLflow UI уже запущен на порту {mlflow_port}")
-
-    def _convert_metrics_for_advisor(self, raw_metrics: Dict) -> Dict[str, float] or None:
+    def __init__(self, config_path: str = "smart_tuner/config.yaml"):
         """
-        Преобразует метрики из MetricsStore в формат, ожидаемый EarlyStopController.
+        Инициализация Smart Tuner с TTS конфигурацией
         
         Args:
-            raw_metrics: Сырые метрики из MetricsStore
-            
-        Returns:
-            Словарь с метриками в формате {train_loss, val_loss, grad_norm} или None
+            config_path: Путь к файлу конфигурации
         """
-        if not raw_metrics:
-            return None
-            
-        # Маппинг названий метрик из train.py в формат EarlyStopController
-        metrics_mapping = {
-            'training.loss': 'train_loss',
-            'validation.loss': 'val_loss', 
-            'grad_norm': 'grad_norm'
-        }
+        self.config_path = config_path
+        self.config = self._load_config()
+        self.logger = self._setup_logger()
         
-        converted = {}
-        for mlflow_name, advisor_name in metrics_mapping.items():
-            if mlflow_name in raw_metrics:
-                # Если метрика представлена как список (история), берем последнее значение
-                value = raw_metrics[mlflow_name]
-                if isinstance(value, list) and len(value) > 0:
-                    converted[advisor_name] = float(value[-1])
-                elif isinstance(value, (int, float)):
-                    converted[advisor_name] = float(value)
+        # Инициализация компонентов
+        self.trainer_wrapper = None
+        self.optimization_engine = None
+        self.early_stop_controller = None
+        self.alert_manager = None
+        self.model_registry = None
         
-        # Проверяем, что у нас есть все необходимые метрики
-        required_metrics = ['train_loss', 'val_loss', 'grad_norm']
-        if all(metric in converted for metric in required_metrics):
-            logger.debug(f"Метрики успешно преобразованы для Advisor: {converted}")
-            return converted
-        else:
-            missing = [m for m in required_metrics if m not in converted]
-            logger.warning(f"Не хватает метрик для Advisor: {missing}. Доступные: {list(converted.keys())}")
-            return None
-
-    def start_web_interfaces(self):
-        """Запуск всех веб-интерфейсов в фоновом режиме."""
+        # TTS-специфичные настройки
+        self.tts_config = self.config.get('tts_phase_training', {})
+        self.current_phase = "pre_alignment"
+        self.training_start_time = None
+        
+        # Система логирования
+        self.training_logger = None
+        self.export_system = None
+        
+        self.logger.info("🚀 Smart Tuner V2 TTS инициализирован")
+        
+    def _load_config(self) -> Dict[str, Any]:
+        """Загрузка TTS конфигурации"""
         try:
-            logger.info("🚀 Запуск веб-интерфейсов Smart Tuner V2...")
+            with open(self.config_path, 'r', encoding='utf-8') as f:
+                return yaml.safe_load(f)
+        except FileNotFoundError:
+            print(f"❌ Файл конфигурации {self.config_path} не найден")
+            sys.exit(1)
+        except yaml.YAMLError as e:
+            print(f"❌ Ошибка парсинга конфигурации: {e}")
+            sys.exit(1)
             
-            # Метод start_all уже запускает все в фоновых потоках,
-            # поэтому дополнительный поток не нужен.
-            self.web_manager.start_all()
+    def _setup_logger(self) -> logging.Logger:
+        """Настройка логгера для TTS"""
+        logger = logging.getLogger('SmartTunerMain')
+        logger.setLevel(logging.INFO)
+        
+        if not logger.handlers:
+            # Консольный handler
+            console_handler = logging.StreamHandler(sys.stdout)
+            console_formatter = logging.Formatter(
+                '%(asctime)s - 🧠 Smart Tuner - %(levelname)s - %(message)s',
+                datefmt='%H:%M:%S'
+            )
+            console_handler.setFormatter(console_formatter)
+            logger.addHandler(console_handler)
             
-            # Небольшая задержка для инициализации серверов
-            time.sleep(2)
+            # Файловый handler для TTS логов
+            log_dir = Path("smart_tuner/logs")
+            log_dir.mkdir(parents=True, exist_ok=True)
             
-            # Отображение дашборда
-            self.web_manager.print_dashboard()
+            file_handler = logging.FileHandler(
+                log_dir / f"smart_tuner_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+            )
+            file_formatter = logging.Formatter(
+                '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+            )
+            file_handler.setFormatter(file_formatter)
+            logger.addHandler(file_handler)
+            
+        return logger
+        
+    def initialize_components(self):
+        """Инициализация всех TTS компонентов системы"""
+        try:
+            self.logger.info("🔧 Инициализация TTS компонентов...")
+            
+            # Оптимизатор с TTS поддержкой
+            self.optimization_engine = OptimizationEngine(self.config_path)
+            self.logger.info("✅ TTS OptimizationEngine инициализирован")
+            
+            # Контроллер раннего останова с TTS диагностикой
+            self.early_stop_controller = EarlyStopController(self.config_path)
+            self.logger.info("✅ TTS EarlyStopController инициализирован")
+            
+            # Менеджер алертов
+            self.alert_manager = AlertManager(self.config_path)
+            self.logger.info("✅ AlertManager инициализирован")
+            
+            # Реестр моделей
+            self.model_registry = ModelRegistry(self.config_path)
+            self.logger.info("✅ ModelRegistry инициализирован")
+            
+            # Обертка тренера с TTS интеграцией (принимает только config)
+            self.trainer_wrapper = TrainerWrapper(config=self.config)
+            self.logger.info("✅ TTS TrainerWrapper инициализирован")
+            
+            # Система логирования TTS будет инициализирована при старте обучения
+            self.training_logger = None
+            self.export_system = None
+            self.logger.info("✅ TTS система логирования подготовлена")
+            
+            self.logger.info("🎉 Все TTS компоненты успешно инициализированы!")
             
         except Exception as e:
-            logger.error(f"❌ Ошибка запуска веб-интерфейсов: {e}")
-        
-    def run_proactive_training(self):
-        """
-        Запускает обучение с проактивным контролем.
-        Цикл обучения, который может перезапускаться с новыми параметрами.
-        """
-        logger.info("🚀 Запуск обучения в проактивном режиме...")
-        self.alert_manager.send_info_notification("🚀 Началось проактивное обучение Smart Tuner V2!")
-
-        hparams = load_hparams(self.config['hparams_path'])
-        current_checkpoint = find_latest_checkpoint(self.config['checkpoint_path'])
-        
-        controller = EarlyStopController(self.config_path)
-        metrics_store = MetricsStore() # Используем для сбора метрик
-        
-        proactive_config = self.config.get('proactive_measures', {})
-        
-        log_watcher = LogWatcher(
-            metrics_store=metrics_store,
-            tracking_uri=self.config.get('mlflow', {}).get('tracking_uri', 'mlruns'),
-            stall_threshold_seconds=proactive_config.get('stall_threshold_seconds', 600)
-        )
-        
-        training_active = True
-        live_log_parser_process = None # Хендл для процесса парсера
-        
-        while training_active:
-            # Запускаем обучение с текущими hparams и с последнего чекпоинта
-            process, run_id, output_dir, log_dir = self.trainer.start_training(
-                hparams_override=hparams, 
-                checkpoint_path=current_checkpoint
-            )
-            if not process:
-                logger.error("Не удалось запустить процесс обучения. Прерываем.")
-                self.alert_manager.send_error_notification("❌ Не удалось запустить процесс обучения. Проверьте логи.")
-                break
-            
-            # --- Запускаем Live Log Parser ---
-            if output_dir and log_dir:
-                checkpoint_dir = os.path.join(output_dir, "checkpoint")
-                live_log_path = os.path.join(checkpoint_dir, "training_live_log.txt")
-                
-                parser_command = [
-                    sys.executable, 'smart_tuner/live_log_parser.py',
-                    '--tfevents_dir', log_dir,
-                    '--output_txt_file', live_log_path
-                ]
-                live_log_parser_process = subprocess.Popen(parser_command)
-                logger.info(f"Запущен live_log_parser (PID: {live_log_parser_process.pid}) для {log_dir}")
-
-            # Начинаем следить за логами для нового run_id
-            log_watcher.set_run_id(run_id)
-
-            # Цикл мониторинга текущего процесса обучения
-            while process.poll() is None:
-                # Опрашиваем логгер напрямую
-                log_watcher.check_for_new_metrics()
-                
-                time.sleep(proactive_config.get('check_interval', 60))
-                
-                # Проверка на зависание процесса
-                if log_watcher.is_stalled():
-                    logger.error("🚨 Обнаружено зависание! Перезапускаем процесс обучения.")
-                    self.alert_manager.send_error_notification("🚨 Обнаружено зависание! Перезапускаем обучение с последнего чекпоинта.")
-                    self.trainer.stop_training()
-                    if live_log_parser_process:
-                        live_log_parser_process.terminate()
-                    time.sleep(5) # Даем время на завершение
-                    # Находим последний чекпоинт для перезапуска
-                    current_checkpoint = find_latest_checkpoint(self.config['checkpoint_path'])
-                    break # Выходим из цикла мониторинга для перезапуска
-
-                new_metrics = metrics_store.get_latest_metrics()
-                if not new_metrics:
-                    continue
-
-                converted_metrics = self._convert_metrics_for_advisor(new_metrics)
-                if converted_metrics:
-                    controller.add_metrics(converted_metrics)
-                
-                decision = controller.decide_next_step(hparams)
-                action = decision.get('action', 'continue')
-
-                if action == 'stop':
-                    logger.info(f"Получено решение 'stop': {decision.get('reason')}")
-                    self.alert_manager.send_success_notification(f"✅ Обучение остановлено: {decision.get('reason')}")
-                    self.trainer.stop_training()
-                    if live_log_parser_process:
-                        live_log_parser_process.terminate()
-                    training_active = False
-                    break
-
-                if action == 'restart':
-                    logger.warning(f"Получено решение 'restart': {decision.get('reason')}")
-                    self.alert_manager.send_info_notification(f"🔄 Перезапуск обучения: {decision.get('reason')}")
-                    
-                    self.trainer.stop_training() # Останавливаем текущий процесс
-                    if live_log_parser_process:
-                        live_log_parser_process.terminate()
-                    time.sleep(5) # Даем время процессу завершиться
-
-                    hparams = decision['new_params']
-                    save_hparams(self.config['hparams_path'], hparams) # Сохраняем новые параметры
-                    
-                    # Находим последний сохраненный чекпоинт для продолжения
-                    current_checkpoint = find_latest_checkpoint(self.config['checkpoint_path'])
-                    
-                    logger.info(f"Новые параметры для перезапуска: {hparams}")
-                    logger.info(f"Продолжаем с чекпоинта: {current_checkpoint}")
-                    break # Выходим из внутреннего цикла для перезапуска внешнего
-            
-            # Если цикл мониторинга завершился, а флаг training_active все еще True,
-            # значит, обучение завершилось само по себе (успешно или с ошибкой).
-            if process.poll() is not None and training_active:
-                logger.info(f"Процесс обучения завершился с кодом {process.returncode}.")
-                if live_log_parser_process:
-                    live_log_parser_process.terminate() # Останавливаем парсер
-                if process.returncode == 0:
-                    self.alert_manager.send_success_notification("🎉 Обучение успешно завершено!")
-                else:
-                    self.alert_manager.send_error_notification(f"❌ Обучение завершилось с ошибкой (код: {process.returncode}).")
-                training_active = False
-
-        logger.info("Проактивное обучение завершено.")
-
-    def run_optimization(self, n_trials=10):
-        """Запуск оптимизации гиперпараметров"""
-        logger.info(f"Запуск оптимизации с {n_trials} trials")
-        
-        # Отправляем уведомление о начале оптимизации
-        self.alert_manager.send_info_notification(
-            "🤖 Smart Tuner V2 - Старт оптимизации\n\n"
-            f"🎯 Количество trials: {n_trials}\n"
-            f"⏰ Ожидаемое время: ~{n_trials * 15} минут\n\n"
-            "📊 Следите за прогрессом в веб-интерфейсах:\n"
-            "• MLflow UI для экспериментов\n"
-            "• Optimization Engine для Optuna\n"
-            "• Metrics Store для статистики"
-        )
-        
-        try:
-            best_params = self.optimizer.optimize(self.objective, n_trials)
-            
-            logger.info(f"Оптимизация завершена! Лучшие параметры: {best_params}")
-            
-            # Отправляем уведомление о завершении оптимизации
-            params_text = "\n".join([f"• {k}: {v}" for k, v in best_params.items()])
-            self.alert_manager.send_success_notification(
-                "🎉 Оптимизация завершена!\n\n"
-                f"🏆 Лучшие параметры:\n{params_text}\n\n"
-                "📁 Лучшая модель сохранена в smart_tuner/models/\n"
-                "🌐 Все результаты доступны в веб-интерфейсах"
-            )
-            
-            return best_params
-            
-        except Exception as e:
-            logger.error(f"Ошибка при оптимизации: {e}")
-            self.alert_manager.send_error_notification(
-                f"❌ Ошибка при оптимизации\n\n"
-                f"🔴 Ошибка: {str(e)}\n"
-                "🌐 Проверьте веб-интерфейсы для диагностики"
-            )
+            self.logger.error(f"❌ Ошибка инициализации компонентов: {e}")
             raise
     
-    def objective(self, trial):
+    def run_optimization(self) -> Dict[str, Any]:
         """
-        Целевая функция для оптимизации Optuna
+        Запуск TTS-оптимизированного процесса оптимизации гиперпараметров
         
-        Args:
-            trial: Объект trial от Optuna
-            
         Returns:
-            Значение целевой функции для минимизации
+            Результаты оптимизации
         """
+        self.logger.info("🎯 Запуск TTS оптимизации гиперпараметров...")
+        
         try:
-            # Получаем предложенные гиперпараметры
-            hyperparams = self.optimizer.suggest_hyperparameters(trial)
-            logger.info(f"Trial {trial.number}: Тестируем параметры {hyperparams}")
-            
-            # Отправляем уведомление о начале trial
-            params_text = "\n".join([f"• {k}: {v}" for k, v in hyperparams.items()])
-            self.alert_manager.send_info_notification(
-                f"🧪 Trial #{trial.number} начат\n\n"
-                f"🔧 Гиперпараметры:\n{params_text}\n\n"
-                f"⏱️ Ожидаемое время: ~15 минут\n"
-                "🌐 Прогресс в веб-интерфейсах"
+            # Создаем исследование с TTS настройками
+            study = self.optimization_engine.create_study(
+                study_name=f"tacotron2_tts_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             )
             
-            # Запускаем обучение с этими параметрами
-            metrics = self.trainer.train_with_params(hyperparams)
+            # Получаем количество trials из конфигурации
+            n_trials = self.config.get('optimization', {}).get('n_trials', 30)
             
-            if not metrics:
-                logger.warning(f"Trial {trial.number}: Получены пустые метрики")
-                # В случае сбоя возвращаем большое значение, чтобы Optuna избегала этих параметров
-                return float('inf')
-
-            # Используем OptimizationEngine для расчета целевой функции
-            objective_value = self.optimizer.calculate_objective_value(metrics)
+            def tts_objective_function(trial):
+                """TTS-специфичная целевая функция с композитными метриками"""
+                self.logger.info(f"🔬 Начало TTS trial {trial.number}")
+                
+                # Получаем TTS-оптимизированные гиперпараметры
+                suggested_params = self.optimization_engine.suggest_hyperparameters(trial)
+                
+                try:
+                    # Запускаем обучение с TTS логированием
+                    metrics = self.trainer_wrapper.train_with_params(
+                        suggested_params, 
+                        trial=trial,
+                        tts_phase_training=self.tts_config.get('enabled', True)
+                    )
+                    
+                    if not metrics:
+                        self.logger.warning(f"TTS trial {trial.number}: получены пустые метрики")
+                        return float('inf')
+                    
+                    # Вычисляем композитную TTS целевую функцию
+                    objective_value = self.optimization_engine.calculate_objective_value(metrics)
+                    
+                    self.logger.info(f"🎯 TTS trial {trial.number} завершен: {objective_value:.4f}")
+                    
+                    # Проверяем TTS качественные пороги
+                    if self._check_tts_quality_thresholds(metrics):
+                        self.logger.info(f"✅ TTS trial {trial.number} прошел проверки качества")
+                    else:
+                        self.logger.warning(f"⚠️ TTS trial {trial.number} не прошел проверки качества")
+                        objective_value += 0.5  # Штраф за низкое качество TTS
+                    
+                    return objective_value
+                    
+                except Exception as e:
+                    self.logger.error(f"❌ Ошибка в TTS trial {trial.number}: {e}")
+                    return float('inf')
             
-            # Отправляем уведомление о завершении trial
-            self.alert_manager.send_success_notification(
-                f"✅ Trial #{trial.number} завершен\n\n"
-                f"🏆 Результат: {objective_value:.4f}\n"
-                f"📊 Метрики: {metrics}"
+            # Запускаем TTS оптимизацию
+            results = self.optimization_engine.optimize(
+                tts_objective_function, 
+                n_trials=n_trials
             )
-
-            return objective_value
+            
+            self.logger.info("🎉 TTS оптимизация завершена успешно!")
+            
+            # Анализируем и сохраняем результаты
+            self._save_tts_optimization_results(results)
+            
+            return results
             
         except Exception as e:
-            logger.error(f"Критическая ошибка в objective function для trial {trial.number}: {e}")
-            self.alert_manager.send_error_notification(
-                f"💥 Критическая ошибка в Trial #{trial.number}\n\n"
-                f"🔴 Ошибка: {str(e)}\n"
-                "🌐 Проверьте веб-интерфейсы для диагностики"
+            self.logger.error(f"❌ Ошибка при TTS оптимизации: {e}")
+            raise
+    
+    def _check_tts_quality_thresholds(self, metrics: Dict[str, float]) -> bool:
+        """
+        Проверяет TTS метрики на соответствие минимальным требованиям качества
+        
+        Args:
+            metrics: Словарь с метриками
+            
+        Returns:
+            True если метрики соответствуют требованиям
+        """
+        quality_checks = self.config.get('training_safety', {}).get('tts_quality_checks', {})
+        
+        checks = [
+            # Проверка attention alignment
+            metrics.get('attention_alignment_score', 0.0) >= quality_checks.get('min_attention_alignment', 0.6),
+            # Проверка gate accuracy  
+            metrics.get('gate_accuracy', 0.0) >= quality_checks.get('min_gate_accuracy', 0.7),
+            # Проверка validation loss
+            metrics.get('val_loss', float('inf')) <= quality_checks.get('max_validation_loss', 50.0),
+            # Проверка mel quality
+            metrics.get('mel_quality_score', 0.0) >= quality_checks.get('mel_quality_threshold', 0.5)
+        ]
+        
+        return all(checks)
+    
+    def run_single_training(self, hyperparams: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Запуск адаптивного TTS обучения с автоматической оптимизацией
+        
+        Args:
+            hyperparams: Гиперпараметры для обучения (используются лучшие если не указано)
+            
+        Returns:
+            Результаты обучения
+        """
+        self.logger.info("🚂 Запуск адаптивного TTS обучения с автоматической оптимизацией...")
+        
+        self.training_start_time = datetime.now()
+        max_restarts = 3
+        current_restart = 0
+        best_results = None
+        best_score = float('inf')
+        
+        try:
+            while current_restart <= max_restarts:
+                self.logger.info(f"🔄 Итерация обучения: {current_restart + 1}/{max_restarts + 1}")
+                
+                # Если это не первый запуск, проводим мини-оптимизацию
+                if current_restart > 0:
+                    self.logger.info("🔍 Запуск мини-оптимизации для улучшения параметров...")
+                    mini_optimization_results = self._run_mini_optimization(n_trials=8)
+                    
+                    if mini_optimization_results and mini_optimization_results.get('best_params'):
+                        hyperparams = mini_optimization_results['best_params']
+                        self.logger.info(f"✅ Найдены улучшенные параметры: {hyperparams}")
+                
+                # Используем лучшие параметры если они не переданы
+                if hyperparams is None:
+                    hyperparams = self._get_best_hyperparams()
+                    
+                if not hyperparams:
+                    self.logger.warning("Используются параметры по умолчанию из конфигурации")
+                    hyperparams = self._get_default_hyperparams()
+                
+                self.logger.info(f"🎛️ TTS гиперпараметры (итерация {current_restart + 1}): {hyperparams}")
+                
+                # Запускаем обучение с TTS мониторингом
+                results = self.trainer_wrapper.train_with_params(
+                    hyperparams,
+                    tts_phase_training=self.tts_config.get('enabled', True),
+                    single_training=True,
+                    restart_iteration=current_restart
+                )
+                
+                if results:
+                    # Вычисляем композитную оценку качества
+                    current_score = self.optimization_engine.calculate_composite_tts_objective(results)
+                    self.logger.info(f"📊 Оценка качества итерации {current_restart + 1}: {current_score:.4f}")
+                    
+                    # Проверяем, улучшились ли результаты
+                    if current_score < best_score:
+                        best_score = current_score
+                        best_results = results.copy()
+                        self.logger.info(f"✅ Новый лучший результат: {best_score:.4f}")
+                        
+                        # Если результат достаточно хорош, прекращаем
+                        if self._check_tts_quality_thresholds(results):
+                            self.logger.info("🎉 Достигнуто высокое качество TTS! Завершаем обучение.")
+                            break
+                    else:
+                        self.logger.info(f"⚠️ Результат не улучшился. Лучший: {best_score:.4f}")
+                
+                # Проверяем, нужен ли перезапуск
+                if current_restart < max_restarts:
+                    if self._should_restart_training(results):
+                        self.logger.info("🔄 Обнаружены проблемы качества. Планируется перезапуск с оптимизацией...")
+                        current_restart += 1
+                        continue
+                    else:
+                        self.logger.info("✅ Качество удовлетворительное. Завершаем обучение.")
+                        break
+                else:
+                    self.logger.info("📊 Достигнуто максимальное количество перезапусков.")
+                    break
+            
+            # Используем лучшие результаты
+            final_results = best_results if best_results else results
+            
+            # Финализируем логирование TTS
+            if self.training_logger and self.export_system:
+                finish_training_logging(
+                    self.training_logger, 
+                    self.export_system,
+                    final_metrics=final_results
+                )
+            
+            training_duration = datetime.now() - self.training_start_time
+            self.logger.info(f"🎉 Адаптивное TTS обучение завершено за {training_duration}")
+            self.logger.info(f"🏆 Лучшая оценка качества: {best_score:.4f}")
+            self.logger.info(f"🔄 Количество перезапусков: {current_restart}")
+            
+            # Создаем экспорт для AI анализа
+            try:
+                export_path = export_current_training()
+                self.logger.info(f"📤 TTS экспорт создан: {export_path}")
+            except Exception as e:
+                self.logger.warning(f"Ошибка создания экспорта: {e}")
+            
+            return final_results
+            
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка при адаптивном TTS обучении: {e}")
+            
+            # Попытка финализации логирования при ошибке
+            if self.training_logger:
+                try:
+                    finish_training_logging(
+                        self.training_logger, 
+                        self.export_system,
+                        final_metrics={'error': str(e)},
+                        training_completed=False
+                    )
+                except:
+                    pass
+            
+            raise
+    
+    def _get_best_hyperparams(self) -> Optional[Dict[str, Any]]:
+        """Получение лучших TTS гиперпараметров из оптимизации"""
+        if not self.optimization_engine or not self.optimization_engine.study:
+            return None
+            
+        try:
+            if self.optimization_engine.study.best_trial:
+                return self.optimization_engine.study.best_params
+        except:
+            pass
+            
+        return None
+    
+    def _run_mini_optimization(self, n_trials: int = 8) -> Dict[str, Any]:
+        """
+        Запуск мини-оптимизации для улучшения параметров
+        
+        Args:
+            n_trials: Количество trials для мини-оптимизации
+            
+        Returns:
+            Результаты мини-оптимизации
+        """
+        self.logger.info(f"🔍 Мини-оптимизация: {n_trials} trials")
+        
+        try:
+            study = self.optimization_engine.create_study(
+                study_name=f"mini_opt_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             )
-            # Сообщаем Optuna о сбое
-            raise optuna.exceptions.TrialPruned()
-
+            
+            def mini_objective_function(trial):
+                """Облегченная целевая функция для мини-оптимизации"""
+                suggested_params = self.optimization_engine.suggest_hyperparameters(trial)
+                
+                # Запускаем короткое обучение (50 эпох)
+                suggested_params['epochs'] = 50
+                
+                try:
+                    metrics = self.trainer_wrapper.train_with_params(
+                        suggested_params, 
+                        trial=trial,
+                        mini_optimization=True
+                    )
+                    
+                    if metrics:
+                        return self.optimization_engine.calculate_composite_tts_objective(metrics)
+                    else:
+                        return float('inf')
+                        
+                except Exception as e:
+                    self.logger.warning(f"Ошибка в мини-trial {trial.number}: {e}")
+                    return float('inf')
+            
+            # Запускаем мини-оптимизацию
+            study.optimize(mini_objective_function, n_trials=n_trials)
+            
+            if study.best_trial:
+                return {
+                    'best_params': study.best_params,
+                    'best_score': study.best_value,
+                    'n_trials': len(study.trials)
+                }
+            else:
+                return None
+                
+        except Exception as e:
+            self.logger.error(f"Ошибка мини-оптимизации: {e}")
+            return None
+    
+    def _should_restart_training(self, results: Dict[str, Any]) -> bool:
+        """
+        Определяет, нужен ли перезапуск обучения
+        
+        Args:
+            results: Результаты текущего обучения
+            
+        Returns:
+            True если нужен перезапуск
+        """
+        if not results:
+            return True
+            
+        # Проверяем ключевые TTS метрики
+        checks = [
+            results.get('attention_alignment_score', 0.0) < 0.6,  # Плохой attention
+            results.get('gate_accuracy', 0.0) < 0.7,  # Плохая точность gate
+            results.get('val_loss', float('inf')) > 10.0,  # Слишком высокий loss
+            results.get('mel_quality_score', 0.0) < 0.4  # Плохое качество mel
+        ]
+        
+        # Если больше 2 критериев не пройдены, нужен перезапуск
+        failed_checks = sum(checks)
+        should_restart = failed_checks >= 2
+        
+        if should_restart:
+            self.logger.info(f"⚠️ Проблемы качества: {failed_checks}/4 критериев не пройдены")
+            
+        return should_restart
+    
+    def _get_default_hyperparams(self) -> Dict[str, Any]:
+        """Получение TTS гиперпараметров по умолчанию из конфигурации"""
+        search_space = self.config.get('hyperparameter_search_space', {})
+        default_params = {}
+        
+        for param_name, param_config in search_space.items():
+            default_value = param_config.get('default')
+            if default_value is not None:
+                default_params[param_name] = default_value
+            elif param_config.get('type') == 'categorical':
+                choices = param_config.get('choices', [])
+                if choices:
+                    default_params[param_name] = choices[0]
+                    
+        return default_params
+    
+    def _save_tts_optimization_results(self, results: Dict[str, Any]):
+        """Сохранение результатов TTS оптимизации"""
+        try:
+            results_dir = Path("smart_tuner/optimization_results")
+            results_dir.mkdir(parents=True, exist_ok=True)
+            
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            results_file = results_dir / f"tts_optimization_{timestamp}.yaml"
+            
+            # Добавляем метаданные
+            results['metadata'] = {
+                'timestamp': timestamp,
+                'config_path': self.config_path,
+                'tts_version': 'Smart Tuner V2 TTS',
+                'optimization_type': 'composite_tts_objective'
+            }
+            
+            with open(results_file, 'w', encoding='utf-8') as f:
+                yaml.dump(results, f, default_flow_style=False, allow_unicode=True)
+                
+            self.logger.info(f"💾 TTS результаты сохранены: {results_file}")
+            
+        except Exception as e:
+            self.logger.error(f"Ошибка сохранения результатов: {e}")
+    
+    def run_monitoring_mode(self):
+        """Режим мониторинга TTS обучения"""
+        self.logger.info("👁️ Запуск режима TTS мониторинга...")
+        
+        try:
+            # Создаем файлы мониторинга если не существуют
+            monitoring_dir = Path("smart_tuner/monitoring") 
+            monitoring_dir.mkdir(parents=True, exist_ok=True)
+            
+            status_file = monitoring_dir / "tts_status.yaml"
+            
+            while True:
+                try:
+                    # Проверяем статус TTS обучения
+                    tts_status = self._get_tts_training_status()
+                    
+                    # Сохраняем статус
+                    with open(status_file, 'w', encoding='utf-8') as f:
+                        yaml.dump(tts_status, f, default_flow_style=False)
+                    
+                    # Проверяем алерты
+                    if self.alert_manager:
+                        self.alert_manager.check_training_status(tts_status)
+                    
+                    time.sleep(30)  # Проверяем каждые 30 секунд
+                    
+                except KeyboardInterrupt:
+                    self.logger.info("🛑 Остановка мониторинга по запросу пользователя")
+                    break
+                except Exception as e:
+                    self.logger.error(f"Ошибка мониторинга: {e}")
+                    time.sleep(60)  # Ждем минуту при ошибке
+                    
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка режима мониторинга: {e}")
+    
+    def _get_tts_training_status(self) -> Dict[str, Any]:
+        """Получение статуса TTS обучения"""
+        status = {
+            'timestamp': datetime.now().isoformat(),
+            'mode': 'monitoring',
+            'tts_version': 'Smart Tuner V2 TTS'
+        }
+        
+        try:
+            # Статус от early stop controller
+            if self.early_stop_controller:
+                tts_summary = self.early_stop_controller.get_tts_training_summary()
+                status.update(tts_summary)
+            
+            # Статус оптимизации
+            if self.optimization_engine:
+                opt_stats = self.optimization_engine.get_study_statistics()
+                status['optimization'] = opt_stats
+                
+        except Exception as e:
+            status['error'] = str(e)
+            
+        return status
+    
+    def cleanup(self):
+        """Очистка ресурсов TTS системы"""
+        self.logger.info("🧹 Очистка TTS ресурсов...")
+        
+        try:
+            if self.optimization_engine:
+                self.optimization_engine.cleanup_study()
+                
+            if self.early_stop_controller:
+                self.early_stop_controller.reset()
+                
+            if self.alert_manager and hasattr(self.alert_manager, 'cleanup'):
+                self.alert_manager.cleanup()
+                
+            self.logger.info("✅ TTS ресурсы очищены")
+            
+        except Exception as e:
+            self.logger.error(f"Ошибка очистки: {e}")
 
 def main():
-    """Основная функция"""
-    parser = argparse.ArgumentParser(description="Smart Tuner V2 для Tacotron2")
-    parser.add_argument('--config', default='smart_tuner/config.yaml', help='Путь к файлу конфигурации')
-    parser.add_argument('--optimize', action='store_true', help='Запуск оптимизации гиперпараметров')
-    parser.add_argument('--train', action='store_true', help='Запуск одиночного полноценного обучения')
-    parser.add_argument('--n_trials', type=int, default=10, help='Количество trials для оптимизации')
-
+    """Главная функция запуска Smart Tuner V2 TTS"""
+    parser = argparse.ArgumentParser(description='Smart Tuner V2 - TTS Автоматизированная система обучения')
+    parser.add_argument('--config', '-c', 
+                       default='smart_tuner/config.yaml',
+                       help='Путь к файлу конфигурации')
+    parser.add_argument('--mode', '-m',
+                       choices=['optimize', 'train', 'monitor'],
+                       default='train',
+                       help='Режим работы: optimize - оптимизация гиперпараметров, train - обучение, monitor - мониторинг')
+    parser.add_argument('--trials', '-t',
+                       type=int,
+                       help='Количество trials для оптимизации (перекрывает настройку в конфиге)')
+    parser.add_argument('--hyperparams', '-p',
+                       help='JSON строка с гиперпараметрами для режима train')
+    
     args = parser.parse_args()
     
-    tuner = SmartTunerMain(args.config)
+    # Проверяем существование конфигурации
+    if not os.path.exists(args.config):
+        print(f"❌ Файл конфигурации {args.config} не найден")
+        return 1
     
-    if args.optimize:
-        tuner.run_optimization(n_trials=args.n_trials)
-    elif args.train:
-        tuner.run_proactive_training()
-    else:
-        logger.info("Не выбран режим работы. Используйте --train или --optimize.")
-        parser.print_help()
+    # Инициализируем Smart Tuner
+    smart_tuner = None
+    
+    try:
+        print("🚀 Запуск Smart Tuner V2 TTS...")
+        smart_tuner = SmartTunerMain(args.config)
+        smart_tuner.initialize_components()
+        
+        # Обновляем конфигурацию из аргументов
+        if args.trials:
+            smart_tuner.config.setdefault('optimization', {})['n_trials'] = args.trials
+        
+        # Выполняем действие в зависимости от режима
+        if args.mode == 'optimize':
+            print("🎯 Режим: TTS Оптимизация гиперпараметров")
+            results = smart_tuner.run_optimization()
+            print(f"🎉 Оптимизация завершена! Лучшие параметры: {results.get('best_parameters', {})}")
+            
+        elif args.mode == 'train':
+            print("🚂 Режим: TTS Обучение")
+            hyperparams = None
+            if args.hyperparams:
+                import json
+                try:
+                    hyperparams = json.loads(args.hyperparams)
+                except json.JSONDecodeError:
+                    print("❌ Неверный формат JSON для гиперпараметров")
+                    return 1
+                    
+            results = smart_tuner.run_single_training(hyperparams)
+            print(f"🎉 TTS Обучение завершено! Финальные метрики: {results}")
+            
+        elif args.mode == 'monitor':
+            print("👁️ Режим: TTS Мониторинг")
+            smart_tuner.run_monitoring_mode()
+            
+        return 0
+        
+    except KeyboardInterrupt:
+        print("\n🛑 Остановлено пользователем")
+        return 0
+        
+    except Exception as e:
+        print(f"❌ Критическая ошибка: {e}")
+        return 1
+        
+    finally:
+        if smart_tuner:
+            smart_tuner.cleanup()
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        logger.critical(f"Неперехваченная ошибка в main: {e}", exc_info=True)
-        sys.exit(1)
+    sys.exit(main())
 
  

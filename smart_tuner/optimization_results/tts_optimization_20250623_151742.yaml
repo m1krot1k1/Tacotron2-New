@@ -1,0 +1,46 @@
+best_parameters:
+  attention_dropout: 0.006175348288740734
+  batch_size: 16
+  epochs: 123
+  gate_threshold: 0.6879639408647977
+  guide_loss_weight: 3.6863266000822046
+  learning_rate: 0.005399484409787433
+  postnet_dropout: 0.38493564427131044
+  prenet_dropout: 0.6329770563201687
+  warmup_steps: 3405
+best_value: .inf
+metadata:
+  config_path: smart_tuner/config.yaml
+  optimization_type: composite_tts_objective
+  timestamp: '20250623_151742'
+  tts_version: Smart Tuner V2 TTS
+n_trials: 3
+study_name: tacotron2_tts_20250623_151741
+tts_analysis:
+  best_value: .inf
+  completed_trials: 3
+  improvement_rate: 0.0
+  mean_value: !!python/object/apply:numpy._core.multiarray.scalar
+  - &id001 !!python/object/apply:numpy.dtype
+    args:
+    - f8
+    - false
+    - true
+    state: !!python/tuple
+    - 3
+    - <
+    - null
+    - null
+    - null
+    - -1
+    - -1
+    - 0
+  - !!binary |
+    AAAAAAAA8H8=
+  std_value: !!python/object/apply:numpy._core.multiarray.scalar
+  - *id001
+  - !!binary |
+    AAAAAAAA+P8=
+  total_trials: 3
+  tts_recommendations: []
+  worst_value: .inf

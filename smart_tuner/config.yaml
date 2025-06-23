@@ -2,43 +2,88 @@ adaptive_advisor:
   db_path: smart_tuner/advisor_kb.db
   default_actions:
     instability:
-      name: change_lr
+      name: guided_attention_boost
       params:
-        multiplier: 0.5
+        guide_loss_weight_multiplier: 1.5
+        learning_rate_multiplier: 0.7
     overfitting:
-      name: increase_regularization
+      name: attention_regularization
       params:
-        dropout_increase: 0.05
+        attention_dropout_increase: 0.1
+        gate_threshold_adjust: 0.05
     stagnation:
-      name: change_lr
+      name: adaptive_learning_boost
       params:
-        multiplier: 1.2
+        learning_rate_multiplier: 1.3
+        guided_attention_boost: 0.2
+    attention_failure:
+      name: attention_recovery
+      params:
+        use_guided_attention: true
+        guide_loss_weight: 2.0
+        attention_dropout_reduction: 0.1
+    gate_collapse:
+      name: gate_regularization
+      params:
+        gate_loss_weight: 1.5
+        gate_threshold: 0.5
   diagnostics:
     instability:
       grad_norm_threshold: 200.0
     overfitting:
       threshold: 5.0
-      window_size: 30
+      window_size: 50
     stagnation:
-      min_delta: 0.001
-      window_size: 100
-  enabled: false
-  evaluation_window: 50
-  min_history_for_decision: 100
+      min_delta: 0.0005
+      window_size: 150
+    attention_failure:
+      min_alignment_score: 0.7
+      alignment_window: 100
+    gate_collapse:
+      min_gate_accuracy: 0.8
+      gate_window: 50
+  enabled: true
+  evaluation_window: 100
+  min_history_for_decision: 200
+  min_reward_threshold: -0.1
   reward_function:
-    action_inaction_threshold: 0.0001
-    inaction_penalty: 0.01
     weights:
-      overfitting_gap: 0.5
-      val_loss: 1.0
+      val_loss: 0.4
+      attention_alignment_score: 0.3
+      gate_accuracy: 0.2
+      mel_quality_score: 0.1
+    action_inaction_threshold: 0.0005
+    inaction_penalty: 0.005
 checkpoint_path: data/checkpoint
 dataset_path: data/dataset
 early_stopping:
   enabled: true
-  min_delta: 0.001
+  min_delta: 0.0005
   mode: min
   monitor: validation.loss
-  patience: 100
+  patience: 150
+  multi_criteria:
+    enabled: true
+    criteria:
+      validation_loss:
+        weight: 0.4
+        patience: 150
+        min_delta: 0.0005
+      attention_alignment_score:
+        weight: 0.3
+        patience: 100
+        min_delta: 0.01
+        mode: max
+      gate_accuracy:
+        weight: 0.2
+        patience: 80
+        min_delta: 0.005
+        mode: max
+      mel_quality_score:
+        weight: 0.1
+        patience: 100
+        min_delta: 0.01
+        mode: max
 experiment_name: tacotron2_production
 final_training:
   epochs: 200
@@ -46,15 +91,18 @@ hparams_path: hparams.py
 hyperparameter_search_space:
   batch_size:
     choices:
+    - 8
     - 16
+    - 24
     - 32
+    - 48
     - 64
-    default: 32
+    default: 16
     type: categorical
   epochs:
-    default: 100
-    max: 200
-    min: 50
+    default: 200
+    max: 500
+    min: 100
     type: int
   learning_rate:
     default: 0.001
@@ -63,10 +111,41 @@ hyperparameter_search_space:
     min: 0.0001
     type: float
   warmup_steps:
-    default: 1000
-    max: 2000
-    min: 500
+    default: 2000
+    max: 5000
+    min: 1000
     type: int
+  guided_attention_enabled:
+    type: categorical
+    choices:
+    - true
+    - false
+    default: true
+  guide_loss_weight:
+    default: 1.0
+    max: 5.0
+    min: 0.5
+    type: float
+  p_attention_dropout:
+    default: 0.1
+    max: 0.3
+    min: 0.0
+    type: float
+  gate_threshold:
+    default: 0.5
+    max: 0.7
+    min: 0.3
+    type: float
+  dropout_rate:
+    default: 0.3
+    max: 0.7
+    min: 0.1
+    type: float
+  postnet_dropout_rate:
+    default: 0.1
+    max: 0.3
+    min: 0.0
+    type: float
 mlflow:
   experiment_name: tacotron2_optimization
   tracking_uri: mlruns
@@ -79,10 +158,22 @@ model_registry:
 optimization:
   continue_training: true
   direction: minimize
-  full_epochs_per_trial: 50
-  n_trials: 20
-  objective_metric: val_loss
-  overfitting_penalty: 0.1
+  full_epochs_per_trial: 100
+  n_trials: 30
+  objective_metric: composite_tts_score
+  overfitting_penalty: 0.05
+  tts_specific:
+    min_training_steps: 20000
+    attention_convergence_threshold: 0.8
+    gate_accuracy_threshold: 0.85
+    early_pruning_disabled_epochs: 100
+  composite_objective:
+    weights:
+      validation_loss: 0.4
+      attention_alignment_score: 0.3
+      gate_accuracy: 0.2
+      mel_quality_score: 0.1
+    normalize_scores: true
 output_dir: output
 parameter_scheduling:
   learning_rate:
@@ -110,15 +201,18 @@ resources:
 search_space:
   batch_size:
     choices:
+    - 8
     - 16
+    - 24
     - 32
+    - 48
     - 64
-    default: 32
+    default: 16
     type: categorical
   epochs:
-    default: 100
-    max: 200
-    min: 50
+    default: 200
+    max: 500
+    min: 100
     type: int
   learning_rate:
     default: 0.001
@@ -127,9 +221,9 @@ search_space:
     min: 0.0001
     type: float
   warmup_steps:
-    default: 1000
-    max: 2000
-    min: 500
+    default: 2000
+    max: 5000
+    min: 1000
     type: int
 telegram:
   bot_token: 2010534305:AAHqgXYT5RPcLoJe-wNdFaFbIJvJsN2xUHA
@@ -152,7 +246,42 @@ training:
   script_path: train.py
 training_safety:
   enabled: true
-  max_training_hours: 15.0
-  max_validation_loss: 100.0
-  min_training_hours: 4.0
-  min_training_steps: 5000
+  max_training_hours: 48.0
+  max_validation_loss: 50.0
+  min_training_hours: 8.0
+  min_training_steps: 20000
+  tts_quality_checks:
+    min_attention_alignment: 0.6
+    min_gate_accuracy: 0.7
+    max_attention_entropy: 3.0
+    mel_quality_threshold: 0.5
+tts_phase_training:
+  enabled: true
+  phases:
+    pre_alignment:
+      duration_epochs: 50
+      guided_attention_weight: 3.0
+      learning_rate_multiplier: 1.0
+      focus_metrics: [attention_alignment_score]
+    alignment_learning:
+      duration_epochs: 100
+      guided_attention_weight: 1.5
+      learning_rate_multiplier: 0.8
+      focus_metrics: [attention_alignment_score, gate_accuracy]
+    fine_tuning:
+      duration_epochs: 150
+      guided_attention_weight: 0.5
+      learning_rate_multiplier: 0.6
+      focus_metrics: [validation_loss, mel_quality_score]
+tts_metrics:
+  attention_metrics:
+    alignment_score_weight: 1.0
+    attention_entropy_weight: 0.5
+    attention_sharpness_weight: 0.3
+  gate_metrics:
+    accuracy_weight: 1.0
+    precision_weight: 0.8
+    recall_weight: 0.8
+  mel_metrics:
+    spectral_distance_weight: 1.0
+    mel_cepstral_distortion_weight: 0.7
