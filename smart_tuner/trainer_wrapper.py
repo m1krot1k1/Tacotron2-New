@@ -195,39 +195,97 @@ class TrainerWrapper:
             return {"val_loss": float('inf'), "error": "failed_to_start"}
             
         # Мониторинг процесса обучения
+        # ------------------------------
+        # ⚙️ Конфигурируемые параметры мониторинга
+        training_cfg = self.config.get('training', {})
+        check_interval = training_cfg.get('metrics_poll_interval', 30)  # сек
+
         final_metrics = {}
-        check_interval = 30  # Проверяем каждые 30 секунд
         last_step = 0
+
+        # Клиент для обращения к MLflow
+        from mlflow.tracking import MlflowClient
+        client = MlflowClient()
+
+        def _fetch_latest_mlflow_metrics(rid: str):
+            """Возвращает словарь с последними значениями метрик из MLflow."""
+            try:
+                metric_keys = [
+                    "training.loss", "validation.loss", "grad_norm",
+                    "attention_alignment_score", "gate_accuracy", "mel_quality_score",
+                    "training.step", "validation.step"
+                ]
+                latest = {}
+                for key in metric_keys:
+                    try:
+                        hist = client.get_metric_history(rid, key)
+                    except Exception:
+                        hist = []
+                    if hist:
+                        # MLflow не гарантирует порядок, сортируем по step
+                        last_m = max(hist, key=lambda m: m.step)
+                        latest[key] = (last_m.value, last_m.step)
+                if not latest:
+                    return None
+                # Конвертируем в формат, дружелюбный к Optimizer/EarlyStopController
+                converted = {}
+                mapping = {
+                    "training.loss": "train_loss",
+                    "validation.loss": "val_loss",
+                    "grad_norm": "grad_norm",
+                    "attention_alignment_score": "attention_alignment_score",
+                    "gate_accuracy": "gate_accuracy",
+                    "mel_quality_score": "mel_quality_score",
+                }
+                for ml_name, (val, step) in latest.items():
+                    if ml_name in mapping:
+                        converted[mapping[ml_name]] = val
+                    # Сохраняем step для train/val
+                    if ml_name in ("validation.step", "training.step"):
+                        converted["step"] = step
+                return converted
+            except Exception as e:
+                logging.debug(f"Ошибка получения метрик из MLflow: {e}")
+                return None
         
         try:
             # Ждем завершения процесса с периодическим мониторингом
             while process.poll() is None:
                 time.sleep(check_interval)
-                
-                # Симулируем получение метрик для демонстрации
-                # В реальной системе здесь должен быть парсинг логов
-                current_step = last_step + 50
-                
-                # Генерируем примерные метрики для демонстрации
-                simulated_metrics = self._generate_simulated_metrics(current_step, hyperparams)
-                
+
+                real_metrics = _fetch_latest_mlflow_metrics(run_id)
+                if not real_metrics:
+                    logging.debug("Нет новых метрик в MLflow (пока). Продолжаем ожидание...")
+                    continue
+
+                current_step = real_metrics.get("step", last_step)
+
                 # Отчитываемся в Optuna если это trial
-                if trial:
-                    composite_score = self._calculate_composite_score(simulated_metrics)
+                if trial and current_step != last_step:
+                    composite_score = self._calculate_composite_score(real_metrics)
                     try:
-                        # Импортируем здесь, чтобы избежать циклических зависимостей
                         from smart_tuner.optimization_engine import OptimizationEngine
                         opt_engine = OptimizationEngine()
-                        opt_engine.report_intermediate_value(trial, current_step, composite_score, simulated_metrics)
+                        opt_engine.report_intermediate_value(trial, current_step, composite_score, real_metrics)
                     except Exception as e:
                         logging.warning(f"Ошибка отчета в Optuna: {e}")
-                
-                final_metrics = simulated_metrics
+
+                final_metrics = real_metrics
                 last_step = current_step
                 
-                # Для демонстрации - прерываем после нескольких итераций
-                if current_step > 200:  # Уменьшено для быстрой демонстрации
-                    logging.info("Достигнут лимит демонстрационного обучения")
+                # ------------------------------
+                # 🛑 DEMO-MODE BREAK (удалено)
+                # Ранее обучение насильно прерывалось после 200 псевдо-шагов,
+                # что приводило к одинаковой продолжительности этапов (~2.5 мин).
+                # Теперь эта логика заменена на конфигурируемый предел,
+                # который по-умолчанию отключён. Это обеспечивает гибкость —
+                # обучение продолжается до естественного завершения train.py
+                # либо до срабатывания EarlyStopController.
+                max_demo_steps = self.config.get('training', {}).get('max_demo_steps')
+                if max_demo_steps is not None and current_step > max_demo_steps:
+                    logging.info(
+                        f"⏹ Demo-mode: достигнут лимит {max_demo_steps} шагов, прерываем обучение"
+                    )
                     break
                 
             # Ждем завершения процесса
@@ -252,41 +310,6 @@ class TrainerWrapper:
             logging.warning("❌ Обучение завершено без метрик")
             return {"val_loss": float('inf'), "error": "no_metrics"}
 
-    def _generate_simulated_metrics(self, step: int, hyperparams: dict) -> dict:
-        """Генерирует симулированные метрики для демонстрации"""
-        import random
-        import math
-        
-        # Базовые значения зависят от параметров
-        lr = hyperparams.get('learning_rate', 0.001)
-        batch_size = hyperparams.get('batch_size', 32)
-        
-        # Симулируем улучшение со временем
-        progress = min(step / 1000.0, 1.0)
-        
-        # Базовые метрики с реалистичными значениями для TTS
-        base_val_loss = 3.0 - (2.0 * progress) + random.uniform(-0.2, 0.2)
-        base_attention = 0.3 + (0.4 * progress) + random.uniform(-0.05, 0.05)
-        base_gate = 0.5 + (0.3 * progress) + random.uniform(-0.03, 0.03)
-        
-        # Влияние параметров
-        if lr > 0.002:  # Слишком высокий learning rate
-            base_val_loss += 0.5
-            base_attention -= 0.1
-        if batch_size < 16:  # Слишком маленький batch
-            base_val_loss += 0.3
-            base_gate -= 0.1
-            
-        return {
-            'val_loss': max(0.5, base_val_loss),
-            'train_loss': max(0.3, base_val_loss - 0.2),
-            'attention_alignment_score': max(0.0, min(1.0, base_attention)),
-            'gate_accuracy': max(0.0, min(1.0, base_gate)),
-            'mel_quality_score': max(0.0, min(1.0, 0.4 + (0.3 * progress))),
-            'grad_norm': 1.0 + random.uniform(-0.3, 0.3),
-            'step': step
-        }
-    
     def _calculate_composite_score(self, metrics: dict) -> float:
         """Вычисляет композитную оценку для Optuna"""
         val_loss = metrics.get('val_loss', 10.0)
