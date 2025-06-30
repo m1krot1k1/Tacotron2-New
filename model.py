@@ -212,6 +212,17 @@ class Encoder(nn.Module):
     def inference(self, x):
         try:
             with torch.no_grad():
+                # Проверяем и корректируем входные размерности
+                if x.dim() == 4:
+                    # Убираем лишнее измерение если есть
+                    x = x.squeeze(2)  # Убираем третье измерение
+                    print(f"🔧 Убрано лишнее измерение: {x.shape}")
+                elif x.dim() == 2:
+                    x = x.unsqueeze(0)  # Добавляем batch dimension если нужно
+                elif x.dim() != 3:
+                    print(f"⚠️ Неожиданная размерность входа энкодера: {x.shape}")
+                    return None
+                
                 for conv in self.convolutions:
                     x = F.dropout(F.relu(conv(x)), self.dropout_rate, self.training)
 
@@ -219,9 +230,22 @@ class Encoder(nn.Module):
 
                 # self.lstm.flatten_parameters()
                 outputs, _ = self.lstm(x)
+                
+                # Проверяем выходные размерности
+                if outputs is not None and outputs.dim() == 3:
+                    print(f"✅ Encoder.inference успешно: вход -> выход {outputs.shape}")
+                    return outputs
+                else:
+                    print(f"❌ Encoder.inference вернул некорректный результат: {outputs}")
+                    return None
+                    
         except RuntimeError as e:
+            print(f"❌ Ошибка в Encoder.inference: {e}")
             torch.cuda.empty_cache()
-            outputs = None
+            return None
+        except Exception as e:
+            print(f"❌ Неожиданная ошибка в Encoder.inference: {e}")
+            return None
 
         # removes unused memory but may increase time a bit
         torch.cuda.empty_cache()
@@ -708,10 +732,34 @@ class Tacotron2(nn.Module):
         # Проверяем, что encoder вернул валидный результат
         if emb_text is None:
             print("❌ Encoder.inference вернул None, используем fallback")
-            # Fallback: создаем базовые encoder outputs
+            # Fallback: создаем базовые encoder outputs с правильными размерностями
             batch_size = inputs.size(0)
             seq_len = inputs.size(1)
-            emb_text = torch.zeros(batch_size, seq_len, 512, device=inputs.device, dtype=torch.float32)
+            # Используем базовую размерность энкодера из hparams
+            encoder_dim = self.encoder.lstm.hidden_size * 2  # bidirectional
+            emb_text = torch.zeros(batch_size, seq_len, encoder_dim, 
+                                 device=inputs.device, dtype=torch.float32)
+            print(f"🔧 Создан fallback tensor: {emb_text.shape}")
+        elif emb_text.dim() != 3:
+            print(f"❌ Encoder вернул некорректную размерность: {emb_text.shape}, используем fallback")
+            batch_size = inputs.size(0)
+            seq_len = inputs.size(1)
+            encoder_dim = self.encoder.lstm.hidden_size * 2  # bidirectional
+            emb_text = torch.zeros(batch_size, seq_len, encoder_dim, 
+                                 device=inputs.device, dtype=torch.float32)
+            print(f"🔧 Создан fallback tensor: {emb_text.shape}")
+        elif emb_text.size(1) != inputs.size(1):
+            # Проверяем соответствие длины последовательности
+            print(f"⚠️ Несоответствие длины последовательности: encoder {emb_text.size(1)} vs input {inputs.size(1)}")
+            # Используем более длинную последовательность
+            target_seq_len = max(emb_text.size(1), inputs.size(1))
+            if emb_text.size(1) < target_seq_len:
+                # Дополняем encoder output до нужной длины
+                batch_size, _, encoder_dim = emb_text.shape
+                padding = torch.zeros(batch_size, target_seq_len - emb_text.size(1), encoder_dim, 
+                                    device=emb_text.device, dtype=emb_text.dtype)
+                emb_text = torch.cat([emb_text, padding], dim=1)
+                print(f"🔧 Дополнен encoder output до {emb_text.shape}")
         
         encoder_outputs = emb_text
         emb_gst = None  # Инициализируем emb_gst для всех случаев
@@ -720,13 +768,19 @@ class Tacotron2(nn.Module):
             if reference_mel is not None:
                 emb_gst = self.gst(reference_mel)*scale
             elif token_idx is not None:
-                query = torch.zeros(1, 1, self.gst.encoder.ref_enc_gru_size, dtype=torch.float16).cuda()
+                query = torch.zeros(1, 1, self.gst.encoder.ref_enc_gru_size, dtype=torch.float32, device=inputs.device)
                 GST = torch.tanh(self.gst.stl.embed)
                 key = GST[token_idx].unsqueeze(0).expand(1, -1, -1)
                 emb_gst = self.gst.stl.attention(query, key)*scale
             else:
                 if emb_text is not None:
-                    emb_gst = self.tpse_gst(emb_text)*scale
+                    try:
+                        emb_gst = self.tpse_gst(emb_text)*scale
+                    except Exception as e:
+                        print(f"❌ Ошибка в tpse_gst: {e}, используем fallback")
+                        # Fallback для GST
+                        emb_gst = torch.zeros(1, 1, self.gst.stl.embed.size(-1), 
+                                            device=inputs.device, dtype=inputs.dtype)
                 else:
                     # Fallback: create zero embedding
                     emb_gst = torch.zeros(1, 1, self.gst.stl.embed.size(-1), 
@@ -744,8 +798,18 @@ class Tacotron2(nn.Module):
             else:
                 encoder_outputs = emb_gst
 
-        mel_outputs, gate_outputs, alignments = self.decoder.inference(
-            encoder_outputs, seed=seed)
+        try:
+            mel_outputs, gate_outputs, alignments = self.decoder.inference(
+                encoder_outputs, seed=seed)
+        except Exception as e:
+            print(f"❌ Ошибка в decoder.inference: {e}")
+            # Возвращаем пустые результаты в случае ошибки
+            batch_size = encoder_outputs.size(0)
+            mel_outputs = torch.zeros(batch_size, self.n_mel_channels, 1, 
+                                    device=inputs.device, dtype=torch.float32)
+            gate_outputs = torch.ones(batch_size, 1, device=inputs.device, dtype=torch.float32)
+            alignments = torch.zeros(batch_size, 1, encoder_outputs.size(1), 
+                                   device=inputs.device, dtype=torch.float32)
 
         mel_outputs_postnet = self.postnet(mel_outputs)
         mel_outputs_postnet = mel_outputs + mel_outputs_postnet

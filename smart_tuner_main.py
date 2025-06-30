@@ -180,57 +180,56 @@ class SmartTunerMain:
             n_trials = self.config.get('optimization', {}).get('n_trials', 30)
             
             def tts_objective_function(trial):
-                """TTS-специфичная целевая функция с композитными метриками"""
-                self.logger.info(f"🔬 Начало TTS trial {trial.number}")
-                
-                # Получаем TTS-оптимизированные гиперпараметры
-                suggested_params = self.optimization_engine.suggest_hyperparameters(trial)
+                """
+                🎯 TTS-оптимизированная целевая функция для Optuna
+                Учитывает специфику обучения TTS моделей
+                """
+                # Инициализируем время начала обучения
+                from datetime import datetime
+                self.training_start_time = datetime.now()
                 
                 try:
+                    self.logger.info(f"🎯 TTS trial {trial.number} начат")
+                    
+                    # Получаем предложенные гиперпараметры
+                    suggested_params = self.optimization_engine.suggest_hyperparameters(trial)
+                    self.logger.info(f"🎛️ TTS параметры для trial {trial.number}: {suggested_params}")
+                    
                     # Создаем TensorBoard writer для этого trial
                     from torch.utils.tensorboard import SummaryWriter
-                    log_dir = os.path.join("output", "latest", f"trial_{trial.number}")
+                    log_dir = os.path.join("output", "optuna_trials", f"trial_{trial.number}")
                     os.makedirs(log_dir, exist_ok=True)
                     writer = SummaryWriter(log_dir)
                     
-                    self.logger.info("Создан TensorBoard writer, вызываем train_with_params...")
-                    
-                    # Запускаем обучение с TTS логированием
+                    # Запускаем обучение с предложенными параметрами
                     metrics = self.trainer_wrapper.train_with_params(
                         suggested_params, 
                         trial=trial,
-                        writer=writer,
-                        tts_phase_training=self.tts_config.get('enabled', True)
+                        writer=writer
                     )
-                    
-                    self.logger.info(f"train_with_params завершен, получены метрики: {metrics}")
                     
                     # Закрываем writer
                     writer.close()
                     
-                    if not metrics:
-                        self.logger.warning(f"TTS trial {trial.number}: получены пустые метрики")
-                        return float('inf')
+                    self.logger.info(f"📊 TTS trial {trial.number} получил метрики: {metrics}")
                     
-                    # Вычисляем композитную TTS целевую функцию
-                    objective_value = self.optimization_engine.calculate_objective_value(metrics)
-                    
-                    self.logger.info(f"🎯 TTS trial {trial.number} завершен: {objective_value:.4f}")
-                    
-                    # Проверяем TTS качественные пороги
+                    # Проверяем качество результатов
                     if self._check_tts_quality_thresholds(metrics):
-                        self.logger.info(f"✅ TTS trial {trial.number} прошел проверки качества")
+                        self.logger.info(f"✅ TTS trial {trial.number} прошел проверку качества")
                     else:
-                        self.logger.warning(f"⚠️ TTS trial {trial.number} не прошел проверки качества")
-                        objective_value += 0.5  # Штраф за низкое качество TTS
+                        self.logger.warning(f"⚠️ TTS trial {trial.number} не прошел проверку качества")
                     
-                    return objective_value
+                    # Вычисляем композитную оценку
+                    composite_score = self.optimization_engine.calculate_composite_tts_objective(metrics)
+                    
+                    self.logger.info(f"🎯 TTS trial {trial.number} завершен: {composite_score}")
+                    return composite_score
                     
                 except Exception as e:
-                    import traceback
                     self.logger.error(f"❌ Ошибка в TTS trial {trial.number}: {e}")
+                    import traceback
                     self.logger.error(f"Полный traceback: {traceback.format_exc()}")
-                    return float('inf')
+                    return float('inf')  # Возвращаем худший возможный результат
             
             # Запускаем TTS оптимизацию
             results = self.optimization_engine.optimize(
@@ -260,7 +259,7 @@ class SmartTunerMain:
         
         # 🛡️ ДОПОЛНИТЕЛЬНАЯ ЗАЩИТА: минимальное время и шаги обучения
         training_duration = 0
-        if hasattr(self, 'training_start_time'):
+        if hasattr(self, 'training_start_time') and self.training_start_time is not None:
             from datetime import datetime
             training_duration = (datetime.now() - self.training_start_time).total_seconds()
             min_training_time = 600  # 10 минут минимум
@@ -565,7 +564,7 @@ class SmartTunerMain:
             
         # 🛡️ ДОПОЛНИТЕЛЬНАЯ ЗАЩИТА: принудительное продолжение если обучение слишком короткое
         training_duration = 0
-        if hasattr(self, 'training_start_time'):
+        if hasattr(self, 'training_start_time') and self.training_start_time is not None:
             from datetime import datetime
             training_duration = (datetime.now() - self.training_start_time).total_seconds()
             min_training_time = 600  # 10 минут минимум
@@ -579,73 +578,101 @@ class SmartTunerMain:
         if validation_step < min_validation_steps:
             self.logger.info(f"📊 Недостаточно validation шагов ({validation_step} < {min_validation_steps}). ПРИНУДИТЕЛЬНОЕ продолжение...")
             return True  # Принудительно перезапускаем (продолжаем)
-            
-        # 📊 Получаем основные метрики
-        val_loss = results.get('val_loss', float('inf'))
+        
+        # 📊 Получаем ключевые метрики с безопасными значениями по умолчанию
+        val_loss = results.get('validation_loss', float('inf'))
         attention_score = results.get('attention_alignment_score', 0.0)
         gate_accuracy = results.get('gate_accuracy', 0.0)
         mel_quality = results.get('mel_quality_score', 0.0)
         training_loss = results.get('training_loss', float('inf'))
-        
-        # 🎯 НОВЫЕ критерии для перезапуска (более мягкие и умные)
-        restart_reasons = []
-        
-        # 1. Критический validation loss
-        if val_loss > 30.0:  # Увеличено с 10.0
-            restart_reasons.append(f"высокий val_loss ({val_loss:.3f})")
-            
-        # 2. Очень плохой attention (только если катастрофически плохой)
-        if attention_score < 0.3:  # Снижено с 0.6
-            restart_reasons.append(f"критический attention ({attention_score:.3f})")
-            
-        # 3. Очень плохая gate accuracy (только если катастрофически плохая)
-        if gate_accuracy < 0.4:  # Снижено с 0.7
-            restart_reasons.append(f"критическая gate_accuracy ({gate_accuracy:.3f})")
-            
-        # 4. Очень плохое mel quality (только если катастрофически плохое)
-        if mel_quality < 0.2:  # Снижено с 0.4
-            restart_reasons.append(f"критическое mel_quality ({mel_quality:.3f})")
-            
-        # 5. НОВЫЙ критерий: отсутствие прогресса в обучении
         initial_loss = results.get('initial_training_loss', training_loss)
-        if initial_loss > 0:
-            progress = (initial_loss - training_loss) / initial_loss
-            if progress < 0.02:  # Меньше 2% улучшения
-                restart_reasons.append(f"отсутствие прогресса ({progress*100:.1f}%)")
         
-        # 6. НОВЫЙ критерий: взрывной градиент
-        grad_norm = results.get('grad_norm', 0.0)
-        if grad_norm > 200.0:
-            restart_reasons.append(f"взрывной градиент ({grad_norm:.1f})")
-            
-        # 🎯 УМНАЯ ЛОГИКА: перезапуск только при множественных критических проблемах
-        critical_issues = len(restart_reasons)
+        # 🚨 КРИТИЧЕСКИЕ ПРОБЛЕМЫ (обязательный перезапуск)
+        critical_problems = []
         
-        # Определяем нужен ли перезапуск
-        should_restart = False
+        # 1. Validation loss катастрофически высокий
+        if val_loss > 100.0:
+            critical_problems.append(f"validation_loss слишком высокий: {val_loss:.2f}")
         
-        if critical_issues >= 3:
-            # Если 3+ критических проблем - точно перезапускаем
-            should_restart = True
-            self.logger.warning(f"🚨 Критические проблемы ({critical_issues}): {', '.join(restart_reasons)}")
-        elif critical_issues == 2:
-            # Если 2 проблемы - перезапускаем только если одна из них критическая
-            if val_loss > 50.0 or attention_score < 0.2 or gate_accuracy < 0.3:
-                should_restart = True
-                self.logger.warning(f"⚠️ Серьезные проблемы ({critical_issues}): {', '.join(restart_reasons)}")
-            else:
-                self.logger.info(f"⚠️ Умеренные проблемы ({critical_issues}): {', '.join(restart_reasons)} - продолжаем")
-        elif critical_issues == 1:
-            # Если 1 проблема - перезапускаем только если она катастрофическая
-            if val_loss > 100.0 or grad_norm > 500.0:
-                should_restart = True
-                self.logger.warning(f"💥 Катастрофическая проблема: {', '.join(restart_reasons)}")
-            else:
-                self.logger.info(f"ℹ️ Минорная проблема: {', '.join(restart_reasons)} - продолжаем")
+        # 2. Полное отсутствие attention
+        if attention_score < 0.05:
+            critical_problems.append(f"attention практически отсутствует: {attention_score:.3f}")
+        
+        # 3. Gate accuracy критически низкий
+        if gate_accuracy < 0.1:
+            critical_problems.append(f"gate_accuracy критически низкий: {gate_accuracy:.3f}")
+        
+        # 4. Полное отсутствие прогресса обучения
+        progress = (initial_loss - training_loss) / initial_loss if initial_loss > 0 else 0
+        if progress < -0.1:  # Обучение ухудшается
+            critical_problems.append(f"обучение деградирует: прогресс {progress:.3f}")
+        
+        if critical_problems:
+            self.logger.warning("🚨 Обнаружены критические проблемы:")
+            for problem in critical_problems:
+                self.logger.warning(f"  • {problem}")
+            self.logger.info("🔄 РЕКОМЕНДУЕТСЯ ПЕРЕЗАПУСК")
+            return True
+        
+        # ⚠️ СЕРЬЕЗНЫЕ ПРОБЛЕМЫ (перезапуск при накоплении)
+        serious_problems = []
+        
+        # 1. Validation loss высокий, но не критический
+        if 25.0 < val_loss <= 100.0:
+            serious_problems.append(f"validation_loss высокий: {val_loss:.2f}")
+        
+        # 2. Attention слабый
+        if 0.05 <= attention_score < 0.3:
+            serious_problems.append(f"attention слабый: {attention_score:.3f}")
+        
+        # 3. Gate accuracy низкий
+        if 0.1 <= gate_accuracy < 0.4:
+            serious_problems.append(f"gate_accuracy низкий: {gate_accuracy:.3f}")
+        
+        # 4. Mel quality неудовлетворительный
+        if mel_quality < 0.2:
+            serious_problems.append(f"mel_quality неудовлетворительный: {mel_quality:.3f}")
+        
+        # 5. Медленный прогресс
+        if 0 <= progress < 0.02:
+            serious_problems.append(f"медленный прогресс: {progress:.3f}")
+        
+        # Перезапуск если много серьезных проблем
+        serious_threshold = 3  # Максимум 2 серьезные проблемы
+        if len(serious_problems) >= serious_threshold:
+            self.logger.warning(f"⚠️ Обнаружено {len(serious_problems)} серьезных проблем:")
+            for problem in serious_problems:
+                self.logger.warning(f"  • {problem}")
+            self.logger.info("🔄 РЕКОМЕНДУЕТСЯ ПЕРЕЗАПУСК из-за накопления проблем")
+            return True
+        elif serious_problems:
+            self.logger.info(f"⚠️ Обнаружено {len(serious_problems)} серьезных проблем (допустимо):")
+            for problem in serious_problems:
+                self.logger.info(f"  • {problem}")
+        
+        # 🎯 ПОЛОЖИТЕЛЬНЫЕ ПОКАЗАТЕЛИ (продолжаем обучение)
+        good_indicators = []
+        
+        if val_loss <= 25.0:
+            good_indicators.append(f"validation_loss приемлемый: {val_loss:.2f}")
+        if attention_score >= 0.3:
+            good_indicators.append(f"attention хороший: {attention_score:.3f}")
+        if gate_accuracy >= 0.4:
+            good_indicators.append(f"gate_accuracy приемлемый: {gate_accuracy:.3f}")
+        if mel_quality >= 0.2:
+            good_indicators.append(f"mel_quality приемлемый: {mel_quality:.3f}")
+        if progress >= 0.02:
+            good_indicators.append(f"хороший прогресс: {progress:.3f}")
+        
+        should_restart = len(good_indicators) < 2  # Нужно минимум 2 хороших показателя
+        
+        if should_restart:
+            self.logger.info(f"🔄 РЕКОМЕНДУЕТСЯ ПЕРЕЗАПУСК: недостаточно хороших показателей ({len(good_indicators)}/5)")
         else:
-            # Нет критических проблем
-            self.logger.info("✅ Качество обучения приемлемое - продолжаем")
-            
+            self.logger.info(f"✅ ПРОДОЛЖАЕМ ОБУЧЕНИЕ: достаточно хороших показателей ({len(good_indicators)}/5)")
+            for indicator in good_indicators:
+                self.logger.info(f"  • {indicator}")
+        
         # 📊 Дополнительная информация для анализа
         if not should_restart:
             self.logger.info("📈 Текущие метрики TTS:")

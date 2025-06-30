@@ -86,6 +86,10 @@ def rotate_image(image, angle, center=(0,25)):
   return result
 
 def diagonal_guide(text_len, mel_len, g=0.2):
+    # Проверяем на нулевые значения для предотвращения деления на ноль
+    if text_len <= 0 or mel_len <= 0:
+        return np.ones((mel_len, text_len), dtype=np.float32)
+    
     grid_text = torch.linspace(0., 1. - 1. / text_len, text_len)  # (T)
     grid_mel = torch.linspace(0., 1. - 1. / mel_len, mel_len)  # (M)
     grid = grid_text.view(1, -1) - grid_mel.view(-1, 1)  # (M, T)
@@ -93,6 +97,10 @@ def diagonal_guide(text_len, mel_len, g=0.2):
     return W.numpy()
 
 def linear_guide(text_len, mel_len, g=0.2):
+    # Проверяем на нулевые значения для предотвращения деления на ноль
+    if text_len <= 0:
+        return np.ones(text_len, dtype=np.float32)
+    
     a = np.linspace(-1., -1./text_len, text_len)  # (T)
     W = 1 - np.exp(-a ** 2 / (2 * g ** 2))
     return W

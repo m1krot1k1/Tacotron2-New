@@ -39,7 +39,8 @@ class Emphasizer:
                 loss -= len(name)
                 out.append((name[0:r.rfind('+')] + '+' +name[r.rfind('+'):], abs(loss)))
         if len(out) > 1:
-            print(out)
+            # print(out)  # Отключен вывод отладочной информации о стрессовых позициях
+            pass
         if out:
             return out[0][0]
         return name
