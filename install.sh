@@ -770,7 +770,7 @@ print(f'RANGE:{analysis[\"recommended_epochs_range\"][0]}-{analysis[\"recommende
                 
                 echo ""
                 echo "🧠 Запуск Smart Tuner V2 в автоматическом режиме..."
-                run_command "$VENV_DIR/bin/python smart_tuner_main.py --mode auto --trials $SMART_TRIALS"
+                run_command "$VENV_DIR/bin/python smart_tuner_main.py --mode auto"
                 
                 echo ""
                 echo "Процесс завершен. Возврат в главное меню..."
