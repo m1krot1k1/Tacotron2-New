@@ -20,6 +20,7 @@ from plotting_utils import plot_alignment_to_numpy, plot_spectrogram_to_numpy, p
 from text import symbol_to_id
 from utils import to_gpu
 # from logger import Tacotron2Logger  # Не используется
+from auto_param_controller import AutoParamController
 
 # MLflow for experiment tracking
 try:
@@ -337,13 +338,22 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
                 try:
                     # Диагональность alignment матрицы
                     alignment_diag = torch.diagonal(alignments_inf[0], dim1=-2, dim2=-1)
-                    validation_metrics["validation.alignment_score"] = float(torch.mean(alignment_diag))
-                    
+                    align_score = float(torch.mean(alignment_diag))
+                    validation_metrics["validation.alignment_score"] = align_score
+                    # сохраняем для AutoParamController
+                    try:
+                        model.last_validation_alignment_score = align_score
+                    except Exception:
+                        pass
                     # Фокусировка attention (концентрация на диагонали)
                     attention_focus = torch.max(alignments_inf[0], dim=-1)[0]
                     validation_metrics["validation.attention_focus"] = float(torch.mean(attention_focus))
                 except Exception as e:
-                    print(f"⚠️ Ошибка при вычислении alignment метрик: {e}")
+                    print(f"⚠️ Ошибка при вычислении attention метрик: {e}")
+            
+            # Убеждаемся, что атрибут модели существует даже при отсутствии align_score
+            if not hasattr(model, 'last_validation_alignment_score'):
+                model.last_validation_alignment_score = None
             
             # Метрики из gate outputs
             if gate_outputs_inf is not None:
@@ -362,7 +372,7 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
                 for metric_name, metric_value in validation_metrics.items():
                     mlflow.log_metric(metric_name, metric_value, step=iteration)
     
-    return val_loss  # Возвращаем validation loss для scheduler'а
+    return val_loss
 
 def calculate_global_mean(data_loader, global_mean_npy):
     if global_mean_npy and os.path.exists(global_mean_npy):
@@ -485,6 +495,18 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
         guide_loss = GuidedAttentionLoss(alpha=hparams.guided_attn_weight)
         print("✅ Guided Attention Loss загружен")
 
+    # --- Auto Hyper-parameter Controller ---
+    auto_ctrl = None
+    if is_main_node and hparams.use_guided_attn:
+        try:
+            auto_ctrl = AutoParamController(optimizer=optimizer,
+                                            guide_loss=guide_loss,
+                                            hparams=hparams,
+                                            writer=writer)
+            print("🤖 AutoParamController активирован")
+        except Exception as e:
+            print(f"⚠️ Не удалось инициализировать AutoParamController: {e}")
+
     global_mean = calculate_global_mean(train_loader, hparams.global_mean_npy)
 
     # ================ MAIN TRAINNIG LOOP ===================
@@ -571,6 +593,9 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
                 print("Train loss {} {:.6f} Grad Norm {:.6f} {:.2f}s/it".format(
                     iteration, reduced_loss, grad_norm, duration))
                 
+                # Обновляем learning_rate переменную из optimizer (мог измениться авто-контроллером)
+                learning_rate = optimizer.param_groups[0]['lr']
+
                 # Логирование в TensorBoard
                 writer.add_scalar("training.loss", reduced_loss, iteration)
                 writer.add_scalar("training.taco_loss", reduced_taco_loss, iteration)
@@ -665,17 +690,12 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
 
             if (iteration % hparams.validation_freq == 0):
                 print(f"🔍 Выполняем валидацию на итерации {iteration}")
-                val_loss = validate(model, criterion, valset, iteration,
-                         hparams.batch_size, n_gpus, collate_fn, writer,
-                         hparams.distributed_run, rank)
+                val_loss = validate(model, criterion, valset, iteration, hparams.batch_size, n_gpus, collate_fn, writer, hparams.distributed_run, rank)
                 print(f"📊 Validation loss: {val_loss}")
-                if is_main_node:
-                    # Логирование validation loss для Optuna
-                    if smart_tuner_trial:
-                        smart_tuner_trial.report(val_loss, iteration)
-                        if smart_tuner_trial.should_prune():
-                            print(f"✂️ Trial обрезан на итерации {iteration}")
-                            raise optuna.TrialPruned()
+                # Auto hyper-parameter tuning (on main node)
+                if is_main_node and auto_ctrl:
+                    align_score = getattr(model, 'last_validation_alignment_score', None)
+                    auto_ctrl.after_validation(iteration, val_loss, align_score)
 
             if is_main_node and (iteration % hparams.iters_per_checkpoint == 0):
                 checkpoint_path = os.path.join(

@@ -14,7 +14,7 @@ from pathlib import Path
 from dataclasses import dataclass
 
 try:
-    import mlflow
+import mlflow
     import mlflow.pytorch
     MLFLOW_AVAILABLE = True
 except ImportError:
