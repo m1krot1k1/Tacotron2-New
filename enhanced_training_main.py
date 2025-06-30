@@ -390,48 +390,54 @@ class EnhancedTacotronTrainer:
         
         # Метрики эпохи
         epoch_metrics = {
-            'epoch': self.current_epoch,
             'train_loss': np.mean(train_losses),
             'val_loss': val_result['val_loss'],
             'quality_score': val_result['quality_score'],
-            'quality_issues_count': quality_issues_count,
+            'epoch_time': time.time() - epoch_start_time,
             'phase': current_phase,
-            'learning_rate': self.optimizer.param_groups[0]['lr'],
-            'epoch_time': time.time() - epoch_start_time
+            'quality_issues': quality_issues_count
         }
         
-        self.training_metrics_history.append(epoch_metrics)
-        
-        # Проверка лучшей модели
-        if val_result['val_loss'] < self.best_validation_loss:
-            self.best_validation_loss = val_result['val_loss']
-            self.save_checkpoint('best_model.pth', epoch_metrics)
-            self.logger.info(f"💾 Сохранена лучшая модель с val_loss={val_result['val_loss']:.4f}")
-        
-        # Уведомление Smart Tuner о завершении эпохи
         if self.smart_tuner:
             try:
-                updated_hyperparams = self.smart_tuner.on_epoch_end(
-                    self.current_epoch,
-                    epoch_metrics,
-                    current_hyperparams
+                decision = self.smart_tuner.on_epoch_end(
+                    self.current_epoch, epoch_metrics, current_hyperparams
                 )
                 
-                # Применяем обновления если есть
-                if updated_hyperparams != current_hyperparams:
-                    self.apply_hyperparameter_updates(updated_hyperparams)
+                # 🔥 ИСПРАВЛЕНИЕ: Правильная обработка решений Smart Tuner
+                if decision and isinstance(decision, dict):
+                    # Обработка решений Smart Tuner
+                    if decision.get('early_stop', False):
+                        self.logger.info(f"🛑 Smart Tuner рекомендует остановку: {decision.get('reason')}")
+                        return False  # Сигнал остановки обучения
                     
+                    # Применение обновлений гиперпараметров
+                    if decision.get('hyperparameter_updates'):
+                        self.apply_hyperparameter_updates(decision['hyperparameter_updates'])
+                        self.logger.info("🔧 Smart Tuner применил обновления гиперпараметров")
+                        
             except Exception as e:
-                self.logger.error(f"Ошибка Smart Tuner в конце эпохи: {e}")
+                self.logger.error(f"Ошибка Smart Tuner на завершении эпохи: {e}")
         
-        # 📱 Telegram уведомление о завершении эпохи (если важная)
-        if self.telegram_monitor and (self.current_epoch % 10 == 0 or val_result['val_loss'] < self.best_validation_loss):
+        # Сохраняем метрики эпохи
+        self.training_metrics_history.append(epoch_metrics)
+        
+        # Обновляем лучшую validation loss
+        if val_result['val_loss'] < self.best_validation_loss:
+            self.best_validation_loss = val_result['val_loss']
+            self.logger.info(f"🏆 Новый рекорд validation loss: {self.best_validation_loss:.4f}")
+        
+        # 📱 Telegram уведомление каждые 1000 шагов
+        if self.telegram_monitor and self.global_step % 1000 == 0:
             try:
-                message = f"🏁 *Эпоха {self.current_epoch} завершена*\n\n"
-                message += f"📉 **Val Loss:** `{val_result['val_loss']:.4f}`\n"
-                message += f"📊 **Quality:** `{val_result['quality_score']:.1%}`\n"
-                message += f"🎭 **Фаза:** `{current_phase}`\n"
-                message += f"⏱️ **Время:** `{epoch_metrics['epoch_time']:.1f}с`\n"
+                message = f"🎵 **Эпоха {self.current_epoch}** завершена\n"
+                message += f"📊 **Метрики:**\n"
+                message += f"• Train Loss: {epoch_metrics['train_loss']:.4f}\n"
+                message += f"• Val Loss: {val_result['val_loss']:.4f}\n"
+                message += f"• Quality: {val_result['quality_score']:.3f}\n"
+                message += f"• Фаза: {current_phase}\n"
+                message += f"• Время: {epoch_metrics['epoch_time']:.1f}с\n"
+                message += f"• Проблем качества: {quality_issues_count}\n"
                 
                 if val_result['val_loss'] < self.best_validation_loss:
                     message += f"\n🏆 **НОВЫЙ РЕКОРД!** Лучшая модель сохранена!"

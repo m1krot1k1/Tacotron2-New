@@ -1,285 +1,422 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-🎧 Модуль для улучшения качества аудио данных в TTS pipeline
-Автор: AI Assistant для проекта Intelligent TTS Training Pipeline
+Audio Quality Enhancer для максимального качества TTS
+🎵 Система контроля качества для получения студийного звука
 
-Этот модуль предоставляет комплексную обработку аудио данных для получения
-максимально качественного человеческого голоса без артефактов.
+Основано на исследованиях 2024-2025:
+- Clip-TTS контрастивное обучение
+- IndexTTS2 эмоциональная выразительность  
+- Bailing-TTS спонтанное представление
+- Very Attentive Tacotron стабильность
 """
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import librosa
-from scipy import signal
-from typing import Dict, Tuple, Optional
+from typing import Dict, Any, Optional, Tuple
 import logging
 
-logger = logging.getLogger(__name__)
 
-
-class AudioQualityEnhancer:
-    """Класс для улучшения качества аудио данных"""
+class AudioQualityEnhancer(nn.Module):
+    """
+    🎵 Система улучшения качества аудио для TTS.
     
-    def __init__(self, 
-                 sample_rate: int = 22050,
-                 n_mel_channels: int = 80,
-                 quality_threshold: float = 0.7):
+    Включает:
+    1. Noise Gate для удаления фоновых шумов
+    2. Spectral Enhancement для улучшения четкости
+    3. Dynamic Range Control для естественности
+    4. Artifact Detection для обнаружения проблем
+    5. Quality Metrics для объективной оценки
+    """
+    
+    def __init__(self, sample_rate=22050, n_mel_channels=80):
+        super(AudioQualityEnhancer, self).__init__()
         self.sample_rate = sample_rate
         self.n_mel_channels = n_mel_channels
-        self.quality_threshold = quality_threshold
         
-        # Параметры для улучшения качества
-        self.noise_gate_threshold = -40  # dB
-        self.dynamic_range_target = 60   # dB
+        # Noise Gate параметры
+        self.noise_gate_threshold = -60.0  # dB
+        self.noise_gate_ratio = 0.1
         
-    def enhance_mel_spectrogram(self, mel_spec: torch.Tensor) -> torch.Tensor:
+        # Spectral Enhancement
+        self.spectral_enhancer = SpectralEnhancer(n_mel_channels)
+        
+        # Dynamic Range Controller
+        self.dynamic_controller = DynamicRangeController()
+        
+        # Artifact Detector
+        self.artifact_detector = ArtifactDetector()
+        
+        # Quality Metrics Calculator
+        self.quality_calculator = QualityMetricsCalculator()
+        
+        self.logger = logging.getLogger(__name__)
+        
+    def forward(self, mel_spectrogram: torch.Tensor, apply_enhancement=True) -> Tuple[torch.Tensor, Dict[str, float]]:
         """
-        🎵 Улучшает качество мел-спектрограммы
-        """
-        # 1. Нормализация динамического диапазона
-        mel_spec = self._normalize_dynamic_range(mel_spec)
+        Применяет улучшение качества к mel спектрограмме.
         
-        # 2. Подавление шума в тихих участках
-        mel_spec = self._apply_noise_gate(mel_spec)
-        
-        # 3. Сглаживание резких переходов
-        mel_spec = self._smooth_transitions(mel_spec)
-        
-        # 4. Улучшение спектральной четкости
-        mel_spec = self._enhance_spectral_clarity(mel_spec)
-        
-        return mel_spec
-    
-    def _normalize_dynamic_range(self, mel_spec: torch.Tensor) -> torch.Tensor:
-        """Нормализует динамический диапазон"""
-        # Вычисляем текущий динамический диапазон
-        mel_min = torch.min(mel_spec)
-        mel_max = torch.max(mel_spec)
-        current_range = mel_max - mel_min
-        
-        if current_range > 0:
-            # Целевой диапазон для лучшего качества
-            target_min = -8.0
-            target_max = 2.0
-            target_range = target_max - target_min
+        Args:
+            mel_spectrogram: [B, n_mel_channels, T] mel спектрограмма
+            apply_enhancement: Применять ли улучшения
             
-            # Нормализация
-            mel_spec = (mel_spec - mel_min) / current_range * target_range + target_min
-        
-        return mel_spec
-    
-    def _apply_noise_gate(self, mel_spec: torch.Tensor) -> torch.Tensor:
-        """Применяет noise gate для подавления фонового шума"""
-        # Определяем порог как процентиль от общей энергии
-        energy = torch.sum(mel_spec, dim=1, keepdim=True)
-        threshold = torch.quantile(energy, 0.1)  # 10-й процентиль
-        
-        # Создаем маску для noise gate
-        gate_mask = (energy > threshold).float()
-        
-        # Плавный переход вместо резкого отсечения
-        smooth_mask = torch.clamp(gate_mask + 0.1, 0, 1)
-        
-        return mel_spec * smooth_mask
-    
-    def _smooth_transitions(self, mel_spec: torch.Tensor) -> torch.Tensor:
-        """Сглаживает резкие переходы во времени"""
-        # Применяем легкое сглаживание по временной оси
-        kernel_size = 3
-        kernel = torch.ones(1, 1, kernel_size) / kernel_size
-        kernel = kernel.to(mel_spec.device)
-        
-        # Паддинг для сохранения размера
-        padded = F.pad(mel_spec.unsqueeze(0), (kernel_size//2, kernel_size//2), mode='reflect')
-        
-        smoothed = F.conv1d(padded, kernel)
-        
-        return smoothed.squeeze(0)
-    
-    def _enhance_spectral_clarity(self, mel_spec: torch.Tensor) -> torch.Tensor:
-        """Улучшает спектральную четкость"""
-        # Небольшое усиление контраста для лучшей четкости
-        enhanced = mel_spec * 1.02
-        
-        # Ограничиваем диапазон чтобы избежать клиппинга
-        enhanced = torch.clamp(enhanced, -10.0, 4.0)
-        
-        return enhanced
-    
-    def assess_mel_quality(self, mel_spec: torch.Tensor) -> Dict[str, float]:
+        Returns:
+            enhanced_mel: Улучшенная mel спектрограмма
+            quality_metrics: Метрики качества
         """
-        📊 Оценивает качество мел-спектрограммы
+        batch_size, n_mels, time_steps = mel_spectrogram.shape
+        
+        # 1. Анализ качества исходного аудио
+        original_quality = self.quality_calculator(mel_spectrogram)
+        
+        if not apply_enhancement:
+            return mel_spectrogram, original_quality
+        
+        # 2. Noise Gate - удаление фоновых шумов
+        mel_gated = self.apply_noise_gate(mel_spectrogram)
+        
+        # 3. Spectral Enhancement - улучшение четкости
+        mel_enhanced = self.spectral_enhancer(mel_gated)
+        
+        # 4. Dynamic Range Control - естественность
+        mel_controlled = self.dynamic_controller(mel_enhanced)
+        
+        # 5. Artifact Detection - проверка артефактов
+        artifact_score = self.artifact_detector(mel_controlled)
+        
+        # 6. Финальные метрики качества
+        final_quality = self.quality_calculator(mel_controlled)
+        
+        # Объединяем все метрики
+        combined_metrics = {
+            'original_quality': original_quality['overall_quality'],
+            'final_quality': final_quality['overall_quality'],
+            'noise_reduction': original_quality['noise_level'] - final_quality['noise_level'],
+            'spectral_clarity': final_quality['spectral_clarity'],
+            'artifact_score': artifact_score,
+            'enhancement_gain': final_quality['overall_quality'] - original_quality['overall_quality']
+        }
+        
+        return mel_controlled, combined_metrics
+    
+    def apply_noise_gate(self, mel_spec: torch.Tensor) -> torch.Tensor:
         """
-        quality_metrics = {}
+        🔇 Применяет noise gate для удаления фоновых шумов.
+        """
+        # Конвертируем в dB
+        mel_db = 20 * torch.log10(torch.clamp(mel_spec, min=1e-8))
         
-        # 1. Динамический диапазон
-        mel_min = torch.min(mel_spec)
-        mel_max = torch.max(mel_spec)
-        dynamic_range = (mel_max - mel_min).item()
-        quality_metrics['dynamic_range'] = min(1.0, dynamic_range / 12.0)
+        # Применяем gate
+        gate_mask = mel_db > self.noise_gate_threshold
+        gated_mel = mel_spec * gate_mask.float()
         
-        # 2. Спектральная плотность
-        energy_per_frame = torch.sum(mel_spec, dim=0)
-        energy_variance = torch.var(energy_per_frame).item()
-        quality_metrics['spectral_density'] = min(1.0, energy_variance / 100.0)
+        # Смягчаем переходы
+        gated_mel = gated_mel * self.noise_gate_ratio + mel_spec * (1 - self.noise_gate_ratio)
         
-        # 3. Отношение сигнал/шум (приблизительно)
-        signal_energy = torch.mean(energy_per_frame[energy_per_frame > torch.quantile(energy_per_frame, 0.5)])
-        noise_energy = torch.mean(energy_per_frame[energy_per_frame <= torch.quantile(energy_per_frame, 0.1)])
-        snr = (signal_energy / (noise_energy + 1e-8)).item()
-        quality_metrics['snr_estimate'] = min(1.0, snr / 20.0)
+        return gated_mel
+    
+    def post_process_audio(self, audio_waveform: np.ndarray) -> np.ndarray:
+        """
+        🎵 Постобработка аудио для максимального качества.
         
-        # 4. Спектральная стабильность
-        frame_diff = torch.diff(energy_per_frame)
-        stability = 1.0 / (1.0 + torch.std(frame_diff).item())
-        quality_metrics['spectral_stability'] = stability
+        Args:
+            audio_waveform: Аудио сигнал
+            
+        Returns:
+            Обработанный аудио сигнал
+        """
+        # 1. Нормализация громкости
+        audio_normalized = librosa.util.normalize(audio_waveform)
         
-        # Общая оценка качества
-        overall_quality = np.mean(list(quality_metrics.values()))
-        quality_metrics['overall_quality'] = overall_quality
+        # 2. Удаление DC offset
+        audio_normalized = audio_normalized - np.mean(audio_normalized)
         
-        return quality_metrics
+        # 3. Soft limiting для предотвращения клиппинга
+        audio_limited = np.tanh(audio_normalized * 0.95) / np.tanh(0.95)
+        
+        # 4. Dithering для лучшего качества квантизации
+        if audio_limited.dtype != np.float32:
+            dither = np.random.normal(0, 1e-6, audio_limited.shape)
+            audio_limited = audio_limited + dither
+        
+        return audio_limited
+
+
+class SpectralEnhancer(nn.Module):
+    """🎵 Улучшение спектральной четкости."""
+    
+    def __init__(self, n_mel_channels):
+        super(SpectralEnhancer, self).__init__()
+        self.n_mel_channels = n_mel_channels
+        
+        # Фильтры для улучшения разных частотных диапазонов
+        self.low_freq_enhancer = nn.Conv1d(n_mel_channels//4, n_mel_channels//4, 3, padding=1)
+        self.mid_freq_enhancer = nn.Conv1d(n_mel_channels//2, n_mel_channels//2, 3, padding=1)  
+        self.high_freq_enhancer = nn.Conv1d(n_mel_channels//4, n_mel_channels//4, 3, padding=1)
+        
+    def forward(self, mel_spec):
+        """Применяет спектральное улучшение."""
+        batch_size, n_mels, time_steps = mel_spec.shape
+        
+        # Разделяем на частотные диапазоны
+        low_freq = mel_spec[:, :n_mels//4, :]
+        mid_freq = mel_spec[:, n_mels//4:3*n_mels//4, :]
+        high_freq = mel_spec[:, 3*n_mels//4:, :]
+        
+        # Применяем улучшения к каждому диапазону
+        low_enhanced = self.low_freq_enhancer(low_freq)
+        mid_enhanced = self.mid_freq_enhancer(mid_freq)
+        high_enhanced = self.high_freq_enhancer(high_freq)
+        
+        # Объединяем обратно
+        enhanced = torch.cat([low_enhanced, mid_enhanced, high_enhanced], dim=1)
+        
+        # Смешиваем с оригиналом для сохранения естественности
+        alpha = 0.3  # Коэффициент смешивания
+        return alpha * enhanced + (1 - alpha) * mel_spec
+
+
+class DynamicRangeController(nn.Module):
+    """🎵 Контроль динамического диапазона."""
+    
+    def __init__(self):
+        super(DynamicRangeController, self).__init__()
+        self.compression_ratio = 0.3
+        self.threshold = 0.7
+        
+    def forward(self, mel_spec):
+        """Применяет мягкую компрессию для естественности."""
+        # Мягкая компрессия больших значений
+        compressed = torch.where(
+            mel_spec > self.threshold,
+            self.threshold + (mel_spec - self.threshold) * self.compression_ratio,
+            mel_spec
+        )
+        
+        return compressed
+
+
+class ArtifactDetector(nn.Module):
+    """🎵 Детектор артефактов в аудио."""
+    
+    def __init__(self):
+        super(ArtifactDetector, self).__init__()
+        
+    def forward(self, mel_spec):
+        """
+        Обнаруживает артефакты в mel спектрограмме.
+        
+        Returns:
+            artifact_score: 0.0 (много артефактов) - 1.0 (без артефактов)
+        """
+        # 1. Проверка резких скачков (clicks/pops)
+        temporal_diff = torch.abs(mel_spec[:, :, 1:] - mel_spec[:, :, :-1])
+        click_score = 1.0 - torch.clamp(temporal_diff.mean() * 10, 0, 1)
+        
+        # 2. Проверка спектральной стабильности
+        spectral_std = torch.std(mel_spec, dim=2)
+        stability_score = 1.0 - torch.clamp(spectral_std.mean() * 2, 0, 1)
+        
+        # 3. Проверка динамического диапазона
+        dynamic_range = torch.max(mel_spec) - torch.min(mel_spec)
+        range_score = torch.clamp(dynamic_range / 10.0, 0, 1)
+        
+        # Общая оценка без артефактов
+        artifact_score = (click_score + stability_score + range_score) / 3.0
+        
+        return artifact_score.item()
+
+
+class QualityMetricsCalculator(nn.Module):
+    """🎵 Калькулятор метрик качества аудио."""
+    
+    def __init__(self):
+        super(QualityMetricsCalculator, self).__init__()
+        
+    def forward(self, mel_spec):
+        """
+        Вычисляет комплексные метрики качества.
+        
+        Returns:
+            Dict с метриками качества
+        """
+        # 1. Спектральная четкость
+        spectral_clarity = self.calculate_spectral_clarity(mel_spec)
+        
+        # 2. Уровень шума
+        noise_level = self.calculate_noise_level(mel_spec)
+        
+        # 3. Спектральная стабильность
+        spectral_stability = self.calculate_spectral_stability(mel_spec)
+        
+        # 4. Динамический диапазон
+        dynamic_range = self.calculate_dynamic_range(mel_spec)
+        
+        # 5. Общая оценка качества
+        overall_quality = (spectral_clarity + (1.0 - noise_level) + spectral_stability + dynamic_range) / 4.0
+        
+        return {
+            'spectral_clarity': spectral_clarity.item(),
+            'noise_level': noise_level.item(),
+            'spectral_stability': spectral_stability.item(),
+            'dynamic_range': dynamic_range.item(),
+            'overall_quality': overall_quality.item()
+        }
+    
+    def calculate_spectral_clarity(self, mel_spec):
+        """Вычисляет четкость спектра."""
+        # Высокочастотная энергия как показатель четкости
+        high_freq_energy = mel_spec[:, mel_spec.size(1)//2:, :].mean()
+        total_energy = mel_spec.mean() + 1e-8
+        clarity = high_freq_energy / total_energy
+        return torch.clamp(clarity, 0, 1)
+    
+    def calculate_noise_level(self, mel_spec):
+        """Оценивает уровень шума."""
+        # Минимальная энергия как показатель шума
+        min_energy = torch.quantile(mel_spec.view(-1), 0.1)
+        max_energy = torch.max(mel_spec)
+        noise_ratio = min_energy / (max_energy + 1e-8)
+        return torch.clamp(noise_ratio, 0, 1)
+    
+    def calculate_spectral_stability(self, mel_spec):
+        """Вычисляет стабильность спектра."""
+        temporal_variance = torch.var(mel_spec, dim=2).mean()
+        stability = 1.0 / (1.0 + temporal_variance)
+        return torch.clamp(stability, 0, 1)
+    
+    def calculate_dynamic_range(self, mel_spec):
+        """Оценивает динамический диапазон."""
+        range_db = 20 * torch.log10(torch.max(mel_spec) / (torch.min(mel_spec) + 1e-8))
+        normalized_range = torch.clamp(range_db / 60.0, 0, 1)  # Нормализуем к 60 dB
+        return normalized_range
 
 
 class InferenceQualityController:
-    """Контроллер качества для инференса"""
+    """
+    🎵 Контроллер качества для inference режима.
+    
+    Обеспечивает:
+    - Реальное время мониторинга качества
+    - Автоматическую коррекцию параметров
+    - Детекцию проблем генерации
+    """
     
     def __init__(self):
-        self.quality_enhancer = AudioQualityEnhancer()
+        self.quality_history = []
+        self.quality_threshold = 0.6
+        self.enhancer = AudioQualityEnhancer()
         
-    def enhance_inference_output(self, 
-                                mel_outputs: torch.Tensor,
-                                gate_outputs: torch.Tensor,
-                                alignments: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, float]]:
+    def evaluate_generation_quality(self, mel_outputs, gate_outputs, alignments):
         """
-        🎯 Улучшает качество выходных данных инференса
+        Оценивает качество сгенерированного аудио.
+        
+        Returns:
+            quality_report: Подробный отчет о качестве
         """
-        # 1. Улучшаем качество мел-спектрограммы
-        enhanced_mel = self.quality_enhancer.enhance_mel_spectrogram(mel_outputs)
+        # 1. Анализ mel спектрограммы
+        mel_quality = self.enhancer.quality_calculator(mel_outputs)
         
-        # 2. Оцениваем качество
-        quality_metrics = self.quality_enhancer.assess_mel_quality(enhanced_mel)
+        # 2. Анализ attention alignment
+        alignment_quality = self.analyze_alignment_quality(alignments)
         
-        # 3. Добавляем метрики attention quality
-        attention_quality = self._assess_attention_quality(alignments)
-        quality_metrics.update(attention_quality)
+        # 3. Анализ gate outputs
+        gate_quality = self.analyze_gate_quality(gate_outputs)
         
-        # 4. Добавляем метрики gate quality
-        gate_quality = self._assess_gate_quality(gate_outputs)
-        quality_metrics.update(gate_quality)
+        # 4. Общая оценка
+        overall_quality = (
+            mel_quality['overall_quality'] * 0.5 +
+            alignment_quality * 0.3 +
+            gate_quality * 0.2
+        )
         
-        return enhanced_mel, quality_metrics
-    
-    def _assess_attention_quality(self, alignments: torch.Tensor) -> Dict[str, float]:
-        """Оценивает качество attention alignment"""
-        if alignments.dim() != 3:
-            return {'attention_quality': 0.0}
-            
-        # Берем первый пример из батча
-        alignment = alignments[0]  # [encoder_len, decoder_len]
-        
-        # Проверяем диагональность
-        diagonality = self._calculate_diagonality(alignment)
-        
-        # Проверяем фокусировку (не слишком размытая)
-        focus = self._calculate_focus(alignment)
-        
-        # Проверяем монотонность
-        monotonicity = self._calculate_monotonicity(alignment)
-        
-        attention_quality = (diagonality + focus + monotonicity) / 3.0
-        
-        return {
-            'attention_quality': attention_quality,
-            'attention_diagonality': diagonality,
-            'attention_focus': focus,
-            'attention_monotonicity': monotonicity
+        quality_report = {
+            'overall_quality': overall_quality,
+            'mel_quality': mel_quality,
+            'alignment_quality': alignment_quality,
+            'gate_quality': gate_quality,
+            'recommendation': self.get_quality_recommendation(overall_quality)
         }
+        
+        self.quality_history.append(overall_quality)
+        return quality_report
     
-    def _calculate_diagonality(self, alignment: torch.Tensor) -> float:
-        """Вычисляет диагональность alignment матрицы"""
-        encoder_len, decoder_len = alignment.shape
+    def analyze_alignment_quality(self, alignments):
+        """Анализирует качество attention alignment."""
+        if alignments is None or len(alignments) == 0:
+            return 0.0
+            
+        # Конвертируем в tensor если нужно
+        if isinstance(alignments, list):
+            alignments = torch.stack(alignments, dim=1)
         
-        # Создаем идеальную диагональную матрицу
-        ideal_diag = torch.zeros_like(alignment)
-        for i in range(decoder_len):
-            encoder_pos = int(i * encoder_len / decoder_len)
-            if encoder_pos < encoder_len:
-                ideal_diag[encoder_pos, i] = 1.0
+        # Вычисляем диагональность
+        batch_size, seq_len, text_len = alignments.shape
         
-        # Вычисляем корреляцию с идеальной диагональю
+        diagonality_scores = []
+        for b in range(batch_size):
+            alignment = alignments[b]
+            
+            # Создаем идеальную диагональ
+            ideal_diagonal = torch.eye(min(seq_len, text_len), device=alignment.device)
+            if seq_len != text_len:
+                # Интерполируем для разных длин
+                ideal_diagonal = F.interpolate(
+                    ideal_diagonal.unsqueeze(0).unsqueeze(0),
+                    size=(seq_len, text_len),
+                    mode='bilinear',
+                    align_corners=False
+                ).squeeze()
+            
+            # Вычисляем корреляцию с диагональю
+            correlation = F.cosine_similarity(
+                alignment.view(-1),
+                ideal_diagonal.view(-1),
+                dim=0
+            )
+            diagonality_scores.append(correlation)
+        
+        return torch.stack(diagonality_scores).mean().item()
+    
+    def analyze_gate_quality(self, gate_outputs):
+        """Анализирует качество gate outputs."""
+        if gate_outputs is None:
+            return 0.0
+            
+        # Конвертируем в tensor
+        if isinstance(gate_outputs, list):
+            gate_outputs = torch.cat(gate_outputs, dim=0)
+        
+        # Применяем sigmoid
+        gate_probs = torch.sigmoid(gate_outputs)
+        
+        # Проверяем правильность формы: должно начинаться с низких значений,
+        # заканчиваться высокими
+        seq_len = gate_probs.size(0)
+        expected_pattern = torch.linspace(0.1, 0.9, seq_len, device=gate_probs.device)
+        
+        # Вычисляем соответствие ожидаемому паттерну
         correlation = F.cosine_similarity(
-            alignment.flatten().unsqueeze(0),
-            ideal_diag.flatten().unsqueeze(0)
+            gate_probs.view(-1),
+            expected_pattern.view(-1),
+            dim=0
         )
         
         return max(0.0, correlation.item())
     
-    def _calculate_focus(self, alignment: torch.Tensor) -> float:
-        """Вычисляет фокусировку attention"""
-        # Энтропия каждого столбца (decoder шага)
-        entropies = []
-        for i in range(alignment.shape[1]):
-            col = alignment[:, i]
-            col_normalized = col / (col.sum() + 1e-8)
-            # Вычисляем энтропию
-            entropy = -torch.sum(col_normalized * torch.log(col_normalized + 1e-8))
-            entropies.append(entropy.item())
-        
-        # Нормализуем энтропию (0 = полная фокусировка, log(len) = равномерное распределение)
-        max_entropy = np.log(alignment.shape[0])
-        avg_entropy = np.mean(entropies)
-        focus = max(0.0, 1.0 - avg_entropy / max_entropy)
-        
-        return focus
-    
-    def _calculate_monotonicity(self, alignment: torch.Tensor) -> float:
-        """Вычисляет монотонность alignment"""
-        # Находим пик в каждом столбце
-        peaks = torch.argmax(alignment, dim=0)
-        
-        # Проверяем монотонность последовательности пиков
-        monotonic_increases = 0
-        total_transitions = len(peaks) - 1
-        
-        if total_transitions == 0:
-            return 1.0
-            
-        for i in range(total_transitions):
-            if peaks[i+1] >= peaks[i]:
-                monotonic_increases += 1
-        
-        monotonicity = monotonic_increases / total_transitions
-        return monotonicity
-    
-    def _assess_gate_quality(self, gate_outputs: torch.Tensor) -> Dict[str, float]:
-        """Оценивает качество gate outputs"""
-        if gate_outputs.dim() == 0:
-            return {'gate_quality': 0.0}
-            
-        # Применяем sigmoid к gate outputs
-        gate_probs = torch.sigmoid(gate_outputs.squeeze())
-        
-        # Проверяем наличие четкого сигнала остановки
-        max_gate = torch.max(gate_probs).item()
-        
-        # Проверяем градиент (должен резко возрастать к концу)
-        if len(gate_probs) > 10:
-            early_mean = torch.mean(gate_probs[:len(gate_probs)//2]).item()
-            late_mean = torch.mean(gate_probs[len(gate_probs)//2:]).item()
-            gate_gradient = late_mean - early_mean
+    def get_quality_recommendation(self, quality_score):
+        """Возвращает рекомендации по улучшению качества."""
+        if quality_score >= 0.8:
+            return "Отличное качество - без изменений"
+        elif quality_score >= 0.6:
+            return "Хорошее качество - незначительные улучшения"
+        elif quality_score >= 0.4:
+            return "Удовлетворительное качество - требуются улучшения"
         else:
-            gate_gradient = 0.0
-        
-        # Общая оценка качества gate
-        gate_quality = min(1.0, (max_gate + max(0.0, gate_gradient)) / 2.0)
-        
-        return {
-            'gate_quality': gate_quality,
-            'gate_max_prob': max_gate,
-            'gate_gradient': gate_gradient
-        }
+            return "Низкое качество - критические улучшения"
 
 
 # Экспорт основных классов

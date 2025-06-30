@@ -195,6 +195,26 @@ def create_hparams(hparams_string=None, verbose=False):
         attention_chunk_size=None,          # Размер чанка для attention
         
         ################################
+        # NEW: Modern Loss Functions   #
+        ################################
+        # 🎵 Новые loss функции из исследований 2024-2025
+        mel_loss_weight=1.0,                # Основной mel loss
+        gate_loss_weight=1.0,               # Gate loss
+        guide_loss_weight=2.5,              # 🔥 УВЕЛИЧЕНО для лучшего alignment
+        
+        # Продвинутые loss функции
+        spectral_loss_weight=0.3,           # SpectralMelLoss для качества частот
+        perceptual_loss_weight=0.2,         # PerceptualLoss для человеческого восприятия
+        style_loss_weight=0.1,              # StyleLoss для сохранения характера
+        monotonic_loss_weight=0.1,          # MonotonicAlignmentLoss для стабильности
+        
+        # Audio Quality Enhancement
+        use_audio_quality_enhancement=True, # Включить систему улучшения качества
+        quality_enhancement_threshold=0.6,  # Порог для применения улучшений
+        noise_gate_enabled=True,            # Включить noise gate
+        spectral_enhancement_enabled=True,  # Включить спектральное улучшение
+        
+        ################################
         # NEW: Smart Tuner V2 TTS Parameters #
         ################################
         # TTS-специфичные параметры для Smart Tuner V2 (только недостающие)

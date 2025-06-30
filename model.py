@@ -113,7 +113,7 @@ class Prenet(nn.Module):
         
         # 🔥 РЕВОЛЮЦИОННЫЕ улучшения dropout для максимального качества
         self.dropout_rate = dropout_rate
-        self.inference_dropout_rate = max(0.001, dropout_rate * 0.05)  # 🔥 МИНИМИЗИРОВАНО с 0.1 до 0.001
+        self.inference_dropout_rate = 0.001  # 🔥 МИНИМИЗИРОВАНО для стабильной генерации
         
         # 🔥 Адаптивный dropout в зависимости от фазы обучения
         self.adaptive_dropout = True
@@ -131,8 +131,9 @@ class Prenet(nn.Module):
                 else:
                     x = F.dropout(x, p=self.dropout_rate, training=True)
             else:
-                # 🔥 МИНИМАЛЬНЫЙ dropout во время inference для качества
-                x = F.dropout(x, p=self.inference_dropout_rate, training=False)
+                # 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: НЕТ dropout на инференсе для стабильности!
+                # Убираем случайность для консистентной генерации
+                pass  # Никакого dropout на инференсе!
         
         if self.training:
             self.training_step += 1
@@ -537,8 +538,16 @@ class Decoder(nn.Module):
             memory, mask=~get_mask_from_lengths(memory_lengths))
 
         mel_outputs, gate_outputs, alignments, decoder_outputs = [], [], [], []
+        
+        # 🔥 CURRICULUM LEARNING: адаптивный teacher forcing ratio
+        current_teacher_forcing = self.p_teacher_forcing
+        if self.curriculum_teacher_forcing and hasattr(self, 'training_step'):
+            # Постепенно снижаем teacher forcing для лучшей генерализации
+            decay_factor = max(0.95, 0.999 ** (self.training_step / 1000))
+            current_teacher_forcing = max(0.7, self.p_teacher_forcing * decay_factor)
+        
         while len(mel_outputs) < decoder_inputs.size(0) - 1:
-            if self.p_teacher_forcing >= random.random() or len(mel_outputs) == 0:
+            if current_teacher_forcing >= random.random() or len(mel_outputs) == 0:
                 decoder_input = decoder_inputs[len(mel_outputs)]
             else:
                 decoder_input = self.prenet(mel_outputs[-1])
@@ -582,21 +591,31 @@ class Decoder(nn.Module):
                 gate_outputs += [gate_output]
                 alignments += [alignment]
 
-                # if decoder_output is not None:
-                #     decoder_outputs += [decoder_output.squeeze(1)]
-
-                # 🔧 АДАПТИВНЫЙ GATE THRESHOLD для лучшего качества остановки
+                # 🔥 РЕВОЛЮЦИОННЫЙ АДАПТИВНЫЙ GATE THRESHOLD
                 gate_prob = torch.sigmoid(gate_output.data)
                 if self.adaptive_gate and not suppress_gate:
-                    # Адаптивный порог: начинаем с низкого, повышаем со временем
+                    # Адаптивный порог на основе позиции в последовательности
                     step_ratio = len(mel_outputs) / self.max_decoder_steps
-                    adaptive_threshold = self.gate_min_threshold + (self.gate_max_threshold - self.gate_min_threshold) * step_ratio
+                    
+                    # Умная адаптация: начинаем с низкого порога, повышаем до пика, затем снижаем
+                    if step_ratio < 0.3:
+                        # Ранняя фаза: низкий порог для предотвращения преждевременной остановки
+                        adaptive_threshold = self.gate_min_threshold
+                    elif step_ratio < 0.7:
+                        # Средняя фаза: повышаем порог
+                        progress = (step_ratio - 0.3) / 0.4
+                        adaptive_threshold = self.gate_min_threshold + (self.gate_max_threshold - self.gate_min_threshold) * progress
+                    else:
+                        # Поздняя фаза: снижаем порог для естественного завершения
+                        progress = (step_ratio - 0.7) / 0.3
+                        adaptive_threshold = self.gate_max_threshold - (self.gate_max_threshold - self.gate_min_threshold) * progress * 0.5
+                    
                     if gate_prob > adaptive_threshold:
                         break
                 elif not suppress_gate and gate_prob > self.gate_threshold:
                     break
                 elif len(mel_outputs) == self.max_decoder_steps:
-                    # Warning: Reached max decoder steps (скрыто для чистоты логов)
+                    # Достигнута максимальная длина
                     break
 
                 decoder_input = mel_output
@@ -608,25 +627,22 @@ class Decoder(nn.Module):
 
 
 class MIEsitmator(nn.Module):
-    def __init__(self, vocab_size, decoder_dim, hidden_size, dropout=0.5):
+    def __init__(self, vocab_size, decoder_dim, hidden_size, dropout=0.2):
         super(MIEsitmator, self).__init__()
-        # 🔧 ИСПРАВЛЕНИЕ: Снижен dropout для лучшей стабильности MMI
-        safe_dropout = min(0.2, dropout)  # Максимум 0.2 для MMI
-        self.proj = nn.Sequential(
-            LinearNorm(decoder_dim, hidden_size, bias=True, w_init_gain='relu'),
+        self.layers = nn.Sequential(
+            LinearNorm(decoder_dim, hidden_size, w_init_gain='relu'),
             nn.ReLU(),
-            nn.Dropout(p=safe_dropout)  # Безопасный dropout
+            nn.Dropout(max(0.1, dropout)),
+            LinearNorm(hidden_size, vocab_size)
         )
-        self.ctc_proj = LinearNorm(hidden_size, vocab_size + 1, bias=True)
-        self.ctc = nn.CTCLoss(blank=vocab_size, reduction='none')
 
     def forward(self, decoder_outputs, target_phones, decoder_lengths, target_lengths):
-        out = self.proj(decoder_outputs)
-        log_probs = self.ctc_proj(out).log_softmax(dim=2)
-        log_probs = log_probs.transpose(1, 0)
-        ctc_loss = self.ctc(log_probs, target_phones, decoder_lengths, target_lengths)
-        # average by number of frames since taco_loss is averaged.
-        ctc_loss = (ctc_loss / decoder_lengths.float()).mean()
+        phone_logits = self.layers(decoder_outputs)
+        ctc_loss = F.ctc_loss(
+            phone_logits.transpose(0, 1),
+            target_phones, decoder_lengths, target_lengths,
+            reduction='mean', zero_infinity=True
+        )
         return ctc_loss
 
 class Embeder(nn.Module):

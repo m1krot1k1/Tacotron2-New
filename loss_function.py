@@ -3,6 +3,7 @@ import torch
 import numpy as np
 import torch.nn.functional as F
 from typing import Optional, Tuple, Dict, Any
+import math
 
 
 class SpectralMelLoss(nn.Module):
@@ -200,86 +201,106 @@ class Tacotron2Loss(nn.Module):
         max_mel_len = att_ws.size(1)
         max_text_len = att_ws.size(2)
         
-        # 🔥 TENSOR-BASED guided attention (РЕВОЛЮЦИОННО БЫСТРЕЕ)
-        device = att_ws.device
+        # 🔥 ВЕКТОРИЗОВАННАЯ генерация диагональной матрицы
+        # Создаем координатные сетки для всех батчей сразу
+        mel_indices = torch.arange(max_mel_len, device=att_ws.device, dtype=torch.float32).unsqueeze(1)
+        text_indices = torch.arange(max_text_len, device=att_ws.device, dtype=torch.float32).unsqueeze(0)
         
-        # Создаем сетку координат
-        mel_positions = torch.arange(max_mel_len, device=device).float().unsqueeze(1)  # [T_mel, 1]
-        text_positions = torch.arange(max_text_len, device=device).float().unsqueeze(0)  # [1, T_text]
-        
-        # 🔥 ПРАВИЛЬНАЯ формула location-relative attention
-        # Ожидаемая позиция для каждого mel frame
-        expected_text_pos = mel_positions * (max_text_len - 1) / (max_mel_len - 1)  # [T_mel, 1]
-        
-        # Адаптивная sigma (уменьшается со временем)
+        # 🔥 АДАПТИВНАЯ sigma на основе длины последовательности
         adaptive_sigma = self._get_adaptive_sigma()
         
-        # 🔥 Gaussian guided attention (ВЕКТОРИЗИРОВАННО)
-        diff = text_positions - expected_text_pos  # [T_mel, T_text]
-        guided_attention = torch.exp(-(diff ** 2) / (2 * adaptive_sigma ** 2))
+        # 🔥 LOCATION-RELATIVE формула из Very Attentive Tacotron
+        # Нормализуем позиции относительно длин последовательностей
+        mel_normalized = mel_indices / max_mel_len  # [max_mel_len, 1]
+        text_normalized = text_indices / max_text_len  # [1, max_text_len]
         
-        # Расширяем для всего batch
-        guided_attention = guided_attention.unsqueeze(0).expand(batch_size, -1, -1)  # [B, T_mel, T_text]
+        # Вычисляем ожидаемое выравнивание с учетом относительных позиций
+        expected_alignment = torch.exp(-0.5 * ((mel_normalized - text_normalized) ** 2) / (adaptive_sigma ** 2))
         
-        # 🔥 ПРАВИЛЬНАЯ нормализация по text dimension
-        guided_attention = guided_attention / (guided_attention.sum(dim=-1, keepdim=True) + 1e-8)
+        # Нормализация для каждого mel шага
+        expected_alignment = expected_alignment / (expected_alignment.sum(dim=1, keepdim=True) + 1e-8)
         
-        # 🔥 СТАБИЛЬНЫЙ KL divergence loss (лучше чем MSE)
-        # Сначала нормализуем attention weights
-        att_ws_softmax = F.softmax(att_ws, dim=-1)
+        # Добавляем batch размерность и создаем маску
+        expected_alignment = expected_alignment.unsqueeze(0).expand(batch_size, -1, -1)
         
-        # Добавляем small epsilon для стабильности log
-        att_ws_log = torch.log(att_ws_softmax + 1e-8)
+        # 🔥 УМНАЯ маскировка на основе реальных длин
+        mask = torch.zeros_like(expected_alignment, dtype=torch.bool)
+        for b in range(batch_size):
+            actual_mel_len = min(mel_len, max_mel_len) if isinstance(mel_len, int) else min(mel_len[b], max_mel_len)
+            actual_text_len = min(text_len, max_text_len) if isinstance(text_len, int) else min(text_len[b], max_text_len)
+            mask[b, :actual_mel_len, :actual_text_len] = True
         
-        # KL divergence: KL(attention || guided) 
-        guided_loss = F.kl_div(
-            att_ws_log, 
-            guided_attention, 
-            reduction='batchmean'
+        # 🔥 KL DIVERGENCE вместо MSE для лучшей стабильности
+        # Добавляем небольшое epsilon для численной стабильности
+        att_ws_masked = att_ws * mask.float() + 1e-8
+        expected_masked = expected_alignment * mask.float() + 1e-8
+        
+        # Нормализуем распределения
+        att_ws_normalized = att_ws_masked / att_ws_masked.sum(dim=2, keepdim=True)
+        expected_normalized = expected_masked / expected_masked.sum(dim=2, keepdim=True)
+        
+        # 🔥 ВЕКТОРИЗОВАННЫЙ KL divergence
+        kl_div = F.kl_div(
+            torch.log(att_ws_normalized + 1e-8), 
+            expected_normalized, 
+            reduction='none'
         )
         
-        return guided_loss
+        # Маскируем и усредняем
+        kl_div_masked = kl_div * mask.float()
+        
+        # Усредняем по действительным элементам
+        valid_elements = mask.float().sum()
+        if valid_elements > 0:
+            guide_loss = kl_div_masked.sum() / valid_elements
+        else:
+            guide_loss = torch.tensor(0.0, device=att_ws.device, requires_grad=True)
+        
+        return guide_loss
 
     def _get_adaptive_guide_weight(self):
         """
-        🔥 РЕВОЛЮЦИОННЫЙ адаптивный вес guided attention (Very Attentive Tacotron 2025).
+        🔥 АДАПТИВНЫЙ вес guided attention на основе Very Attentive Tacotron.
+        
+        Схема: начинаем с максимального веса, постепенно снижаем до минимума.
         """
-        # 🔥 НОВАЯ формула: сильное влияние в начале, экспоненциальное снижение
-        if self.global_step < 1000:
-            # Первые 1000 шагов - максимальное guided attention
-            return self.guide_loss_weight * 2.0
-        elif self.global_step < 5000:
-            # Следующие 4000 шагов - постепенное снижение
-            progress = (self.global_step - 1000) / 4000
-            return self.guide_loss_weight * (2.0 - 1.5 * progress)
+        # Параметры из гиперпараметров
+        initial_weight = getattr(self.hparams, 'guide_loss_initial_weight', 15.0)  # 🔥 УВЕЛИЧЕНО!
+        decay_start = getattr(self.hparams, 'guide_loss_decay_start', 2000)
+        decay_steps = getattr(self.hparams, 'guide_loss_decay_steps', 25000)
+        min_weight = 0.05  # Минимальный вес для поддержания alignment
+        
+        if self.global_step < decay_start:
+            # Фаза максимального guided attention
+            return initial_weight
+        elif self.global_step < decay_start + decay_steps:
+            # Фаза постепенного снижения
+            progress = (self.global_step - decay_start) / decay_steps
+            # Экспоненциальный decay для плавного снижения
+            decay_factor = math.exp(-progress * 3)  # -3 для умеренного снижения
+            current_weight = min_weight + (initial_weight - min_weight) * decay_factor
+            return max(min_weight, current_weight)
         else:
-            # После 5000 шагов - медленное экспоненциальное снижение
-            decay_rate = 0.99995 ** (self.global_step - 5000)
-            adaptive_weight = self.guide_loss_weight * 0.5 * decay_rate
-            
-            # 🔥 НИКОГДА не убираем guided attention полностью (критично!)
-            min_weight = self.guide_loss_weight * 0.05
-            return max(adaptive_weight, min_weight)
-    
+            # Фаза минимального guided attention
+            return min_weight
+
     def _get_adaptive_sigma(self):
         """
-        🔥 АДАПТИВНАЯ sigma для guided attention (оптимизированная по исследованиям).
-        """
-        # 🔥 НОВАЯ формула sigma - начинаем узко, расширяем для stabilization, потом сужаем
-        if self.global_step < 500:
-            # Первые 500 шагов - узкая sigma для быстрого alignment
-            current_sigma = 0.1
-        elif self.global_step < 2000:
-            # 500-2000 шагов - расширяем для стабилизации
-            progress = (self.global_step - 500) / 1500
-            current_sigma = 0.1 + 0.3 * progress  # 0.1 -> 0.4
-        else:
-            # После 2000 шагов - постепенно сужаем для precision
-            progress = min((self.global_step - 2000) / 8000, 1.0)
-            current_sigma = 0.4 - 0.25 * progress  # 0.4 -> 0.15
+        🔥 АДАПТИВНАЯ sigma для guided attention на основе фазы обучения.
         
-        # Минимальная sigma для предотвращения over-focusing
-        return max(current_sigma, 0.05)
+        Схема: узкая -> широкая -> средняя для оптимального alignment.
+        """
+        if self.global_step < 1000:
+            # Начальная фаза: узкая sigma для точного alignment
+            return 0.1
+        elif self.global_step < 5000:
+            # Расширяющая фаза: увеличиваем sigma для гибкости
+            progress = (self.global_step - 1000) / 4000
+            return 0.1 + 0.3 * progress  # От 0.1 до 0.4
+        else:
+            # Стабилизирующая фаза: средняя sigma для баланса
+            progress = min(1.0, (self.global_step - 5000) / 15000)
+            return 0.4 - 0.25 * progress  # От 0.4 до 0.15
 
 
 class PerceptualLoss(nn.Module):
