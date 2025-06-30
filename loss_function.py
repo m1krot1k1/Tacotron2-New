@@ -158,14 +158,16 @@ class Tacotron2Loss(nn.Module):
         mel_loss = nn.MSELoss()(mel_out, mel_target) + \
                    nn.MSELoss()(mel_out_postnet, mel_target)
         
-        # Gate loss (адаптивный)
-        gate_loss = self.adaptive_gate_loss(gate_out, gate_target, self.global_step)
+        # Gate loss (адаптивный с весом)
+        raw_gate_loss = self.adaptive_gate_loss(gate_out, gate_target, self.global_step)
+        gate_loss = self.gate_loss_weight * raw_gate_loss
         
-        # 🔄 2. GUIDED ATTENTION LOSS (ИСПРАВЛЕННЫЙ из MonoAlign)
+        # 🔥 2. GUIDED ATTENTION LOSS (ИСПРАВЛЕННЫЙ из MonoAlign)
         guide_loss = 0.0
-        if attention_weights is not None and self.guide_loss_weight > 0:
+        # ИСПРАВЛЕНИЕ: Используем alignments из model_output вместо None параметра
+        if alignments is not None and self.guide_loss_weight > 0:
             guide_loss = self.guided_attention_loss(
-                attention_weights, 
+                alignments, 
                 mel_target.size(2), 
                 mel_out.size(1)
             )
@@ -183,37 +185,33 @@ class Tacotron2Loss(nn.Module):
         
         # Monotonic Alignment Loss для стабильности
         monotonic_loss = 0.0
-        if attention_weights is not None:
-            monotonic_loss = self.monotonic_alignment_loss(attention_weights)
+        # ИСПРАВЛЕНИЕ: Используем alignments из model_output
+        if alignments is not None:
+            monotonic_loss = self.monotonic_alignment_loss(alignments)
         
-        # 📊 ОБЩИЙ LOSS с динамическими весами
-        total_loss = (
-            self.mel_loss_weight * mel_loss +
-            self.gate_loss_weight * gate_loss +
-            self._get_adaptive_guide_weight() * guide_loss +
-            self.spectral_loss_weight * spectral_loss +
-            self.perceptual_loss_weight * perceptual_loss +
-            self.style_loss_weight * style_loss +
-            self.monotonic_loss_weight * monotonic_loss
-        )
+        # 🔥 ИСПРАВЛЕНИЕ: Возвращаем 4 компонента, как ожидает train.py
         
         # Обновляем счетчик шагов
         self.global_step += 1
         
-        # Возвращаем детальную информацию о loss
-        loss_dict = {
-            'total_loss': total_loss,
-            'mel_loss': mel_loss,
-            'gate_loss': gate_loss,
-            'guide_loss': guide_loss,
-            'spectral_loss': spectral_loss,
-            'perceptual_loss': perceptual_loss,
-            'style_loss': style_loss,
-            'monotonic_loss': monotonic_loss,
-            'guide_weight': self._get_adaptive_guide_weight()
-        }
+        # Объединяем mel loss + продвинутые loss для совместимости
+        combined_mel_loss = (
+            self.mel_loss_weight * mel_loss +
+            self.spectral_loss_weight * spectral_loss +
+            self.perceptual_loss_weight * perceptual_loss
+        )
         
-        return total_loss, loss_dict
+        # Style loss + monotonic loss как embedding loss
+        combined_emb_loss = (
+            self.style_loss_weight * style_loss +
+            self.monotonic_loss_weight * monotonic_loss
+        )
+        
+        # Адаптивный guided attention loss
+        adaptive_guide_loss = self._get_adaptive_guide_weight() * guide_loss
+        
+        # Возвращаем 4 компонента в ожидаемом формате train.py
+        return combined_mel_loss, gate_loss, adaptive_guide_loss, combined_emb_loss
 
     def guided_attention_loss(self, att_ws, mel_len, text_len):
         """

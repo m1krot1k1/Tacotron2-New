@@ -35,8 +35,12 @@ try:
 except ImportError:
     VISUALIZATION_AVAILABLE = False
 
-import librosa
-import soundfile as sf
+try:
+    import librosa
+    import soundfile as sf
+    AUDIO_AVAILABLE = True
+except ImportError:
+    AUDIO_AVAILABLE = False
 
 
 class TrainingExportSystem:
@@ -446,6 +450,32 @@ def create_export_system(config: Dict[str, Any] = None) -> TrainingExportSystem:
     Фабричная функция для создания системы экспорта
     """
     return TrainingExportSystem(config)
+
+
+def export_training_for_ai(model, metrics, config, output_dir, epoch=0, **kwargs):
+    """
+    🤖 НЕДОСТАЮЩАЯ ФУНКЦИЯ: Экспорт результатов обучения для AI системы
+    
+    Эта функция нужна для совместимости со Smart Tuner системой.
+    """
+    try:
+        export_system = create_export_system()
+        
+        result = export_system.export_training_results(
+            model=model,
+            metrics=metrics,
+            training_config=config,
+            output_directory=output_dir,
+            epoch=epoch,
+            experiment_name=kwargs.get('experiment_name', 'TTS_AI_Training')
+        )
+        
+        print(f"✅ AI экспорт завершен: {result.get('report', 'Unknown')}")
+        return result
+        
+    except Exception as e:
+        print(f"❌ Ошибка AI экспорта: {e}")
+        return {'error': str(e)}
 
 
 if __name__ == "__main__":
