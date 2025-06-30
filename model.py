@@ -110,16 +110,33 @@ class Prenet(nn.Module):
         self.layers = nn.ModuleList(
             [LinearNorm(in_size, out_size, bias=False)
              for (in_size, out_size) in zip(in_sizes, sizes)])
+        
+        # 🔥 РЕВОЛЮЦИОННЫЕ улучшения dropout для максимального качества
         self.dropout_rate = dropout_rate
-        self.inference_dropout_rate = min(0.1, dropout_rate * 0.2)
+        self.inference_dropout_rate = max(0.001, dropout_rate * 0.05)  # 🔥 МИНИМИЗИРОВАНО с 0.1 до 0.001
+        
+        # 🔥 Адаптивный dropout в зависимости от фазы обучения
+        self.adaptive_dropout = True
+        self.training_step = 0
 
     def forward(self, x):
         for linear in self.layers:
             x = F.relu(linear(x))
             if self.training:
-                x = F.dropout(x, p=self.dropout_rate, training=True)
+                # 🔥 Адаптивный dropout для максимального качества
+                if self.adaptive_dropout and self.training_step > 1000:
+                    # После 1000 шагов снижаем dropout для стабильности
+                    adaptive_rate = max(0.01, self.dropout_rate * 0.5)
+                    x = F.dropout(x, p=adaptive_rate, training=True)
+                else:
+                    x = F.dropout(x, p=self.dropout_rate, training=True)
             else:
+                # 🔥 МИНИМАЛЬНЫЙ dropout во время inference для качества
                 x = F.dropout(x, p=self.inference_dropout_rate, training=False)
+        
+        if self.training:
+            self.training_step += 1
+            
         return x
 
 

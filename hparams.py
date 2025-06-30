@@ -75,8 +75,8 @@ def create_hparams(hparams_string=None, verbose=False):
         gate_min_threshold=0.3,            # Минимальный порог gate
         gate_max_threshold=0.8,            # Максимальный порог gate
         
-        p_attention_dropout=0.1,            # СНИЖЕНО с 0.15 до 0.1 для тонкого attention
-        p_decoder_dropout=0.1,              # СНИЖЕНО с 0.15 до 0.1
+        p_attention_dropout=0.005,          # 🔥 РЕВОЛЮЦИОННО СНИЖЕНО! Attention dropout убивает качество
+        p_decoder_dropout=0.01,             # 🔥 МИНИМИЗИРОВАНО для стабильности decoder
         
         # 🔧 НОВЫЕ параметры для curriculum learning
         p_teacher_forcing=1.0,             # Начальное значение
@@ -116,13 +116,13 @@ def create_hparams(hparams_string=None, verbose=False):
         # Optimization Hyperparameters #
         ################################
         use_saved_learning_rate=False,
-        learning_rate=5e-4,                 # 🔧 ВОЗВРАЩЕНО к стандартному - 1e-3 слишком высокое для alignment
-        learning_rate_decay=0.8,            # 🔧 Более мягкое снижение
-        learning_rate_decay_patience=5000,  # 🔧 Даем больше времени на обучение alignment
-        learning_rate_min=1e-5,             # Переименовано из min_learning_rate
-        weight_decay=1e-6,                  # СНИЖЕНО с 1e-5 до 1e-6
-        grad_clip_thresh=1.0,
-        batch_size=48,                      # УВЕЛИЧЕНО с 32 до 48 для стабильности
+        learning_rate=1e-5,                 # 🔥 КРИТИЧЕСКОЕ УЛУЧШЕНИЕ: снижено с 5e-4 до 1e-5 по Very Attentive Tacotron
+        learning_rate_decay=0.95,           # 🔧 Более консервативное снижение
+        learning_rate_decay_patience=3000,  # 🔧 Оптимальное терпение для TTS
+        learning_rate_min=5e-7,             # 🔧 Минимальный learning rate
+        weight_decay=1e-7,                  # 🔧 Еще меньше regularization
+        grad_clip_thresh=0.5,               # 🔧 Меньший gradient clipping для стабильности
+        batch_size=12,                      # 🔥 КРИТИЧЕСКОЕ: снижено с 48 до 12 для лучшего attention quality
         mask_padding=True,
 
         ################################
@@ -132,27 +132,27 @@ def create_hparams(hparams_string=None, verbose=False):
         mmi_map=None,                       # MMI карта (None для автоматического вычисления)
         mmi_weight=0.1,                     # Вес MMI loss
 
-        # 🔧 CRITICAL FIX: Guided Attention для правильного alignment
-        drop_frame_rate=0.05,               # СНИЖЕНО с 0.1 до 0.05
+        # 🔥 РЕВОЛЮЦИОННЫЕ ИСПРАВЛЕНИЯ: Guided Attention по Very Attentive Tacotron 2025
+        drop_frame_rate=0.01,               # 🔥 МИНИМИЗИРОВАНО для максимального качества
         use_gaf=True,
-        update_gaf_every_n_step=2,          # 🔧 Еще чаще обновления - каждые 2 шага
-        max_gaf=0.3,                        # 🔧 Еще мягче для начального обучения
+        update_gaf_every_n_step=1,          # 🔥 КАЖДЫЙ ШАГ! Критично для быстрого alignment
+        max_gaf=0.1,                        # 🔥 МИНИМАЛЬНОЕ значение для мягкого начала
         
-        # 🔧 Динамический вес для Guide Loss - критические исправления
+        # 🔥 РЕВОЛЮЦИОННЫЙ Динамический вес для Guide Loss 
         use_dynamic_guide_loss=True,
-        guide_loss_initial_weight=2.0,      # 🔧 УВЕЛИЧЕНО! Нужен сильный guided loss в начале
-        guide_loss_decay_start=10000,       # 🔧 Позже начинаем снижать
-        guide_loss_decay_steps=100000,      # 🔧 Медленнее снижаем
+        guide_loss_initial_weight=15.0,     # 🔥 МАКСИМАЛЬНО УВЕЛИЧЕНО! Критично для начального alignment
+        guide_loss_decay_start=2000,        # 🔥 Раньше начинаем снижать после стабилизации
+        guide_loss_decay_steps=25000,       # 🔥 Быстрее снижаем для предотвращения переобучения
         
         global_mean_npy='ruslan_global_mean.npy',
         
         ################################
         # Regularization & Stability  #
         ################################
-        # 🔧 КРИТИЧЕСКИЕ исправления dropout для alignment
-        dropout_rate=0.1,                   # 🔧 ЕЩЕ МЕНЬШЕ! Высокий dropout мешает alignment
-        encoder_dropout_rate=0.02,          # 🔧 Минимальный dropout для encoder
-        postnet_dropout_rate=0.05,          # 🔧 Минимальный dropout для postnet
+        # 🔥 РЕВОЛЮЦИОННЫЕ исправления dropout для максимального качества alignment
+        dropout_rate=0.01,                  # 🔥 МИНИМИЗИРОВАНО! Dropout убивает attention quality
+        encoder_dropout_rate=0.005,         # 🔥 ПРАКТИЧЕСКИ УБРАНО для стабильности encoder
+        postnet_dropout_rate=0.01,          # 🔥 МИНИМАЛЬНЫЙ dropout для чистого postnet
         
         # Early stopping parameters - оптимизированы
         early_stopping=True,

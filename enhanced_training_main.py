@@ -33,6 +33,7 @@ from audio_quality_enhancer import AudioQualityEnhancer
 # Импорт Smart Tuner компонентов
 try:
     from smart_tuner.smart_tuner_integration import SmartTunerIntegration
+    from smart_tuner.telegram_monitor import TelegramMonitor
     SMART_TUNER_AVAILABLE = True
 except ImportError:
     SMART_TUNER_AVAILABLE = False
@@ -72,6 +73,15 @@ class EnhancedTacotronTrainer:
                 self.logger.info("🚀 Smart Tuner успешно инициализирован")
             except Exception as e:
                 self.logger.error(f"Ошибка инициализации Smart Tuner: {e}")
+        
+        # 📱 Инициализация Telegram Monitor
+        self.telegram_monitor = None
+        if SMART_TUNER_AVAILABLE:
+            try:
+                self.telegram_monitor = TelegramMonitor()
+                self.logger.info("📱 Telegram Monitor инициализирован")
+            except Exception as e:
+                self.logger.error(f"Ошибка инициализации Telegram Monitor: {e}")
         
         # Инициализация компонентов
         self.model = None
@@ -257,6 +267,18 @@ class EnhancedTacotronTrainer:
             except Exception as e:
                 self.logger.warning(f"Ошибка анализа качества: {e}")
         
+        # 📱 Telegram уведомления каждые 1000 шагов
+        if self.telegram_monitor:
+            try:
+                self.telegram_monitor.send_training_update(
+                    step=self.global_step,
+                    metrics=loss_dict,
+                    attention_weights=alignments,
+                    gate_outputs=gate_outputs
+                )
+            except Exception as e:
+                self.logger.warning(f"Ошибка Telegram уведомления: {e}")
+        
         self.global_step += 1
         
         return {
@@ -389,21 +411,34 @@ class EnhancedTacotronTrainer:
         # Уведомление Smart Tuner о завершении эпохи
         if self.smart_tuner:
             try:
-                decision = self.smart_tuner.on_epoch_end(
-                    self.current_epoch, epoch_metrics, current_hyperparams
+                updated_hyperparams = self.smart_tuner.on_epoch_end(
+                    self.current_epoch,
+                    epoch_metrics,
+                    current_hyperparams
                 )
                 
-                # Обработка решений Smart Tuner
-                if decision.get('early_stop', False):
-                    self.logger.info(f"🛑 Smart Tuner рекомендует остановку: {decision.get('reason')}")
-                    return False  # Сигнал остановки обучения
-                
-                # Применение обновлений гиперпараметров
-                if decision.get('hyperparameter_updates'):
-                    self.apply_hyperparameter_updates(decision['hyperparameter_updates'])
-                
+                # Применяем обновления если есть
+                if updated_hyperparams != current_hyperparams:
+                    self.apply_hyperparameter_updates(updated_hyperparams)
+                    
             except Exception as e:
-                self.logger.error(f"Ошибка Smart Tuner на завершении эпохи: {e}")
+                self.logger.error(f"Ошибка Smart Tuner в конце эпохи: {e}")
+        
+        # 📱 Telegram уведомление о завершении эпохи (если важная)
+        if self.telegram_monitor and (self.current_epoch % 10 == 0 or val_result['val_loss'] < self.best_validation_loss):
+            try:
+                message = f"🏁 *Эпоха {self.current_epoch} завершена*\n\n"
+                message += f"📉 **Val Loss:** `{val_result['val_loss']:.4f}`\n"
+                message += f"📊 **Quality:** `{val_result['quality_score']:.1%}`\n"
+                message += f"🎭 **Фаза:** `{current_phase}`\n"
+                message += f"⏱️ **Время:** `{epoch_metrics['epoch_time']:.1f}с`\n"
+                
+                if val_result['val_loss'] < self.best_validation_loss:
+                    message += f"\n🏆 **НОВЫЙ РЕКОРД!** Лучшая модель сохранена!"
+                
+                self.telegram_monitor._send_text_message(message)
+            except Exception as e:
+                self.logger.warning(f"Ошибка Telegram уведомления эпохи: {e}")
         
         # Логирование результатов эпохи
         self.logger.info(
