@@ -106,9 +106,9 @@ def create_hparams(hparams_string=None, verbose=False):
         # Optimization Hyperparameters #
         ################################
         use_saved_learning_rate=False,
-        learning_rate=1e-3,                 # ПОВЫШЕНО с 5e-4 до 1e-3 для быстрой сходимости
-        learning_rate_decay=0.5,            # Более агрессивное снижение
-        learning_rate_decay_patience=2000,  # Более частое снижение
+        learning_rate=5e-4,                 # 🔧 ВОЗВРАЩЕНО к стандартному - 1e-3 слишком высокое для alignment
+        learning_rate_decay=0.8,            # 🔧 Более мягкое снижение
+        learning_rate_decay_patience=5000,  # 🔧 Даем больше времени на обучение alignment
         learning_rate_min=1e-5,             # Переименовано из min_learning_rate
         weight_decay=1e-6,                  # СНИЖЕНО с 1e-5 до 1e-6
         grad_clip_thresh=1.0,
@@ -122,27 +122,27 @@ def create_hparams(hparams_string=None, verbose=False):
         mmi_map=None,                       # MMI карта (None для автоматического вычисления)
         mmi_weight=0.1,                     # Вес MMI loss
 
-        # Guided Attention Force - исправления для тонких полос
+        # 🔧 CRITICAL FIX: Guided Attention для правильного alignment
         drop_frame_rate=0.05,               # СНИЖЕНО с 0.1 до 0.05
         use_gaf=True,
-        update_gaf_every_n_step=3,          # УМЕНЬШЕНО с 5 до 3 для частых обновлений
-        max_gaf=0.5,                        # СНИЖЕНО с 0.8 до 0.5 для мягкого воздействия
+        update_gaf_every_n_step=2,          # 🔧 Еще чаще обновления - каждые 2 шага
+        max_gaf=0.3,                        # 🔧 Еще мягче для начального обучения
         
-        # Динамический вес для Guide Loss - улучшенные параметры
+        # 🔧 Динамический вес для Guide Loss - критические исправления
         use_dynamic_guide_loss=True,
-        guide_loss_initial_weight=0.5,      # СНИЖЕНО с 1.0 до 0.5
-        guide_loss_decay_start=3000,        # УМЕНЬШЕНО с 5000 до 3000
-        guide_loss_decay_steps=30000,       # УМЕНЬШЕНО с 50000 до 30000
+        guide_loss_initial_weight=2.0,      # 🔧 УВЕЛИЧЕНО! Нужен сильный guided loss в начале
+        guide_loss_decay_start=10000,       # 🔧 Позже начинаем снижать
+        guide_loss_decay_steps=100000,      # 🔧 Медленнее снижаем
         
         global_mean_npy='ruslan_global_mean.npy',
         
         ################################
         # Regularization & Stability  #
         ################################
-        # Критические исправления dropout для тонкого attention
-        dropout_rate=0.3,                   # СНИЖЕНО с 0.5 до 0.3
-        encoder_dropout_rate=0.05,          # СНИЖЕНО с 0.1 до 0.05
-        postnet_dropout_rate=0.1,           # СНИЖЕНО с 0.15 до 0.1
+        # 🔧 КРИТИЧЕСКИЕ исправления dropout для alignment
+        dropout_rate=0.1,                   # 🔧 ЕЩЕ МЕНЬШЕ! Высокий dropout мешает alignment
+        encoder_dropout_rate=0.02,          # 🔧 Минимальный dropout для encoder
+        postnet_dropout_rate=0.05,          # 🔧 Минимальный dropout для postnet
         
         # Early stopping parameters - оптимизированы
         early_stopping=True,

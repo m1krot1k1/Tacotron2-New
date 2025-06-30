@@ -7,11 +7,13 @@ class Tacotron2Loss(nn.Module):
     def __init__(self, hparams, iteration=0):
         super(Tacotron2Loss, self).__init__()
         self.hparams = hparams
-        self.guide_decay = 0.99999
-        self.scale = 40.0 * (self.guide_decay**iteration)
+        self.guide_decay = 0.9999
+        self.scale = 10.0 * (self.guide_decay**iteration)
         # Guide scale скрыт для чистоты логов
-        self.guide_lowbound = 1.0
+        self.guide_lowbound = 0.1
         self.criterion_attention = nn.L1Loss()
+        
+        self.guided_attention = GuidedAttentionLoss(sigma=0.4, alpha=1.0)
 
     def forward(self, model_output, targets):
         _, mel_out, mel_out_postnet, gate_out, alignments_out, tpse_gst_pred,gst_target = model_output
@@ -33,16 +35,10 @@ class Tacotron2Loss(nn.Module):
             nn.MSELoss()(mel_out_postnet, mel_target)
         gate_loss = 1.3 * nn.BCEWithLogitsLoss()(gate_out, gate_target)
 
-        # loss_atten = torch.tensor(0)
-        # if not self.hparams.no_dga:
         attention_masks = torch.ones_like(alignments_out)
-
-        loss_atten = self.criterion_attention(
-                guide_target * alignments_out * attention_masks,
-                torch.zeros_like(alignments_out)) * self.scale
-    
+        loss_atten = torch.mean(alignments_out * guide_target) * self.scale
+        
         self.scale *= self.guide_decay
-        # self.scale = 100
         if self.scale < self.guide_lowbound:
             self.scale = self.guide_lowbound
 
