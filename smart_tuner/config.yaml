@@ -93,9 +93,9 @@ hyperparameter_search_space:
     
   learning_rate:
     type: float
-    min: 1e-6           # Минимум из Style-BERT-VITS2
-    max: 5e-5           # Максимум для стабильности
-    default: 1e-5       # Оптимальное значение из XTTS исследований
+    min: 0.000001       # Минимум из Style-BERT-VITS2
+    max: 0.00005        # Максимум для стабильности
+    default: 0.00001    # Оптимальное значение из XTTS исследований (избегаем научную нотацию)
     log: true
     
   warmup_steps:

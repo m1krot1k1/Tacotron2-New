@@ -45,35 +45,41 @@ class SmartTunerIntegration:
     
     def __init__(self, config_path: str = "smart_tuner/config.yaml", enable_all_features: bool = True):
         """
-        Инициализация Smart Tuner Integration.
+        Инициализирует Smart Tuner Integration с полным набором возможностей.
         
         Args:
-            config_path: Путь к конфигурации Smart Tuner
-            enable_all_features: Включить все возможности (может требовать больше ресурсов)
+            config_path: Путь к конфигурационному файлу
+            enable_all_features: Включить все функции (по умолчанию True)
         """
         self.config_path = config_path
         self.enable_all_features = enable_all_features
+        self.is_initialized = False
         
-        # Загрузка конфигурации
+        # Инициализация базовых компонентов
         self.config = self._load_config()
-        
-        # Настройка логирования
         self.logger = self._setup_logger()
         
-        # Инициализация компонентов Smart Tuner
-        self.optimization_engine = None
-        self.early_stop_controller = None
-        self.epoch_optimizer = None
-        self.quality_controller = None
+        # Инициализация Telegram монитора
+        self.telegram_monitor = None
         
-        # Состояние интеграции
-        self.is_initialized = False
-        self.current_epoch = 0
+        # История метрик для анализа
         self.training_metrics_history = []
+        self.current_epoch = 0
         self.hyperparameter_adjustments = []
         
-        # Инициализация компонентов
-        self._initialize_components()
+        # Компоненты Smart Tuner
+        self.early_stop_controller = None
+        self.quality_controller = None
+        self.epoch_optimizer = None
+        
+        # Инициализация всех компонентов
+        if enable_all_features:
+            self._initialize_components()
+            
+        self.logger.info("Smart Tuner Integration инициализирован")
+        
+        # Инициализация _recent_losses для milestone проверок
+        self._recent_losses = []
         
     def _load_config(self) -> Dict[str, Any]:
         """Загружает конфигурацию Smart Tuner."""
@@ -113,20 +119,32 @@ class SmartTunerIntegration:
         return logger
     
     def _initialize_components(self):
-        """Инициализирует компоненты Smart Tuner."""
+        """Инициализирует все компоненты Smart Tuner"""
         try:
-            # Оптимизационный движок
-            if OptimizationEngine and self.config.get('optimization_enabled', True):
-                self.optimization_engine = OptimizationEngine(self.config_path)
-                self.logger.info("✅ Optimization Engine инициализирован")
+            # Импорт компонентов
+            from smart_tuner.early_stop_controller import EarlyStopController
+            from smart_tuner.advanced_quality_controller import AdvancedQualityController
+            from smart_tuner.intelligent_epoch_optimizer import IntelligentEpochOptimizer
+            from smart_tuner.telegram_monitor_enhanced import TelegramMonitorEnhanced
             
-            # Контроллер раннего останова
+            # Early Stop Controller
             if EarlyStopController and self.config.get('early_stopping_enabled', True):
                 self.early_stop_controller = EarlyStopController(self.config_path)
                 self.logger.info("✅ Early Stop Controller инициализирован")
             
-            # Оптимизатор эпох
-            if IntelligentEpochOptimizer and self.config.get('adaptive_learning_enabled', True):
+            # Telegram Monitor Enhanced
+            try:
+                self.telegram_monitor = TelegramMonitorEnhanced()
+                if self.telegram_monitor.enabled:
+                    self.logger.info("✅ Telegram Monitor Enhanced инициализирован")
+                else:
+                    self.logger.info("📱 Telegram Monitor отключен в конфигурации")
+            except Exception as e:
+                self.logger.warning(f"Telegram Monitor не удалось инициализировать: {e}")
+                self.telegram_monitor = None
+            
+            # Intelligent Epoch Optimizer
+            if IntelligentEpochOptimizer and self.config.get('epoch_optimization_enabled', True):
                 self.epoch_optimizer = IntelligentEpochOptimizer(self.config_path)
                 self.logger.info("✅ Intelligent Epoch Optimizer инициализирован")
             
@@ -369,20 +387,20 @@ class SmartTunerIntegration:
                 self.logger.error(f"Ошибка в Early Stop Controller: {e}")
         
         # Уведомление в Telegram о действии Smart Tuner
-        if hasattr(self, 'telegram_monitor') and self.telegram_monitor:
+        if hasattr(self, 'telegram_monitor') and self.telegram_monitor and decision_result.get('hyperparameter_updates'):
             try:
-                reasoning = self._get_human_readable_reasoning('early_stop', metrics, {})
+                reasoning = self._get_human_readable_reasoning('hyperparameter_update', metrics, {'epoch': epoch})
                 action_details = {
                     'changes': decision_result['hyperparameter_updates'],
                     'trigger_metrics': metrics,
-                    'context': {}
+                    'context': {'epoch': epoch}
                 }
                 
                 self.telegram_monitor.send_smart_tuner_action(
-                    action_type='early_stop',
+                    action_type='hyperparameter_update',
                     action_details=action_details,
                     reasoning=reasoning,
-                    step=0
+                    step=epoch
                 )
             except Exception as e:
                 self.logger.warning(f"Ошибка отправки Telegram уведомления: {e}")

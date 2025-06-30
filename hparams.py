@@ -219,7 +219,7 @@ def create_hparams(hparams_string=None, verbose=False):
         ################################
         # TTS-специфичные параметры для Smart Tuner V2 (только недостающие)
         guided_attention_enabled=True,       # Включение guided attention
-        guide_loss_weight=1.0,              # Простой вес guided loss (дублирует guide_loss_initial_weight)
+        # guide_loss_weight уже определен выше как 2.5
         
         # Примечание: остальные параметры уже определены выше:
         # p_attention_dropout (как attention_dropout), gate_threshold, 

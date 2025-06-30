@@ -445,12 +445,14 @@ class EnhancedTacotronTrainer:
                 # Собираем метрики для отправки
                 telegram_metrics = {
                     'step': self.global_step,
-                    'train_loss': epoch_metrics['train_loss'],
-                    'val_loss': epoch_metrics['val_loss'],
-                    'quality_score': epoch_metrics['quality_score'],
+                    'train_loss': train_loss,
+                    'val_loss': getattr(self, 'last_val_loss', 0),
+                    'attention_diagonality': attention_diagonality,
+                    'gate_accuracy': gate_accuracy,
+                    'quality_score': overall_quality,
                     'learning_rate': self.optimizer.param_groups[0]['lr'],
-                    'phase': epoch_metrics['phase'],
-                    'epoch': epoch_metrics['epoch']
+                    'phase': current_phase,
+                    'epoch': getattr(self, 'current_epoch', 0)
                 }
                 
                 # Отправляем обновление с изображениями attention
