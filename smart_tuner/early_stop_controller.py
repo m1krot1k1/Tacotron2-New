@@ -123,13 +123,39 @@ class EarlyStopController:
         else:
             return "alignment_learning"  # Фаза по умолчанию
     
-    def _update_current_phase(self, metrics: Dict[str, float]):
+    def _update_current_phase(self, metrics: Dict[str, float], telegram_monitor=None):
         """Обновляет текущую фазу обучения и логирует переходы."""
         new_phase = metrics.get('tts_phase', self.current_phase)
         if new_phase != self.current_phase:
-            self.logger.info(f"🔄 Переход фазы обучения: {self.current_phase} → {new_phase}")
+            old_phase = self.current_phase
+            self.logger.info(f"🔄 Переход фазы обучения: {old_phase} → {new_phase}")
             self.current_phase = new_phase
             self.phase_start_step = metrics.get('step', len(self.metrics_history))
+            
+            # 📱 Отправляем Telegram уведомление о смене фазы
+            if telegram_monitor:
+                step = metrics.get('step', len(self.metrics_history))
+                
+                # Формируем достижения предыдущей фазы
+                achievements = []
+                if old_phase == 'pre_alignment' and new_phase == 'alignment_learning':
+                    achievements.append("Базовая инициализация attention завершена")
+                elif old_phase == 'alignment_learning' and new_phase == 'quality_optimization':
+                    achievements.append(f"Диагональность attention достигла {metrics.get('attention_diagonality', 0):.1%}")
+                    achievements.append("Выравнивание текст-аудио стабилизировано")
+                elif old_phase == 'quality_optimization' and new_phase == 'fine_tuning':
+                    achievements.append(f"Точность gate достигла {metrics.get('gate_accuracy', 0):.1%}")
+                    achievements.append("Качество mel-спектрограмм оптимизировано")
+                
+                try:
+                    telegram_monitor.send_training_phase_notification(
+                        old_phase=old_phase,
+                        new_phase=new_phase,
+                        step=step,
+                        achievements=achievements
+                    )
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Не удалось отправить уведомление о смене фазы: {e}")
 
     def decide_next_step(self, current_hparams: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -505,7 +531,8 @@ class EarlyStopController:
         except Exception as e:
             self.logger.error(f"Ошибка обновления TTS награды в БЗ: {e}")
 
-    def _create_tts_response_from_action(self, action: Dict, hparams: Dict) -> Dict:
+    def _create_tts_response_from_action(self, action: Dict, hparams: Dict, 
+                                       step: int = 0, telegram_monitor=None) -> Dict:
         """
         Создает TTS-специфичный ответ на основе действия.
         """
@@ -557,6 +584,28 @@ class EarlyStopController:
                 response['hparams_changes']['learning_rate'] = new_lr
                 
         self.logger.info(f"🎯 TTS действие '{action['name']}' подготовлено для фазы '{self.current_phase}'")
+        
+        # 📱 Отправляем Telegram уведомление об адаптивном действии
+        if telegram_monitor and response['hparams_changes']:
+            old_params = {}  
+            new_params = response['hparams_changes']
+            
+            # Получаем старые значения для сравнения
+            for param_name, new_value in new_params.items():
+                old_params[param_name] = hparams.get(param_name, 'не задано')
+            
+            reason = response['reason']
+            try:
+                telegram_monitor.send_auto_improvement_notification(
+                    improvement_type=action['name'],
+                    old_params=old_params,
+                    new_params=new_params,
+                    reason=reason,
+                    step=step
+                )
+            except Exception as e:
+                self.logger.warning(f"⚠️ Не удалось отправить Telegram уведомление о действии: {e}")
+        
         return response
 
     def should_stop_early(self, metrics: Dict[str, float]) -> Tuple[bool, str]:

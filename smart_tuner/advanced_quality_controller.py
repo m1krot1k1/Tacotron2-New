@@ -762,13 +762,16 @@ class AdvancedQualityController:
             self.logger.error(f"Ошибка сохранения данных качества: {e}")
     
     def apply_quality_intervention(self, intervention: Dict[str, Any], 
-                                  current_hyperparams: Dict[str, Any]) -> Dict[str, Any]:
+                                  current_hyperparams: Dict[str, Any], 
+                                  step: int = 0, telegram_monitor=None) -> Dict[str, Any]:
         """
         Применяет вмешательство для улучшения качества.
         
         Args:
             intervention: Описание вмешательства
             current_hyperparams: Текущие гиперпараметры
+            step: Текущий шаг обучения
+            telegram_monitor: Монитор для Telegram уведомлений
             
         Returns:
             Обновленные гиперпараметры
@@ -777,32 +780,39 @@ class AdvancedQualityController:
         intervention_type = intervention['type']
         params = intervention.get('params', {})
         
+        # Сохраняем старые параметры для уведомления
+        old_params = {}
+        changed_params = {}
+        
         if intervention_type == 'guided_attention_boost':
             multiplier = params.get('guide_loss_weight_multiplier', 1.5)
-            new_hyperparams['guide_loss_weight'] = (
-                current_hyperparams.get('guide_loss_weight', 1.0) * multiplier
-            )
+            old_params['guide_loss_weight'] = current_hyperparams.get('guide_loss_weight', 1.0)
+            new_hyperparams['guide_loss_weight'] = old_params['guide_loss_weight'] * multiplier
+            changed_params['guide_loss_weight'] = new_hyperparams['guide_loss_weight']
             
             slower_decay = params.get('guide_decay_slower', 0.9995)
-            new_hyperparams['guide_decay'] = slower_decay
+            if 'guide_decay' in current_hyperparams:
+                old_params['guide_decay'] = current_hyperparams['guide_decay']
+                new_hyperparams['guide_decay'] = slower_decay
+                changed_params['guide_decay'] = slower_decay
         
         elif intervention_type == 'attention_dropout_reduction':
             multiplier = params.get('attention_dropout_multiplier', 0.5)
-            new_hyperparams['p_attention_dropout'] = (
-                current_hyperparams.get('p_attention_dropout', 0.1) * multiplier
-            )
+            old_params['p_attention_dropout'] = current_hyperparams.get('p_attention_dropout', 0.1)
+            new_hyperparams['p_attention_dropout'] = old_params['p_attention_dropout'] * multiplier
+            changed_params['p_attention_dropout'] = new_hyperparams['p_attention_dropout']
         
         elif intervention_type == 'gate_loss_boost':
             multiplier = params.get('gate_loss_weight_multiplier', 1.3)
-            new_hyperparams['gate_loss_weight'] = (
-                current_hyperparams.get('gate_loss_weight', 1.0) * multiplier
-            )
+            old_params['gate_loss_weight'] = current_hyperparams.get('gate_loss_weight', 1.0)
+            new_hyperparams['gate_loss_weight'] = old_params['gate_loss_weight'] * multiplier
+            changed_params['gate_loss_weight'] = new_hyperparams['gate_loss_weight']
         
         elif intervention_type == 'gate_threshold_adjustment':
             adjustment = params.get('gate_threshold_adjustment', -0.1)
-            new_hyperparams['gate_threshold'] = (
-                current_hyperparams.get('gate_threshold', 0.5) + adjustment
-            )
+            old_params['gate_threshold'] = current_hyperparams.get('gate_threshold', 0.5)
+            new_hyperparams['gate_threshold'] = old_params['gate_threshold'] + adjustment
+            changed_params['gate_threshold'] = new_hyperparams['gate_threshold']
         
         # Записываем вмешательство
         self.quality_interventions.append({
@@ -812,6 +822,22 @@ class AdvancedQualityController:
         })
         
         self.last_intervention_step = len(self.quality_history)
+        
+        self.logger.info(f"✅ Применено качественное вмешательство: {intervention_type}")
+        
+        # 📱 Отправляем Telegram уведомление об автоматическом улучшении
+        if telegram_monitor and changed_params:
+            reason = intervention.get('reason', f"Низкое качество в области: {intervention_type.replace('_', ' ')}")
+            try:
+                telegram_monitor.send_auto_improvement_notification(
+                    improvement_type=intervention_type,
+                    old_params=old_params,
+                    new_params=changed_params,
+                    reason=reason,
+                    step=step
+                )
+            except Exception as e:
+                self.logger.warning(f"⚠️ Не удалось отправить Telegram уведомление: {e}")
         
         return new_hyperparams
     

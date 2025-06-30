@@ -47,6 +47,77 @@ class TelegramMonitor:
         
         self.logger.info("📱 Telegram Monitor инициализирован")
         
+    def send_auto_improvement_notification(self, improvement_type: str, 
+                                         old_params: Dict[str, Any], 
+                                         new_params: Dict[str, Any], 
+                                         reason: str,
+                                         step: int) -> bool:
+        """
+        🤖 Отправляет уведомление об автоматическом улучшении системы.
+        
+        Args:
+            improvement_type: Тип улучшения (learning_rate, guided_attention, etc.)
+            old_params: Старые параметры
+            new_params: Новые параметры  
+            reason: Причина изменения
+            step: Текущий шаг обучения
+        """
+        if not self.enabled:
+            return False
+            
+        try:
+            message = self._create_improvement_message(
+                improvement_type, old_params, new_params, reason, step
+            )
+            
+            result = self._send_text_message(message)
+            if result:
+                self.logger.info(f"✅ Уведомление об улучшении отправлено: {improvement_type}")
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка отправки уведомления об улучшении: {e}")
+            return False
+    
+    def send_problem_detection_alert(self, problems: List[Dict[str, Any]], step: int) -> bool:
+        """
+        🚨 Отправляет критическое уведомление об обнаружении серьезных проблем.
+        """
+        if not self.enabled:
+            return False
+            
+        try:
+            message = self._create_problem_alert_message(problems, step)
+            result = self._send_text_message(message)
+            
+            if result:
+                self.logger.info(f"✅ Критическое уведомление о проблемах отправлено")
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка отправки критического уведомления: {e}")
+            return False
+    
+    def send_training_phase_notification(self, old_phase: str, new_phase: str, 
+                                       step: int, achievements: List[str]) -> bool:
+        """
+        🎯 Уведомление о переходе между фазами обучения.
+        """
+        if not self.enabled:
+            return False
+            
+        try:
+            message = self._create_phase_transition_message(old_phase, new_phase, step, achievements)
+            result = self._send_text_message(message)
+            
+            if result:
+                self.logger.info(f"✅ Уведомление о смене фазы отправлено: {old_phase} → {new_phase}")
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка отправки уведомления о фазе: {e}")
+            return False
+        
     def should_send_notification(self, current_step: int) -> bool:
         """Проверяет нужность отправки уведомления."""
         if not self.enabled:
@@ -538,4 +609,168 @@ class TelegramMonitor:
         if analysis['quality_score'] < 0.6:
             recommendations.append("Включить curriculum learning")
         
-        return recommendations 
+        return recommendations
+    
+    def _create_improvement_message(self, improvement_type: str, 
+                                  old_params: Dict[str, Any], 
+                                  new_params: Dict[str, Any], 
+                                  reason: str, step: int) -> str:
+        """Создает сообщение об автоматическом улучшении."""
+        
+        # Иконки для разных типов улучшений
+        type_icons = {
+            'learning_rate': '⚡',
+            'guided_attention': '🎯', 
+            'dropout': '🛡️',
+            'batch_size': '📦',
+            'gate_threshold': '🚪',
+            'curriculum_learning': '🎓',
+            'early_stopping': '🛑',
+            'gradient_clipping': '✂️'
+        }
+        
+        icon = type_icons.get(improvement_type, '🔧')
+        
+        message = f"🤖 *Smart Tuner - АВТОМАТИЧЕСКОЕ УЛУЧШЕНИЕ*\n\n"
+        message += f"{icon} **Тип:** `{improvement_type.replace('_', ' ').title()}`\n"
+        message += f"📍 **Шаг:** `{step:,}`\n"
+        message += f"🧠 **Причина:** {reason}\n\n"
+        
+        message += f"**📊 ИЗМЕНЕНИЯ ПАРАМЕТРОВ:**\n"
+        
+        # Сравнение старых и новых параметров
+        for param_name in set(list(old_params.keys()) + list(new_params.keys())):
+            old_val = old_params.get(param_name, 'N/A')
+            new_val = new_params.get(param_name, 'N/A')
+            
+            if old_val != new_val:
+                # Определяем направление изменения
+                if isinstance(old_val, (int, float)) and isinstance(new_val, (int, float)):
+                    if new_val > old_val:
+                        trend = "📈"
+                    elif new_val < old_val:
+                        trend = "📉"
+                    else:
+                        trend = "➡️"
+                else:
+                    trend = "🔄"
+                
+                message += f"  {trend} `{param_name}`: `{old_val}` → `{new_val}`\n"
+        
+        message += f"\n💡 **ОЖИДАЕМЫЙ ЭФФЕКТ:**\n"
+        
+        # Предсказания эффекта на основе типа улучшения
+        effects = {
+            'learning_rate': ["🎯 Более стабильное обучение", "⚡ Лучшая сходимость"],
+            'guided_attention': ["🎵 Улучшение alignment", "🎯 Более четкая дикция"],
+            'dropout': ["🛡️ Снижение переобучения", "💪 Лучшая генерализация"],
+            'batch_size': ["⚡ Оптимизация скорости", "📊 Лучшие градиенты"],
+            'gate_threshold': ["🚪 Точное определение конца", "🎵 Лучшая просодия"],
+            'curriculum_learning': ["🎓 Поэтапное усложнение", "🚀 Ускорение обучения"]
+        }
+        
+        expected_effects = effects.get(improvement_type, ["🔧 Общее улучшение качества"])
+        for effect in expected_effects:
+            message += f"  • {effect}\n"
+        
+        message += f"\n🕐 {datetime.now().strftime('%H:%M:%S')}"
+        message += f"\n🎯 *Система продолжает мониторинг...*"
+        
+        return message
+    
+    def _create_problem_alert_message(self, problems: List[Dict[str, Any]], step: int) -> str:
+        """Создает критическое сообщение о проблемах."""
+        
+        message = f"🚨 *КРИТИЧЕСКОЕ ПРЕДУПРЕЖДЕНИЕ*\n\n"
+        message += f"📍 **Шаг:** `{step:,}`\n"
+        message += f"⚠️ **Обнаружено проблем:** `{len(problems)}`\n\n"
+        
+        message += f"**🔍 ДЕТАЛЬНЫЙ АНАЛИЗ:**\n"
+        
+        for i, problem in enumerate(problems[:3], 1):  # Показываем до 3 проблем
+            severity = problem.get('severity', 'medium')
+            severity_icons = {'critical': '🔴', 'high': '🟠', 'medium': '🟡', 'low': '🟢'}
+            icon = severity_icons.get(severity, '⚠️')
+            
+            message += f"{icon} **Проблема {i}:** {problem.get('description', 'Неизвестная проблема')}\n"
+            message += f"   📊 *Значение:* `{problem.get('value', 'N/A')}`\n"
+            message += f"   🎯 *Порог:* `{problem.get('threshold', 'N/A')}`\n"
+            
+            if 'recommendation' in problem:
+                message += f"   💡 *Рекомендация:* {problem['recommendation']}\n"
+            
+            message += "\n"
+        
+        if len(problems) > 3:
+            message += f"⚠️ *И еще {len(problems) - 3} проблем...*\n\n"
+        
+        message += f"🤖 **АВТОМАТИЧЕСКИЕ ДЕЙСТВИЯ:**\n"
+        message += f"  🔄 Система анализирует варианты исправления\n"
+        message += f"  ⚡ Подготовка адаптивных изменений\n"
+        message += f"  📊 Мониторинг эффективности\n\n"
+        
+        message += f"🕐 {datetime.now().strftime('%H:%M:%S')}"
+        message += f"\n🎯 *Следите за уведомлениями об улучшениях!*"
+        
+        return message
+    
+    def _create_phase_transition_message(self, old_phase: str, new_phase: str, 
+                                       step: int, achievements: List[str]) -> str:
+        """Создает сообщение о переходе между фазами."""
+        
+        phase_names = {
+            'pre_alignment': '🌱 Предварительное выравнивание',
+            'alignment_learning': '🎯 Обучение выравниванию', 
+            'quality_optimization': '⭐ Оптимизация качества',
+            'fine_tuning': '🎵 Финальная настройка'
+        }
+        
+        phase_descriptions = {
+            'pre_alignment': 'Модель учится базовым принципам attention',
+            'alignment_learning': 'Отработка точного выравнивания текст-аудио',
+            'quality_optimization': 'Улучшение качества и естественности речи',
+            'fine_tuning': 'Финальная полировка и устранение артефактов'
+        }
+        
+        old_name = phase_names.get(old_phase, old_phase)
+        new_name = phase_names.get(new_phase, new_phase) 
+        new_desc = phase_descriptions.get(new_phase, 'Продолжение обучения')
+        
+        message = f"🎯 *ПЕРЕХОД К НОВОЙ ФАЗЕ ОБУЧЕНИЯ*\n\n"
+        message += f"📍 **Шаг:** `{step:,}`\n"
+        message += f"🔄 **Переход:** {old_name} → {new_name}\n\n"
+        
+        message += f"**🎭 НОВАЯ ФАЗА:**\n"
+        message += f"🎯 *Фокус:* {new_desc}\n\n"
+        
+        if achievements:
+            message += f"**✅ ДОСТИЖЕНИЯ ПРЕДЫДУЩЕЙ ФАЗЫ:**\n"
+            for achievement in achievements:
+                message += f"  🏆 {achievement}\n"
+            message += "\n"
+        
+        # Предсказания для новой фазы
+        phase_predictions = {
+            'alignment_learning': [
+                "📈 Ожидается улучшение диагональности attention",
+                "🎯 Фокус на монотонности выравнивания"
+            ],
+            'quality_optimization': [
+                "⭐ Улучшение качества mel-спектрограмм", 
+                "🎵 Повышение естественности речи"
+            ],
+            'fine_tuning': [
+                "🎵 Устранение последних артефактов",
+                "✨ Доведение до совершенства"
+            ]
+        }
+        
+        predictions = phase_predictions.get(new_phase, ["🚀 Продолжение улучшения качества"])
+        message += f"**🔮 ОЖИДАНИЯ ОТ НОВОЙ ФАЗЫ:**\n"
+        for prediction in predictions:
+            message += f"  • {prediction}\n"
+        
+        message += f"\n🕐 {datetime.now().strftime('%H:%M:%S')}"
+        message += f"\n🎯 *Система адаптирует параметры для новой фазы*"
+        
+        return message 

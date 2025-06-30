@@ -615,38 +615,56 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
                             mlflow.log_metric(metric_name, metric_value, step=iteration)
                 
                 # 📱 Telegram уведомления каждые 100 шагов (чаще для отладки)
-                if telegram_monitor and iteration % 100 == 0:
+                if telegram_monitor:
                     try:
-                        # Получаем attention weights из y_pred
-                        attention_weights = None
-                        gate_outputs = None
+                        print(f"🔍 Проверка Telegram уведомления для шага {iteration}")
+                        print(f"   - telegram_monitor.enabled: {telegram_monitor.enabled}")
+                        print(f"   - should_notify: {telegram_monitor.should_send_notification(iteration)}")
+                        print(f"   - iteration % 100: {iteration % 100}")
                         
-                        if len(y_pred) >= 5:
-                            attention_weights = y_pred[4] if y_pred[4] is not None else None
-                        if len(y_pred) >= 4:
-                            gate_outputs = y_pred[3] if y_pred[3] is not None else None
-                        
-                        # Метрики для Telegram
-                        telegram_metrics = {
-                            "loss": reduced_loss,
-                            "mel_loss": reduced_taco_loss,
-                            "gate_loss": reduced_gate_loss,
-                            "guide_loss": reduced_guide_loss,
-                            "grad_norm": grad_norm,
-                            "learning_rate": learning_rate,
-                            "epoch": epoch
-                        }
-                        
-                        telegram_monitor.send_training_update(
-                            step=iteration,
-                            metrics=telegram_metrics,
-                            attention_weights=attention_weights,
-                            gate_outputs=gate_outputs
-                        )
-                        print(f"📱 Telegram уведомление отправлено для шага {iteration}")
+                        if iteration % 100 == 0:
+                            print(f"🚀 Отправляем Telegram уведомление для шага {iteration}")
+                            
+                            # Получаем attention weights из y_pred
+                            attention_weights = None
+                            gate_outputs = None
+                            
+                            if len(y_pred) >= 5:
+                                attention_weights = y_pred[4] if y_pred[4] is not None else None
+                            if len(y_pred) >= 4:
+                                gate_outputs = y_pred[3] if y_pred[3] is not None else None
+                            
+                            print(f"   - attention_weights: {attention_weights.shape if attention_weights is not None else 'None'}")
+                            print(f"   - gate_outputs: {gate_outputs.shape if gate_outputs is not None else 'None'}")
+                            
+                            # Метрики для Telegram
+                            telegram_metrics = {
+                                "loss": reduced_loss,
+                                "mel_loss": reduced_taco_loss,
+                                "gate_loss": reduced_gate_loss,
+                                "guide_loss": reduced_guide_loss,
+                                "grad_norm": grad_norm,
+                                "learning_rate": learning_rate,
+                                "epoch": epoch
+                            }
+                            
+                            print(f"   - telegram_metrics: {telegram_metrics}")
+                            
+                            result = telegram_monitor.send_training_update(
+                                step=iteration,
+                                metrics=telegram_metrics,
+                                attention_weights=attention_weights,
+                                gate_outputs=gate_outputs
+                            )
+                            
+                            print(f"📱 Telegram уведомление {'УСПЕШНО' if result else 'НЕ'} отправлено для шага {iteration}")
+                        else:
+                            print(f"   - Пропускаем шаг {iteration} (не кратен 100)")
                         
                     except Exception as e:
                         print(f"⚠️ Ошибка Telegram уведомления: {e}")
+                        import traceback
+                        print(f"   Traceback: {traceback.format_exc()}")
 
             if (iteration % hparams.validation_freq == 0):
                 print(f"🔍 Выполняем валидацию на итерации {iteration}")

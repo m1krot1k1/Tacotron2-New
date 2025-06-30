@@ -408,13 +408,16 @@ class SmartTunerIntegration:
         return decision_result
     
     def apply_quality_interventions(self, interventions: list, 
-                                   current_hyperparams: Dict[str, Any]) -> Dict[str, Any]:
+                                   current_hyperparams: Dict[str, Any],
+                                   step: int = 0, telegram_monitor=None) -> Dict[str, Any]:
         """
         Применяет вмешательства для улучшения качества.
         
         Args:
             interventions: Список вмешательств
             current_hyperparams: Текущие гиперпараметры
+            step: Текущий шаг обучения
+            telegram_monitor: Монитор для Telegram уведомлений
             
         Returns:
             Обновленные гиперпараметры
@@ -428,7 +431,7 @@ class SmartTunerIntegration:
             try:
                 # Применяем вмешательство через Quality Controller
                 updated_params = self.quality_controller.apply_quality_intervention(
-                    intervention, updated_params
+                    intervention, updated_params, step, telegram_monitor
                 )
                 
                 self.logger.info(f"✨ Применено вмешательство: {intervention.get('description', 'Unknown')}")

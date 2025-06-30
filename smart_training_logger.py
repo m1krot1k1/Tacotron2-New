@@ -472,6 +472,39 @@ def log_training_warning(message: str, **kwargs) -> None:
         logging.error(f"❌ Ошибка логирования предупреждения: {e}")
 
 
+def log_training_end(experiment_name: str = "TTS_Training", 
+                    final_metrics: Dict[str, Any] = None, 
+                    **kwargs) -> None:
+    """
+    🤖 НЕДОСТАЮЩАЯ ФУНКЦИЯ: Логирование завершения обучения
+    
+    Эта функция нужна для совместимости со Smart Tuner системой.
+    """
+    try:
+        import logging
+        
+        logging.info(f"🏁 Обучение завершено: {experiment_name}")
+        
+        if final_metrics:
+            logging.info(f"📊 Финальные метрики: {final_metrics}")
+            
+            # Пытаемся использовать MLflow если доступен
+            try:
+                import mlflow
+                for metric_name, metric_value in final_metrics.items():
+                    if isinstance(metric_value, (int, float)):
+                        mlflow.log_metric(f"final_{metric_name}", metric_value)
+                        
+            except ImportError:
+                pass  # MLflow недоступен
+            except Exception as e:
+                logging.warning(f"⚠️ Ошибка MLflow логирования финальных метрик: {e}")
+            
+    except Exception as e:
+        import logging
+        logging.warning(f"⚠️ Ошибка логирования завершения обучения: {e}")
+
+
 if __name__ == "__main__":
     # Тестирование системы логирования
     logger = create_smart_logger(experiment_name="Test_TTS")
