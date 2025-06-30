@@ -52,6 +52,18 @@ class TrainerWrapper:
         """
         try:
             logging.info("Импортируем функцию train из train.py...")
+            
+            # 🔥 ИСПРАВЛЕНИЕ ПУТИ: Убеждаемся что loss_function.py в sys.path
+            import sys
+            import os
+            
+            # Добавляем родительскую директорию в sys.path для импорта loss_function
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            parent_dir = os.path.dirname(current_dir)
+            if parent_dir not in sys.path:
+                sys.path.insert(0, parent_dir)
+                logging.info(f"Добавлен в sys.path: {parent_dir}")
+            
             from train import train as core_train_func
             logging.info("Функция train успешно импортирована.")
             
