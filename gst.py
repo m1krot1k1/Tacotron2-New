@@ -166,6 +166,8 @@ class TPSEGST(torch.nn.Module):
 
     def forward(self, x):
         # Detaching from main graph to not send gradient to the GST layer
+        if x is None:
+            return None
         x = x.contiguous().detach()
         x = x.transpose(1, 2)
         x = self.inp(x)

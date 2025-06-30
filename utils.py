@@ -28,6 +28,11 @@ def get_drop_frame_mask_from_lengths(lengths, drop_frame_rate):
 
 def dropout_frame(mels, global_mean, mel_lengths, drop_frame_rate):
     drop_mask = get_drop_frame_mask_from_lengths(mel_lengths, drop_frame_rate)
+    
+    # Если global_mean не задан, используем нулевые значения
+    if global_mean is None:
+        global_mean = torch.zeros(mels.size(1), device=mels.device)
+    
     dropped_mels = (mels * (1.0 - drop_mask).unsqueeze(1) +
                     global_mean[None, :, None] * drop_mask.unsqueeze(1))
     return dropped_mels
@@ -160,3 +165,29 @@ def save_hparams(hparams_path: str, hparams_dict: dict):
 
     with open(hparams_path, 'w', encoding='utf-8') as f:
         f.write(content)
+
+def load_checkpoint(checkpoint_path, model, optimizer):
+    """
+    Загружает чекпоинт для модели и оптимизатора.
+    
+    Args:
+        checkpoint_path: Путь к файлу чекпоинта
+        model: Модель PyTorch
+        optimizer: Оптимизатор PyTorch
+    
+    Returns:
+        Tuple[model, optimizer, learning_rate, iteration]
+    """
+    assert os.path.isfile(checkpoint_path), f"Файл чекпоинта не найден: {checkpoint_path}"
+    print(f"Загрузка чекпоинта '{checkpoint_path}'")
+    
+    # Добавляем weights_only=False для совместимости с PyTorch 2.6+
+    checkpoint_dict = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+    
+    model.load_state_dict(checkpoint_dict['state_dict'])
+    optimizer.load_state_dict(checkpoint_dict['optimizer'])
+    learning_rate = checkpoint_dict['learning_rate']
+    iteration = checkpoint_dict['iteration']
+    
+    print(f"Чекпоинт загружен с итерации {iteration}")
+    return model, optimizer, learning_rate, iteration

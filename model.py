@@ -712,12 +712,24 @@ class Tacotron2(nn.Module):
                 key = GST[token_idx].unsqueeze(0).expand(1, -1, -1)
                 emb_gst = self.gst.stl.attention(query, key)*scale
             else:
-                emb_gst = self.tpse_gst(emb_text)*scale
+                if emb_text is not None:
+                    emb_gst = self.tpse_gst(emb_text)*scale
+                else:
+                    # Fallback: create zero embedding
+                    emb_gst = torch.zeros(1, 1, self.gst.stl.embed.size(-1), 
+                                        device=inputs.device, dtype=inputs.dtype)
 
-            emb_gst = emb_gst.repeat(1, emb_text.size(1), 1)
+            if emb_text is not None:
+                emb_gst = emb_gst.repeat(1, emb_text.size(1), 1)
+            else:
+                # If emb_text is None, use default sequence length
+                emb_gst = emb_gst.repeat(1, inputs.size(1), 1)
          
-            encoder_outputs = torch.cat(
-                    (emb_text, emb_gst), dim=2)
+            if emb_text is not None:
+                encoder_outputs = torch.cat(
+                        (emb_text, emb_gst), dim=2)
+            else:
+                encoder_outputs = emb_gst
 
         mel_outputs, gate_outputs, alignments = self.decoder.inference(
             encoder_outputs, seed=seed)

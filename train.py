@@ -15,10 +15,10 @@ import gradient_adaptive_factor
 from model import Tacotron2
 from data_utils import TextMelLoader, TextMelCollate
 from loss_function import Tacotron2Loss
-from logger import Tacotron2Logger
 from hparams import create_hparams
-from utils import to_gpu
+from plotting_utils import plot_alignment_to_numpy, plot_spectrogram_to_numpy, plot_gate_outputs_to_numpy
 from text import symbol_to_id
+from utils import to_gpu
 
 # MLflow for experiment tracking
 try:
@@ -82,22 +82,6 @@ def prepare_dataloaders(hparams):
     return train_loader, valset, collate_fn
 
 
-def prepare_directories_and_logger(output_directory, log_directory, rank, experiment_name=None):
-    if rank == 0:
-        if not os.path.isdir(output_directory):
-            os.makedirs(output_directory)
-            os.chmod(output_directory, 0o775)
-        # Логи TensorBoard должны быть в log_directory, а не в output_directory
-        if not os.path.isdir(log_directory):
-            os.makedirs(log_directory)
-            os.chmod(log_directory, 0o775)
-        # Передаем имя эксперимента в logger для красивого отображения в TensorBoard
-        logger = Tacotron2Logger(log_directory, run_name=experiment_name)
-    else:
-        logger = None
-    return logger
-
-
 def load_model(hparams):
     model = Tacotron2(hparams).cuda()
     if hparams.fp16_run:
@@ -153,7 +137,7 @@ def save_checkpoint(model, optimizer, learning_rate, iteration, filepath):
 
 
 def validate(model, criterion, valset, iteration, batch_size, n_gpus,
-             collate_fn, logger=None, distributed_run=False, rank=1, minimize=False):
+             collate_fn, writer, distributed_run=False, rank=1, minimize=False):
     """Handles all the validation scoring and printing"""
     model.eval()
     with torch.no_grad():
@@ -179,8 +163,39 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
     model.decoder.p_teacher_forcing = 1.0
     if rank == 0:
         print("Validation loss {}: {:9f}  ".format(iteration, val_loss))
-        if logger:
-            logger.log_validation(val_loss, model, y, y_pred, iteration)
+        
+        # Логирование метрик и изображений напрямую через writer
+        writer.add_scalar("validation.loss", val_loss, iteration)
+
+        # Логирование изображений (взято из Tacotron2Logger)
+        _, mel_outputs, gate_outputs, alignments = model.inference(x[0].unsqueeze(0))
+        mel_targets, gate_targets = y[0], y[1]
+        
+        # plot distribution of parameters
+        for tag, value in model.named_parameters():
+            tag = tag.replace('.', '/')
+            writer.add_histogram(tag, value.data.cpu().numpy(), iteration)
+            
+        idx = 0 # Используем первый элемент из батча
+        writer.add_image(
+            "alignment",
+            plot_alignment_to_numpy(alignments[idx].data.cpu().numpy().T),
+            iteration, dataformats='HWC')
+        writer.add_image(
+            "mel_target",
+            plot_spectrogram_to_numpy(mel_targets[idx].data.cpu().numpy()),
+            iteration, dataformats='HWC')
+        writer.add_image(
+            "mel_predicted",
+            plot_spectrogram_to_numpy(mel_outputs[idx].data.cpu().numpy()),
+            iteration, dataformats='HWC')
+        writer.add_image(
+            "gate",
+            plot_gate_outputs_to_numpy(
+                gate_targets[idx].data.cpu().numpy(),
+                torch.sigmoid(gate_outputs[idx]).data.cpu().numpy()),
+            iteration, dataformats='HWC')
+
         if MLFLOW_AVAILABLE:
             if ENHANCED_LOGGING:
                 # Расширенное логирование validation метрик
@@ -226,7 +241,11 @@ def calculate_global_mean(data_loader, global_mean_npy):
     return to_gpu(global_mean)
 
 def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_mmi_layers, ignore_gst_layers, ignore_tsgst_layers, n_gpus,
-          rank, group_name, hparams):
+          rank, group_name, hparams,
+          # Параметры для интеграции со Smart Tuner
+          smart_tuner_trial=None,
+          smart_tuner_logger=None,
+          tensorboard_writer=None):
     """Training and validation logging results to tensorboard and stdout
 
     Params
@@ -234,12 +253,11 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
     output_directory (string): directory to save checkpoints
     log_directory (string) directory to save tensorboard logs
     checkpoint_path(string): checkpoint path
+    warm_start(bool): load model from checkpoint
     n_gpus (int): number of gpus
     rank (int): rank of current gpu
     hparams (object): comma separated list of "name=value" pairs.
     """
-    # torch.autograd.set_detect_anomaly(True)
-
     if hparams.distributed_run:
         init_distributed(hparams, n_gpus, rank, group_name)
 
@@ -248,98 +266,50 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
     random.seed(hparams.seed)
     np.random.seed(hparams.seed)
 
-    train_loader, valset, collate_fn = prepare_dataloaders(hparams)
-    if hparams.drop_frame_rate > 0.:
-        global_mean = calculate_global_mean(train_loader, hparams.global_mean_npy)
-        hparams.global_mean = global_mean
-    
-    hparams.end_symbols_ids = [symbol_to_id[s] for s in '?!.']
-
-
     model = load_model(hparams)
     learning_rate = hparams.learning_rate
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate,
                                  weight_decay=hparams.weight_decay)
+
+    # ---------- FP16 / Mixed Precision ---------
+    apex_available = False  # Флаг наличия NVIDIA Apex
+    use_native_amp = False  # Флаг использования torch.cuda.amp
+    scaler = None           # GradScaler для native AMP
 
     if hparams.fp16_run:
         try:
             from apex import amp
             model, optimizer = amp.initialize(
                 model, optimizer, opt_level='O2')
-            hparams.use_builtin_amp = False
+            apex_available = True
+            print("✅ NVIDIA Apex успешно загружен для FP16 обучения")
         except ImportError:
-            # Используем встроенный в PyTorch AMP если apex недоступен
-            print("Apex недоступен, используем встроенный PyTorch AMP")
-            hparams.use_builtin_amp = True
-    else:
-        hparams.use_builtin_amp = False
-    
-    # Создаем scaler для встроенного AMP
-    if hparams.fp16_run and hparams.use_builtin_amp:
-        # Используем новую сигнатуру для PyTorch 2.6+
-        try:
-            scaler = torch.amp.GradScaler('cuda')
-        except (AttributeError, TypeError):
-            # Fallback для старых версий PyTorch
-            scaler = torch.cuda.amp.GradScaler()
+            # Apex недоступен – используем встроенный AMP PyTorch
+            try:
+                from torch.cuda.amp import GradScaler, autocast
+                scaler = GradScaler()
+                use_native_amp = True
+                print("✅ NVIDIA Apex не найден. Переключаемся на torch.cuda.amp (PyTorch Native AMP)")
+            except ImportError as e:
+                # Даже native AMP недоступен – отключаем FP16
+                hparams.fp16_run = True
+                print(f"❌ Mixed precision недоступна: {e}. FP16 отключён.")
+    # -------------------------------------------
 
     if hparams.distributed_run:
         model = apply_gradient_allreduce(model)
 
-    # Извлекаем имя эксперимента из пути для красивого отображения в TensorBoard
-    experiment_name = os.path.basename(output_directory)
-    logger = prepare_directories_and_logger(
-        output_directory, log_directory, rank, experiment_name)
+    criterion = Tacotron2Loss(hparams)
 
-    # ---------------- MLflow ----------------
-    if MLFLOW_AVAILABLE and rank == 0:
-        try:
-            mlflow.set_tracking_uri("http://localhost:5000")
-        except Exception:
-            pass  # fallback to default URI
-        experiment_name = os.path.basename(output_directory)
-        # Проверяем, есть ли уже активный run от Smart Tuner
-        existing_run_id = os.getenv('MLFLOW_RUN_ID')
-        if existing_run_id:
-            # Используем существующий run, созданный Smart Tuner
-            mlflow.start_run(run_id=existing_run_id)
-            print(f"🔗 Подключились к существующему MLflow run: {existing_run_id}")
-        else:
-            # Создаем новый run (обычный режим)
-            mlflow.set_experiment(experiment_name)
-            mlflow.start_run()
-        
-        # Добавим тег, чтобы было понятно, что это вложенный/дочерний процесс
-        # Это также поможет нам понять, что train.py был запущен тюнером
-        if os.getenv('MLFLOW_RUN_ID'):
-            mlflow.set_tag("run_type", "smart_tuner_child")
-            
-        # Логируем базовые гиперпараметры
-        mlflow.log_params({
-            "batch_size": hparams.batch_size,
-            "learning_rate": learning_rate,
-            "fp16": hparams.fp16_run,
-            "gaf": hparams.use_gaf,
-            "dataset": os.path.basename(hparams.training_files)
-        })
+    train_loader, valset, collate_fn = prepare_dataloaders(hparams)
 
     # Load checkpoint if one exists
     iteration = 0
     epoch_offset = 0
     if checkpoint_path is not None:
-        if warm_start or ignore_mmi_layers or ignore_gst_layers or ignore_tsgst_layers:
-            layers = []
-            exclude = None
-            if warm_start:
-                layers += hparams.ignore_layers
-            if ignore_mmi_layers:
-                layers += hparams.mmi_ignore_layers
-            if ignore_gst_layers:
-                exclude = 'gst.'
-            if ignore_tsgst_layers:
-                exclude = 'tpse_gst.'
+        if warm_start:
             model = warm_start_model(
-                checkpoint_path, model, layers, exclude)
+                checkpoint_path, model, hparams.ignore_layers)
         else:
             model, optimizer, _learning_rate, iteration = load_checkpoint(
                 checkpoint_path, model, optimizer)
@@ -348,242 +318,137 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
             iteration += 1  # next iteration is iteration + 1
             epoch_offset = max(0, int(iteration / len(train_loader)))
 
-    criterion = Tacotron2Loss(hparams, iteration=iteration)
-
     model.train()
-    is_overflow = False
-    
-    # Learning Rate Scheduler - отслеживание validation loss
-    best_val_loss = float('inf')
-    patience_counter = 0
-    # Early stopping variables
-    early_best_val_loss = float('inf')
-    early_patience_counter = 0
-    stop_training = False
-    
-    # ================ MAIN TRAINNIG LOOP! ===================
+    is_main_node = (rank == 0)
+
+    # 💡 Используем переданный writer, а не создаем новый
+    writer = tensorboard_writer if is_main_node else None
+
+    if is_main_node and writer is None:
+        # Для обратной совместимости, если train.py запускается напрямую
+        from torch.utils.tensorboard import SummaryWriter
+        writer = SummaryWriter(log_directory)
+
+    if hparams.use_mmi:
+        from mmi_loss import MMI_loss
+        mmi_loss = MMI_loss(hparams.mmi_map, hparams.mmi_weight)
+        print("✅ MMI loss загружен")
+
+    if hparams.use_guided_attn:
+        from loss_function import GuidedAttentionLoss
+        guide_loss = GuidedAttentionLoss(alpha=hparams.guided_attn_weight)
+        print("✅ Guided Attention Loss загружен")
+
+    global_mean = calculate_global_mean(train_loader, hparams.global_mean_npy)
+
+    # ================ MAIN TRAINNIG LOOP ===================
     for epoch in range(epoch_offset, hparams.epochs):
         print("Epoch: {}".format(epoch))
         for i, batch in enumerate(train_loader):
             start = time.perf_counter()
-
-            # --- Learning Rate Warm-up ---
-            if iteration < hparams.warmup_steps:
-                learning_rate = hparams.learning_rate * (iteration + 1) / hparams.warmup_steps
-            else:
-                # После прогрева можно использовать основную стратегию (например, decay)
-                # Текущая логика decay уже есть ниже, в секции валидации
-                pass # Просто используем текущий learning_rate
-
-            for param_group in optimizer.param_groups:
-                param_group['lr'] = learning_rate
-
             model.zero_grad()
-            x, y = model.parse_batch(batch)
             
-            # Используем autocast для forward pass если включен FP16
-            if hparams.fp16_run and hparams.use_builtin_amp:
-                with torch.cuda.amp.autocast():
+            x, y = model.parse_batch(batch)
+
+            # Forward pass с учётом выбранной схемы mixed precision
+            if hparams.fp16_run and use_native_amp:
+                with autocast():
                     y_pred = model(x)
-                    _loss = criterion(y_pred, y)
-                    loss = sum(_loss)
+                    
+                    # total loss
+                    loss_taco, loss_gate, loss_atten, loss_emb = criterion(y_pred, y)
+                    loss_guide = guide_loss(y_pred) if hparams.use_guided_attn else torch.tensor(0.0, device=y_pred[0].device)
+                    loss_mmi = mmi_loss(y_pred[1], y[0]) if hparams.use_mmi else torch.tensor(0.0, device=y_pred[0].device)
+                    loss = loss_taco + loss_gate + loss_atten + loss_guide + loss_mmi + loss_emb
             else:
                 y_pred = model(x)
-                _loss = criterion(y_pred, y)
-                loss = sum(_loss)
-            guide_loss_val = _loss[2]
-            gate_loss = _loss[1]
-            emb_loss = _loss[3]
-            
-            # --- Расчет динамического веса для Guide Loss ---
-            guide_loss_weight = hparams.guide_loss_initial_weight
-            if hparams.use_dynamic_guide_loss and iteration > hparams.guide_loss_decay_start:
-                decay_progress = min(1.0, (iteration - hparams.guide_loss_decay_start) / hparams.guide_loss_decay_steps)
-                guide_loss_weight = hparams.guide_loss_initial_weight * (1.0 - decay_progress)
-
-            # Пересчитываем общую потерю с учетом веса
-            # _loss[2] - это guide_loss
-            loss = _loss[0] + _loss[1] + (guide_loss_val * guide_loss_weight) + _loss[3]
-
-            if model.mi is not None:
-                # transpose to [b, T, dim]
-                decoder_outputs = y_pred[0].transpose(2, 1)
-                ctc_text, ctc_text_lengths, aco_lengths = x[-2], x[-1], x[4]
-                mi_loss = model.mi(decoder_outputs, ctc_text, aco_lengths, ctc_text_lengths)
-                taco_loss = loss
-                if hparams.use_gaf:
-                    if i % hparams.update_gaf_every_n_step == 0:
-                        safe_loss = 0. * sum([x.sum() for x in model.parameters()])
-                        gaf = gradient_adaptive_factor.calc_grad_adapt_factor(
-                            taco_loss + safe_loss, mi_loss + safe_loss, model.parameters(), optimizer)
-                        gaf = min(gaf, hparams.max_gaf)
-                else:
-                    gaf = 1.0
-                loss = loss + gaf * mi_loss
-            else:
-                taco_loss = sum([_loss[0],_loss[1]])
-                mi_loss = torch.tensor([-1.0])
-                gaf = -1.0
+                # total loss
+                loss_taco, loss_gate, loss_atten, loss_emb = criterion(y_pred, y)
+                loss_guide = guide_loss(y_pred) if hparams.use_guided_attn else torch.tensor(0.0, device=y_pred[0].device)
+                loss_mmi = mmi_loss(y_pred[1], y[0]) if hparams.use_mmi else torch.tensor(0.0, device=y_pred[0].device)
+                loss = loss_taco + loss_gate + loss_atten + loss_guide + loss_mmi + loss_emb
 
             if hparams.distributed_run:
                 reduced_loss = reduce_tensor(loss.data, n_gpus).item()
-                taco_loss = reduce_tensor(taco_loss.data, n_gpus).item()
-                mi_loss = reduce_tensor(mi_loss.data, n_gpus).item()
-                guide_loss = reduce_tensor(guide_loss_val.data, n_gpus).item()
-                gate_loss = reduce_tensor(gate_loss.data, n_gpus).item()
-                emb_loss = reduce_tensor(emb_loss.data, n_gpus).item()
             else:
                 reduced_loss = loss.item()
-                taco_loss = taco_loss.item()
-                mi_loss = mi_loss.item()
-                guide_loss = guide_loss_val.item()
-                gate_loss = gate_loss.item()
-                emb_loss = emb_loss.item()
-            if hparams.fp16_run:
-                if hparams.use_builtin_amp:
-                    # Используем встроенный PyTorch AMP
-                    scaler.scale(loss).backward()
-                else:
-                    # Используем apex AMP
-                    with amp.scale_loss(loss, optimizer) as scaled_loss:
-                        scaled_loss.backward()
+                reduced_taco_loss = loss_taco.item()
+                reduced_atten_loss = loss_atten.item()
+                reduced_mi_loss = loss_mmi.item()
+                reduced_guide_loss = loss_guide.item() if hparams.use_guided_attn else 0.0
+                reduced_gate_loss = loss_gate.item()
+                reduced_emb_loss = loss_emb.item()
+
+            # Backward pass
+            if hparams.fp16_run and apex_available:
+                with amp.scale_loss(loss, optimizer) as scaled_loss:
+                    scaled_loss.backward()
+            elif hparams.fp16_run and use_native_amp:
+                scaler.scale(loss).backward()
             else:
                 loss.backward()
 
-            if hparams.fp16_run and hparams.use_builtin_amp:
-                # Используем встроенный PyTorch AMP
-                scaler.unscale_(optimizer)
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), hparams.grad_clip_thresh)
-                is_overflow = math.isnan(grad_norm) or math.isinf(grad_norm)
-                
-                if not is_overflow:
-                    scaler.step(optimizer)
-                    scaler.update()
-                else:
-                    # При overflow все равно нужно вызвать update для сброса состояния scaler
-                    scaler.update()
-                    if rank == 0:
-                        print(f"Gradient overflow. Skipping step {iteration}...")
-            elif hparams.fp16_run:
-                # Используем apex AMP
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    amp.master_params(optimizer), hparams.grad_clip_thresh)
-                is_overflow = math.isnan(grad_norm) or math.isinf(grad_norm)
-                
-                if not is_overflow:
-                    optimizer.step()
-                elif rank == 0:
-                    print(f"Gradient overflow. Skipping step {iteration}...")
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                model.parameters(), hparams.grad_clip_thresh)
+            
+            # Optimizer step с учётом схемы mixed precision
+            if hparams.fp16_run and use_native_amp:
+                scaler.step(optimizer)
+                scaler.update()
             else:
-                # Обычное обучение без FP16
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), hparams.grad_clip_thresh)
-                is_overflow = math.isnan(grad_norm) or math.isinf(grad_norm)
-                
-                if not is_overflow:
-                    optimizer.step()
-                elif rank == 0:
-                    print(f"Gradient overflow. Skipping step {iteration}...")
+                optimizer.step()
 
-            if not is_overflow and rank == 0:
+            if is_main_node:
                 duration = time.perf_counter() - start
-                print("Train loss {} {:.4f} mi_loss {:.4f} guide_loss {:.4f} gate_loss {:.4f} emb_loss {:.4f} Grad Norm {:.4f} {:.2f}s/it".format(
-                    iteration, taco_loss, mi_loss, guide_loss, gate_loss, emb_loss, grad_norm, duration))
-                logger.log_training(
-                    reduced_loss, taco_loss, mi_loss, guide_loss, gate_loss, emb_loss, grad_norm,
-                    learning_rate, duration, iteration, guide_loss_weight)
+                print("Train loss {} {:.6f} Grad Norm {:.6f} {:.2f}s/it".format(
+                    iteration, reduced_loss, grad_norm, duration))
+                
+                # Логирование в TensorBoard
+                writer.add_scalar("training.loss", reduced_loss, iteration)
+                writer.add_scalar("training.taco_loss", reduced_taco_loss, iteration)
+                writer.add_scalar("training.atten_loss", reduced_atten_loss, iteration)
+                writer.add_scalar("training.mi_loss", reduced_mi_loss, iteration)
+                writer.add_scalar("training.guide_loss", reduced_guide_loss, iteration)
+                writer.add_scalar("training.gate_loss", reduced_gate_loss, iteration)
+                writer.add_scalar("training.emb_loss", reduced_emb_loss, iteration)
+                writer.add_scalar("grad.norm", grad_norm, iteration)
+                writer.add_scalar("learning.rate", learning_rate, iteration)
+                writer.add_scalar("duration", duration, iteration)
+                if hparams.use_guided_attn:
+                     writer.add_scalar("training.guide_loss_weight", guide_loss.get_weight(), iteration)
 
-                # MLflow metrics (улучшенное логирование)
-                if MLFLOW_AVAILABLE:
-                    metrics_to_log = {
-                        "training.loss": reduced_loss,
-                        "training.taco_loss": taco_loss,
-                        "training.mi_loss": mi_loss,
-                        "training.guide_loss": guide_loss,
-                        "training.gate_loss": gate_loss,
-                        "training.emb_loss": emb_loss,
-                        "grad_norm": grad_norm,
-                        "learning_rate": learning_rate,
-                        "duration": duration,
-                        "guide_loss_weight": guide_loss_weight
-                    }
-                    
-                    if ENHANCED_LOGGING:
-                        # Используем улучшенное логирование с системными метриками
-                        log_enhanced_training_metrics(metrics_to_log, iteration)
-                    else:
-                        # Стандартное логирование
-                        mlflow.log_metrics(metrics_to_log, step=iteration)
-
-            if not is_overflow and (iteration % hparams.iters_per_checkpoint == 0):
+            if (iteration % hparams.validation_freq == 0):
                 val_loss = validate(model, criterion, valset, iteration,
-                         hparams.batch_size, n_gpus, collate_fn, logger,
+                         hparams.batch_size, n_gpus, collate_fn, writer,
                          hparams.distributed_run, rank)
-                
-                # Learning Rate Scheduler based on validation loss
-                if rank == 0:
-                    if val_loss < best_val_loss:
-                        best_val_loss = val_loss
-                        patience_counter = 0
-                        print(f"📈 Новый лучший validation loss: {val_loss:.4f}")
-                    else:
-                        patience_counter += 1
-                        print(f"⏳ Validation loss не улучшился: {patience_counter}/{hparams.learning_rate_decay_patience}")
-                        
-                        if patience_counter >= hparams.learning_rate_decay_patience:
-                            old_lr = learning_rate
-                            learning_rate = max(learning_rate * hparams.learning_rate_decay, 
-                                              hparams.min_learning_rate)
-                            if learning_rate != old_lr:
-                                print(f"🔻 Learning Rate снижен: {old_lr:.6f} → {learning_rate:.6f}")
-                                patience_counter = 0
-                            else:
-                                print(f"⚠️ Learning Rate достиг минимума: {learning_rate:.6f}")
-                
-                # ---------- Early Stopping Logic ----------
-                if rank == 0 and hparams.early_stopping:
-                    improvement = early_best_val_loss - val_loss
-                    if improvement > hparams.early_stopping_min_delta:
-                        early_best_val_loss = val_loss
-                        early_patience_counter = 0
-                        print(f"✅ EarlyStopping: улучшение {improvement:.6f}, счетчик сброшен")
-                    else:
-                        early_patience_counter += 1
-                        print(f"⚠️ EarlyStopping patience: {early_patience_counter}/{hparams.early_stopping_patience}")
-                        if early_patience_counter >= hparams.early_stopping_patience:
-                            print("🛑 Early stopping triggered. Останавливаем обучение…")
-                            stop_training = True
+                if is_main_node:
+                    # Логирование validation loss для Optuna
+                    if smart_tuner_trial:
+                        smart_tuner_trial.report(val_loss, iteration)
+                        if smart_tuner_trial.should_prune():
+                            raise optuna.TrialPruned()
 
-                # Распространяем флаг остановки на все процессы в распределенном режиме
-                if hparams.distributed_run:
-                    flag_tensor = torch.tensor([1 if stop_training else 0], dtype=torch.int, device=('cuda' if torch.cuda.is_available() else 'cpu'))
-                    dist.broadcast(flag_tensor, src=0)
-                    stop_training = bool(flag_tensor.item())
-
-                if stop_training:
-                    break
-
-                if rank == 0:
-                    checkpoint_path = os.path.join(
-                        output_directory, "checkpoint_{}".format(iteration))
-                    save_checkpoint(model, optimizer, learning_rate, iteration,
-                                    checkpoint_path)
+            if is_main_node and (iteration % hparams.iters_per_checkpoint == 0):
+                checkpoint_path = os.path.join(
+                    output_directory, "checkpoint_{}".format(iteration))
+                save_checkpoint(model, optimizer, learning_rate, iteration,
+                                checkpoint_path)
 
             iteration += 1
 
-            if stop_training:
-                break
-
-        if stop_training:
-            print("🏁 Обучение завершено по Early Stopping.")
-            break
-
-    # Завершаем MLflow run
-    if MLFLOW_AVAILABLE and rank == 0 and mlflow.active_run() is not None:
-        mlflow.end_run()
-
-    logger.close()
+    # Сохраняем финальные метрики для Smart Tuner
+    if is_main_node:
+        val_loss = validate(model, criterion, valset, iteration, hparams.batch_size, n_gpus, collate_fn, writer, hparams.distributed_run, rank)
+        final_metrics = {
+            "validation_loss": val_loss,
+            "iteration": iteration,
+            "checkpoint_path": checkpoint_path
+        }
+        if writer:
+            writer.close()
+        return final_metrics
+    
+    return None
 
 
 if __name__ == '__main__':

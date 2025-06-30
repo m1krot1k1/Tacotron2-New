@@ -17,10 +17,11 @@ def create_hparams(hparams_string=None, verbose=False):
         iters_per_checkpoint=1000,          # Увеличено для стабильности
         save_interval=2000,                 # Увеличено для экономии места
         validate_interval=200,              # Более частая валидация
+        validation_freq=200,                # Частота валидации (iterations)
         warmup_steps=2000,                  # Увеличено для лучшей стабильности
         seed=1234,
         dynamic_loss_scaling=True,
-        fp16_run=True,                      # Оставляем включенным, но улучшены настройки loss scaling
+        fp16_run=True,                     # Отключено по умолчанию (требует NVIDIA Apex)
         distributed_run=False,
         dist_backend="nccl",
         dist_url="tcp://localhost:54321",
@@ -118,6 +119,8 @@ def create_hparams(hparams_string=None, verbose=False):
         # FINE-TUNE - Критические исправления #
         ################################
         use_mmi=True,
+        mmi_map=None,                       # MMI карта (None для автоматического вычисления)
+        mmi_weight=0.1,                     # Вес MMI loss
 
         # Guided Attention Force - исправления для тонких полос
         drop_frame_rate=0.05,               # СНИЖЕНО с 0.1 до 0.05
@@ -204,6 +207,10 @@ def create_hparams(hparams_string=None, verbose=False):
         validation_attention_analysis=True,  # Анализ attention на валидации
         save_attention_plots=True,          # Сохранение графиков attention
         attention_plot_frequency=1000,      # Частота сохранения графиков
+
+        # Guided Attention
+        use_guided_attn=True,
+        guided_attn_weight=1.0,             # Вес guided attention loss
     )
 
     if hparams_string:

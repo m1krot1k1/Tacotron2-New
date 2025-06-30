@@ -31,12 +31,23 @@ from smart_tuner.early_stop_controller import EarlyStopController
 from smart_tuner.alert_manager import AlertManager
 from smart_tuner.model_registry import ModelRegistry
 
-# Импорты систем логирования
-from training_integration import (
-    setup_training_logging, 
-    finish_training_logging,
-    export_current_training
-)
+# Импорты систем логирования (упрощенные)
+try:
+    from training_integration import (
+        setup_training_logging, 
+        finish_training_logging,
+        export_current_training
+    )
+    INTEGRATION_AVAILABLE = True
+except ImportError:
+    INTEGRATION_AVAILABLE = False
+    # Заглушки для функций логирования
+    def setup_training_logging(*args, **kwargs):
+        return None, None
+    def finish_training_logging(*args, **kwargs):
+        pass
+    def export_current_training(*args, **kwargs):
+        return None
 
 class SmartTunerMain:
     """
@@ -135,8 +146,8 @@ class SmartTunerMain:
             self.model_registry = ModelRegistry(self.config_path)
             self.logger.info("✅ ModelRegistry инициализирован")
             
-            # Обертка тренера с TTS интеграцией (принимает только config)
-            self.trainer_wrapper = TrainerWrapper(config=self.config)
+            # Обертка тренера с TTS интеграцией (принимает словарь config)
+            self.trainer_wrapper = TrainerWrapper(self.config)
             self.logger.info("✅ TTS TrainerWrapper инициализирован")
             
             # Система логирования TTS будет инициализирована при старте обучения
@@ -176,12 +187,26 @@ class SmartTunerMain:
                 suggested_params = self.optimization_engine.suggest_hyperparameters(trial)
                 
                 try:
+                    # Создаем TensorBoard writer для этого trial
+                    from torch.utils.tensorboard import SummaryWriter
+                    log_dir = os.path.join("output", "latest", f"trial_{trial.number}")
+                    os.makedirs(log_dir, exist_ok=True)
+                    writer = SummaryWriter(log_dir)
+                    
+                    self.logger.info("Создан TensorBoard writer, вызываем train_with_params...")
+                    
                     # Запускаем обучение с TTS логированием
                     metrics = self.trainer_wrapper.train_with_params(
                         suggested_params, 
                         trial=trial,
+                        writer=writer,
                         tts_phase_training=self.tts_config.get('enabled', True)
                     )
+                    
+                    self.logger.info(f"train_with_params завершен, получены метрики: {metrics}")
+                    
+                    # Закрываем writer
+                    writer.close()
                     
                     if not metrics:
                         self.logger.warning(f"TTS trial {trial.number}: получены пустые метрики")
@@ -202,7 +227,9 @@ class SmartTunerMain:
                     return objective_value
                     
                 except Exception as e:
+                    import traceback
                     self.logger.error(f"❌ Ошибка в TTS trial {trial.number}: {e}")
+                    self.logger.error(f"Полный traceback: {traceback.format_exc()}")
                     return float('inf')
             
             # Запускаем TTS оптимизацию
@@ -232,7 +259,9 @@ class SmartTunerMain:
             return False
         
         # 🛡️ ДОПОЛНИТЕЛЬНАЯ ЗАЩИТА: минимальное время и шаги обучения
+        training_duration = 0
         if hasattr(self, 'training_start_time'):
+            from datetime import datetime
             training_duration = (datetime.now() - self.training_start_time).total_seconds()
             min_training_time = 600  # 10 минут минимум
             if training_duration < min_training_time:
@@ -324,6 +353,7 @@ class SmartTunerMain:
         """
         self.logger.info("🚂 Запуск адаптивного TTS обучения с автоматической оптимизацией...")
         
+        from datetime import datetime
         self.training_start_time = datetime.now()
         max_restarts = 3
         current_restart = 0
@@ -353,13 +383,23 @@ class SmartTunerMain:
                 
                 self.logger.info(f"🎛️ TTS гиперпараметры (итерация {current_restart + 1}): {hyperparams}")
                 
+                # Создаем TensorBoard writer для single training
+                from torch.utils.tensorboard import SummaryWriter
+                log_dir = os.path.join("output", "latest", f"single_training_restart_{current_restart}")
+                os.makedirs(log_dir, exist_ok=True)
+                writer = SummaryWriter(log_dir)
+                
                 # Запускаем обучение с TTS мониторингом
                 results = self.trainer_wrapper.train_with_params(
                     hyperparams,
+                    writer=writer,
                     tts_phase_training=self.tts_config.get('enabled', True),
                     single_training=True,
                     restart_iteration=current_restart
                 )
+                
+                # Закрываем writer
+                writer.close()
                 
                 if results:
                     # Вычисляем композитную оценку качества
@@ -403,6 +443,7 @@ class SmartTunerMain:
                     final_metrics=final_results
                 )
             
+            from datetime import datetime
             training_duration = datetime.now() - self.training_start_time
             self.logger.info(f"🎉 Адаптивное TTS обучение завершено за {training_duration}")
             self.logger.info(f"🏆 Лучшая оценка качества: {best_score:.4f}")
@@ -472,11 +513,21 @@ class SmartTunerMain:
                 suggested_params['epochs'] = 50
                 
                 try:
+                    # Создаем TensorBoard writer для мини-оптимизации
+                    from torch.utils.tensorboard import SummaryWriter
+                    log_dir = os.path.join("output", "latest", f"mini_opt_trial_{trial.number}")
+                    os.makedirs(log_dir, exist_ok=True)
+                    writer = SummaryWriter(log_dir)
+                    
                     metrics = self.trainer_wrapper.train_with_params(
                         suggested_params, 
                         trial=trial,
+                        writer=writer,
                         mini_optimization=True
                     )
+                    
+                    # Закрываем writer
+                    writer.close()
                     
                     if metrics:
                         return self.optimization_engine.calculate_composite_tts_objective(metrics)
@@ -513,7 +564,9 @@ class SmartTunerMain:
             return True
             
         # 🛡️ ДОПОЛНИТЕЛЬНАЯ ЗАЩИТА: принудительное продолжение если обучение слишком короткое
+        training_duration = 0
         if hasattr(self, 'training_start_time'):
+            from datetime import datetime
             training_duration = (datetime.now() - self.training_start_time).total_seconds()
             min_training_time = 600  # 10 минут минимум
             if training_duration < min_training_time:
@@ -627,20 +680,28 @@ class SmartTunerMain:
             results_dir = Path("smart_tuner/optimization_results")
             results_dir.mkdir(parents=True, exist_ok=True)
             
+            from datetime import datetime
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             results_file = results_dir / f"tts_optimization_{timestamp}.yaml"
             
-            # Добавляем метаданные
-            results['metadata'] = {
+            # Подготавливаем данные для сохранения
+            save_data = {
                 'timestamp': timestamp,
-                'config_path': self.config_path,
-                'tts_version': 'Smart Tuner V2 TTS',
-                'optimization_type': 'composite_tts_objective'
+                'best_parameters': results.get('best_params', {}),
+                'best_value': results.get('best_value', float('inf')),
+                'n_trials': results.get('n_trials', 0),
+                'study_name': results.get('study_name', 'unknown'),
+                'tts_analysis': results.get('tts_analysis', {}),
+                'metadata': {
+                    'config_path': self.config_path,
+                    'tts_version': 'Smart Tuner V2 TTS',
+                    'optimization_type': 'composite_tts_objective'
+                }
             }
             
             with open(results_file, 'w', encoding='utf-8') as f:
-                yaml.dump(results, f, default_flow_style=False, allow_unicode=True)
-                
+                yaml.dump(save_data, f, default_flow_style=False, allow_unicode=True)
+            
             self.logger.info(f"💾 TTS результаты сохранены: {results_file}")
             
         except Exception as e:
@@ -733,6 +794,7 @@ class SmartTunerMain:
         self.logger.info("🤖 Запуск полностью автоматического режима TTS обучения")
         self.logger.info("=" * 80)
         
+        from datetime import datetime
         total_start_time = datetime.now()
         final_results = {}
         
@@ -792,6 +854,7 @@ class SmartTunerMain:
                 final_results['training'] = training_results
             
             # Общая статистика
+            from datetime import datetime
             total_duration = datetime.now() - total_start_time
             final_results['total_duration'] = str(total_duration)
             
