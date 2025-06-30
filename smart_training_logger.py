@@ -354,6 +354,18 @@ def create_smart_logger(log_dir: str = "logs",
     )
 
 
+def get_training_logger(log_dir: str = "logs", 
+                       experiment_name: str = "TTS_Training",
+                       **kwargs) -> SmartTrainingLogger:
+    """
+    🤖 НЕДОСТАЮЩАЯ ФУНКЦИЯ: Получение логгера для тренировки
+    
+    Эта функция нужна для совместимости со Smart Tuner системой.
+    Является алиасом для create_smart_logger.
+    """
+    return create_smart_logger(log_dir, experiment_name, **kwargs)
+
+
 if __name__ == "__main__":
     # Тестирование системы логирования
     logger = create_smart_logger(experiment_name="Test_TTS")

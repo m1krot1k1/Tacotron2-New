@@ -187,6 +187,11 @@ class TelegramMonitor:
             else:
                 attention = attention_weights.detach().cpu().numpy()
             
+            # 🔥 ИСПРАВЛЕНИЕ: Проверяем размеры attention матрицы
+            if attention.shape[0] < 2 or attention.shape[1] < 2:
+                self.logger.warning(f"Attention матрица слишком маленькая: {attention.shape}")
+                return self._create_fallback_attention_plot(attention, step)
+            
             fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
             
             # Основной attention plot
@@ -232,6 +237,48 @@ class TelegramMonitor:
             
         except Exception as e:
             self.logger.error(f"Ошибка создания attention plot: {e}")
+            return self._create_fallback_attention_plot(None, step)
+    
+    def _create_fallback_attention_plot(self, attention: Optional[np.ndarray], step: int) -> Optional[bytes]:
+        """Создает fallback изображение для проблемных attention матриц."""
+        try:
+            fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+            
+            # Информационное сообщение
+            message = f"Attention Matrix - Шаг {step}\n\n"
+            if attention is not None:
+                message += f"Размер матрицы: {attention.shape}\n"
+                message += f"Мин значение: {attention.min():.4f}\n"
+                message += f"Макс значение: {attention.max():.4f}\n"
+                message += f"Среднее: {attention.mean():.4f}\n\n"
+                
+                if attention.size > 0:
+                    message += "Матрица слишком маленькая для визуализации\n"
+                    message += "Обучение в ранней стадии"
+                else:
+                    message += "Пустая attention матрица"
+            else:
+                message += "Ошибка обработки attention данных"
+            
+            ax.text(0.5, 0.5, message, ha='center', va='center',
+                   transform=ax.transAxes, fontsize=12,
+                   bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
+            ax.set_title(f'Attention Status - Шаг {step}', fontweight='bold')
+            ax.axis('off')
+            
+            plt.tight_layout()
+            
+            # Сохранение в байты
+            buffer = io.BytesIO()
+            plt.savefig(buffer, format='png', dpi=self.dpi, bbox_inches='tight')
+            buffer.seek(0)
+            image_data = buffer.getvalue()
+            plt.close(fig)
+            
+            return image_data
+            
+        except Exception as e:
+            self.logger.error(f"Ошибка создания fallback attention plot: {e}")
             return None
     
     def _create_metrics_plot(self, step: int) -> Optional[bytes]:
