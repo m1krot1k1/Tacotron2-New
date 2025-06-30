@@ -9,7 +9,7 @@ class Tacotron2Loss(nn.Module):
         self.hparams = hparams
         self.guide_decay = 0.99999
         self.scale = 40.0 * (self.guide_decay**iteration)
-        print('Guide scale:',self.scale)
+        # Guide scale скрыт для чистоты логов
         self.guide_lowbound = 1.0
         self.criterion_attention = nn.L1Loss()
 

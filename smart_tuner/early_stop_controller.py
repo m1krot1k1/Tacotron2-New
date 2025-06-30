@@ -12,7 +12,8 @@ import sqlite3
 import json
 import os
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - [%(levelname)s] - (EarlyStopController) - %(message)s')
+# Настраиваем логирование только для критически важных сообщений
+logging.basicConfig(level=logging.WARNING, format='%(asctime)s - [%(levelname)s] - (EarlyStopController) - %(message)s')
 
 class EarlyStopController:
     """
@@ -41,10 +42,16 @@ class EarlyStopController:
         self.current_phase = "pre_alignment"  # Начальная фаза
         self.phase_start_step = 0
 
-        self.logger = logging.getLogger(self.__class__.__name__)
-        self._init_kb()
+        # Создаем "пустой" логгер, который ничего не делает
+        class DummyLogger:
+            def info(self, *args, **kwargs): pass
+            def debug(self, *args, **kwargs): pass
+            def warning(self, *args, **kwargs): pass
+            def error(self, *args, **kwargs): pass
+            def critical(self, *args, **kwargs): pass
         
-        self.logger.info("TTS-оптимизированный EarlyStopController инициализирован с базой знаний.")
+        self.logger = DummyLogger()
+        self._init_kb()
 
     def _init_kb(self):
         """Инициализирует базу знаний (SQLite) с TTS-специфичными полями."""

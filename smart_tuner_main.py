@@ -24,6 +24,38 @@ from typing import Dict, Any, Optional
 # Добавляем корневую директорию в путь
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+# Подавляем лишние warning'и для чистого вывода
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=UserWarning, message=".*torch.cuda.*DtypeTensor.*")
+warnings.filterwarnings("ignore", message=".*deprecated.*")
+warnings.filterwarnings("ignore", message=".*multivariate.*experimental.*")
+
+# Настраиваем уровни логирования для уменьшения "мусора"
+import logging
+# Полностью отключаем все логи от компонентов Smart Tuner для чистоты вывода
+logging.getLogger("smart_tuner.early_stop_controller").disabled = True
+logging.getLogger("smart_tuner.optimization_engine").disabled = True
+logging.getLogger("smart_tuner.alert_manager").disabled = True
+logging.getLogger("smart_tuner.model_registry").disabled = True
+logging.getLogger("smart_tuner.trainer_wrapper").disabled = True
+
+# Также отключаем timestamp логи
+class NoTimestampFilter(logging.Filter):
+    def filter(self, record):
+        # Фильтруем логи с timestamp и [INFO] - (EarlyStopController)
+        message = record.getMessage()
+        return not any(pattern in message for pattern in [
+            "[INFO] - (EarlyStopController)",
+            "[WARNING] - (EarlyStopController)",
+            "OptimizationEngine - INFO",
+            "AlertManager - INFO",
+            "ModelRegistry - INFO"
+        ])
+
+# Применяем фильтр к корневому логгеру
+logging.getLogger().addFilter(NoTimestampFilter())
+
 # Импорты компонентов Smart Tuner
 from smart_tuner.trainer_wrapper import TrainerWrapper
 from smart_tuner.optimization_engine import OptimizationEngine

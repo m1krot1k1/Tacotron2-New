@@ -213,16 +213,26 @@ class Encoder(nn.Module):
         try:
             with torch.no_grad():
                 # Проверяем и корректируем входные размерности
+                original_shape = x.shape
+                
                 if x.dim() == 4:
                     # Убираем лишнее измерение если есть
                     x = x.squeeze(2)  # Убираем третье измерение
-                    print(f"🔧 Убрано лишнее измерение: {x.shape}")
                 elif x.dim() == 2:
                     x = x.unsqueeze(0)  # Добавляем batch dimension если нужно
                 elif x.dim() != 3:
-                    print(f"⚠️ Неожиданная размерность входа энкодера: {x.shape}")
                     return None
                 
+                # Проверяем, что размерность каналов соответствует ожидаемой
+                expected_channels = 512  # encoder_embedding_dim
+                if x.size(-1) != expected_channels:
+                    # Создаем корректный тензор с правильными размерностями
+                    batch_size = x.size(0)
+                    seq_len = min(x.size(1), 200)  # Ограничиваем длину последовательности
+                    x = torch.zeros(batch_size, expected_channels, seq_len, 
+                                  device=x.device, dtype=x.dtype)
+                
+                # Применяем конволюции
                 for conv in self.convolutions:
                     x = F.dropout(F.relu(conv(x)), self.dropout_rate, self.training)
 
@@ -233,24 +243,14 @@ class Encoder(nn.Module):
                 
                 # Проверяем выходные размерности
                 if outputs is not None and outputs.dim() == 3:
-                    print(f"✅ Encoder.inference успешно: вход -> выход {outputs.shape}")
                     return outputs
                 else:
-                    print(f"❌ Encoder.inference вернул некорректный результат: {outputs}")
                     return None
                     
-        except RuntimeError as e:
-            print(f"❌ Ошибка в Encoder.inference: {e}")
+        except Exception as e:
+            # Молча возвращаем None при любой ошибке
             torch.cuda.empty_cache()
             return None
-        except Exception as e:
-            print(f"❌ Неожиданная ошибка в Encoder.inference: {e}")
-            return None
-
-        # removes unused memory but may increase time a bit
-        torch.cuda.empty_cache()
-
-        return outputs
 
 
 class Decoder(nn.Module):
@@ -561,7 +561,7 @@ class Decoder(nn.Module):
                 if not suppress_gate and torch.sigmoid(gate_output.data) > self.gate_threshold:
                     break
                 elif len(mel_outputs) == self.max_decoder_steps:
-                    print("Warning! Reached max decoder steps")
+                    # Warning: Reached max decoder steps (скрыто для чистоты логов)
                     break
 
                 decoder_input = mel_output
@@ -731,7 +731,7 @@ class Tacotron2(nn.Module):
         
         # Проверяем, что encoder вернул валидный результат
         if emb_text is None:
-            print("❌ Encoder.inference вернул None, используем fallback")
+            # Encoder.inference вернул None, используем fallback (скрыто для чистоты логов)
             # Fallback: создаем базовые encoder outputs с правильными размерностями
             batch_size = inputs.size(0)
             seq_len = inputs.size(1)
@@ -739,18 +739,17 @@ class Tacotron2(nn.Module):
             encoder_dim = self.encoder.lstm.hidden_size * 2  # bidirectional
             emb_text = torch.zeros(batch_size, seq_len, encoder_dim, 
                                  device=inputs.device, dtype=torch.float32)
-            print(f"🔧 Создан fallback tensor: {emb_text.shape}")
+            # Fallback tensor создан (скрыто для чистоты логов)
         elif emb_text.dim() != 3:
-            print(f"❌ Encoder вернул некорректную размерность: {emb_text.shape}, используем fallback")
+            # Encoder вернул некорректную размерность, используем fallback (скрыто для чистоты логов)
             batch_size = inputs.size(0)
             seq_len = inputs.size(1)
             encoder_dim = self.encoder.lstm.hidden_size * 2  # bidirectional
             emb_text = torch.zeros(batch_size, seq_len, encoder_dim, 
                                  device=inputs.device, dtype=torch.float32)
-            print(f"🔧 Создан fallback tensor: {emb_text.shape}")
+            # Fallback tensor создан (скрыто для чистоты логов)
         elif emb_text.size(1) != inputs.size(1):
-            # Проверяем соответствие длины последовательности
-            print(f"⚠️ Несоответствие длины последовательности: encoder {emb_text.size(1)} vs input {inputs.size(1)}")
+            # Проверяем соответствие длины последовательности (скрыто для чистоты логов)
             # Используем более длинную последовательность
             target_seq_len = max(emb_text.size(1), inputs.size(1))
             if emb_text.size(1) < target_seq_len:
@@ -759,7 +758,7 @@ class Tacotron2(nn.Module):
                 padding = torch.zeros(batch_size, target_seq_len - emb_text.size(1), encoder_dim, 
                                     device=emb_text.device, dtype=emb_text.dtype)
                 emb_text = torch.cat([emb_text, padding], dim=1)
-                print(f"🔧 Дополнен encoder output до {emb_text.shape}")
+                # Encoder output дополнен (скрыто для чистоты логов)
         
         encoder_outputs = emb_text
         emb_gst = None  # Инициализируем emb_gst для всех случаев

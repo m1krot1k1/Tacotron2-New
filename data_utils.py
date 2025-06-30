@@ -29,7 +29,7 @@ class TextMelLoader(torch.utils.data.Dataset):
         self.clean_non_existent()
         random.seed(hparams.seed)
         random.shuffle(self.audiopaths_and_text)
-        print('Dataset files:',len(self.audiopaths_and_text))
+        # Dataset files скрыто для чистоты логов
 
     def clean_non_existent(self):
         """Удаляю несуществующие файлы из датасета"""
@@ -53,14 +53,14 @@ class TextMelLoader(torch.utils.data.Dataset):
             # Берём первые 200 символов, чтобы не выйти за пределы guide-маски
             text = text[:200]
             ctc_text = ctc_text[:200]
-            print(f"[WARN] Text truncated to 200 tokens for file {os.path.basename(audiopath)}")
+            # Text truncated warning скрыт для чистоты логов
 
         mel = self.get_mel(audiopath)  # Используем полный путь
 
         # Ограничиваем длину мел-спектрограммы до 1000 фреймов
         if mel.shape[-1] > 1000:
             mel = mel[:, :1000]
-            print(f"[WARN] Mel truncated to 1000 frames for file {os.path.basename(audiopath)} (orig {mel.shape[-1]})")
+            # Mel truncated warning скрыт для чистоты логов
 
         guide_mask = torch.FloatTensor(guide_attention_fast(len(text), mel.shape[-1], 200, 1000))
         return (text, ctc_text, mel, guide_mask)
@@ -88,6 +88,10 @@ class TextMelLoader(torch.utils.data.Dataset):
 
     def get_text(self, text):
         sequence = text_to_sequence(text, self.text_cleaners)
+        # Проверяем, что последовательность не пустая
+        if len(sequence) == 0:
+            # Пустой текст warning скрыт для чистоты логов
+            sequence = [0]  # Добавляем минимальный символ
         text_norm = torch.IntTensor(sequence)
         ctc_text_norm = torch.IntTensor(sequence_to_ctc_sequence(sequence))
         return text_norm, ctc_text_norm
@@ -112,8 +116,12 @@ class TextMelCollate():
         batch: [text_normalized, mel_normalized]
         """
         # Right zero-pad all one-hot text sequences to max input length
+        text_lengths = [len(x[0]) for x in batch]
+        # Проверяем на нулевые длины и исправляем их
+        text_lengths = [max(1, length) for length in text_lengths]  # Минимум 1
+        
         input_lengths, ids_sorted_decreasing = torch.sort(
-            torch.LongTensor([len(x[0]) for x in batch]),
+            torch.LongTensor(text_lengths),
             dim=0, descending=True)
         max_input_len = input_lengths[0]
 

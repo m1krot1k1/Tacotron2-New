@@ -19,6 +19,7 @@ from hparams import create_hparams
 from plotting_utils import plot_alignment_to_numpy, plot_spectrogram_to_numpy, plot_gate_outputs_to_numpy
 from text import symbol_to_id
 from utils import to_gpu
+# from logger import Tacotron2Logger  # Не используется
 
 # MLflow for experiment tracking
 try:
@@ -33,16 +34,22 @@ try:
         print("✅ Улучшенное MLflow логирование активировано")
     except ImportError:
         ENHANCED_LOGGING = False
-        print("⚠️ Стандартное MLflow логирование")
+        # MLflow логирование (скрыто для чистоты логов)
         
 except ImportError:
     MLFLOW_AVAILABLE = False
     ENHANCED_LOGGING = False
 
+# Подавляем лишние warning'и
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=UserWarning, message=".*torch.cuda.*DtypeTensor.*")
+warnings.filterwarnings("ignore", message=".*deprecated.*")
+
 
 def reduce_tensor(tensor, n_gpus):
     rt = tensor.clone()
-    dist.all_reduce(rt, op=dist.reduce_op.SUM)
+    dist.all_reduce(rt, op=dist.ReduceOp.SUM)
     rt /= n_gpus
     return rt
 
@@ -84,9 +91,8 @@ def prepare_dataloaders(hparams):
 
 def load_model(hparams):
     model = Tacotron2(hparams).cuda()
-    if hparams.fp16_run:
-        model.decoder.attention_layer.score_mask_value = np.finfo('float16').min
-
+    # FP16 будет обрабатываться через AMP, модель остается в FP32
+    
     if hparams.distributed_run:
         model = apply_gradient_allreduce(model)
 
@@ -288,13 +294,15 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
         except ImportError:
             # Apex недоступен – используем встроенный AMP PyTorch
             try:
-                from torch.cuda.amp import GradScaler, autocast
-                scaler = GradScaler()
+                from torch.amp import GradScaler, autocast
+                # Отключаем FP16 для модели, используем только AMP
+                model = model.float()  # Убеждаемся, что модель в FP32
+                scaler = GradScaler('cuda')
                 use_native_amp = True
-                print("✅ NVIDIA Apex не найден. Переключаемся на torch.cuda.amp (PyTorch Native AMP)")
+                print("✅ NVIDIA Apex не найден. Переключаемся на torch.amp (PyTorch Native AMP)")
             except ImportError as e:
                 # Даже native AMP недоступен – отключаем FP16
-                hparams.fp16_run = True
+                hparams.fp16_run = False
                 print(f"❌ Mixed precision недоступна: {e}. FP16 отключён.")
     # -------------------------------------------
 
@@ -355,7 +363,7 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
 
             # Forward pass с учётом выбранной схемы mixed precision
             if hparams.fp16_run and use_native_amp:
-                with autocast():
+                with autocast('cuda'):
                     y_pred = model(x)
                     
                     # total loss
