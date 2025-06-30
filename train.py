@@ -174,35 +174,83 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
         writer.add_scalar("validation.loss", val_loss, iteration)
 
         # Логирование изображений (взято из Tacotron2Logger)
-        inference_outputs = model.inference(x[0].unsqueeze(0))
-        # inference возвращает [None, mel_outputs, mel_outputs_postnet, gate_outputs, alignments, emb_gst]
-        _, mel_outputs, mel_outputs_postnet, gate_outputs, alignments, emb_gst = inference_outputs
-        mel_targets, gate_targets = y[0], y[1]
-        
-        # plot distribution of parameters
-        for tag, value in model.named_parameters():
-            tag = tag.replace('.', '/')
-            writer.add_histogram(tag, value.data.cpu().numpy(), iteration)
+        try:
+            # Выполняем inference для получения изображений
+            with torch.no_grad():
+                inference_outputs = model.inference(x[0][:1])  # Берем только первый элемент батча
             
-        idx = 0 # Используем первый элемент из батча
-        writer.add_image(
-            "alignment",
-            plot_alignment_to_numpy(alignments[idx].data.cpu().numpy().T),
-            iteration, dataformats='HWC')
-        writer.add_image(
-            "mel_target",
-            plot_spectrogram_to_numpy(mel_targets[idx].data.cpu().numpy()),
-            iteration, dataformats='HWC')
-        writer.add_image(
-            "mel_predicted",
-            plot_spectrogram_to_numpy(mel_outputs[idx].data.cpu().numpy()),
-            iteration, dataformats='HWC')
-        writer.add_image(
-            "gate",
-            plot_gate_outputs_to_numpy(
-                gate_targets[idx].data.cpu().numpy(),
-                torch.sigmoid(gate_outputs[idx]).data.cpu().numpy()),
-            iteration, dataformats='HWC')
+            # inference возвращает [None, mel_outputs, mel_outputs_postnet, gate_outputs, alignments, emb_gst]
+            if inference_outputs is not None and len(inference_outputs) >= 5:
+                _, mel_outputs_inf, mel_outputs_postnet_inf, gate_outputs_inf, alignments_inf = inference_outputs[:5]
+                mel_targets, gate_targets = y[0], y[1]
+                
+                print(f"🖼️ Создаем изображения для TensorBoard (iteration {iteration})")
+                
+                # plot distribution of parameters (только каждые 500 итераций для экономии времени)
+                if iteration % 500 == 0:
+                    for tag, value in model.named_parameters():
+                        tag = tag.replace('.', '/')
+                        writer.add_histogram(tag, value.data.cpu().numpy(), iteration)
+                
+                idx = 0  # Используем первый элемент из батча
+                
+                # Alignment изображение
+                if alignments_inf is not None and alignments_inf.size(0) > idx:
+                    try:
+                        alignment_img = plot_alignment_to_numpy(alignments_inf[idx].data.cpu().numpy().T)
+                        writer.add_image("alignment", alignment_img, iteration, dataformats='HWC')
+                        print(f"✅ Alignment изображение создано: {alignment_img.shape}")
+                    except Exception as e:
+                        print(f"❌ Ошибка создания alignment изображения: {e}")
+                
+                # Mel target изображение
+                if mel_targets.size(0) > idx:
+                    try:
+                        mel_target_img = plot_spectrogram_to_numpy(mel_targets[idx].data.cpu().numpy())
+                        writer.add_image("mel_target", mel_target_img, iteration, dataformats='HWC')
+                        print(f"✅ Mel target изображение создано: {mel_target_img.shape}")
+                    except Exception as e:
+                        print(f"❌ Ошибка создания mel target изображения: {e}")
+                
+                # Mel predicted изображение
+                if mel_outputs_inf is not None and mel_outputs_inf.size(0) > idx:
+                    try:
+                        mel_pred_img = plot_spectrogram_to_numpy(mel_outputs_inf[idx].data.cpu().numpy())
+                        writer.add_image("mel_predicted", mel_pred_img, iteration, dataformats='HWC')
+                        print(f"✅ Mel predicted изображение создано: {mel_pred_img.shape}")
+                    except Exception as e:
+                        print(f"❌ Ошибка создания mel predicted изображения: {e}")
+                
+                # Gate outputs изображение
+                if gate_outputs_inf is not None and gate_outputs_inf.size(0) > idx and gate_targets.size(0) > idx:
+                    try:
+                        gate_img = plot_gate_outputs_to_numpy(
+                            gate_targets[idx].data.cpu().numpy(),
+                            torch.sigmoid(gate_outputs_inf[idx]).data.cpu().numpy()
+                        )
+                        writer.add_image("gate", gate_img, iteration, dataformats='HWC')
+                        print(f"✅ Gate изображение создано: {gate_img.shape}")
+                    except Exception as e:
+                        print(f"❌ Ошибка создания gate изображения: {e}")
+                        
+                # Принудительно сохраняем в TensorBoard
+                writer.flush()
+                print(f"🔄 TensorBoard данные сохранены для итерации {iteration}")
+                
+            else:
+                print(f"⚠️ Inference не вернул корректные данные для изображений")
+                
+        except Exception as e:
+            print(f"❌ Общая ошибка при создании изображений: {e}")
+            # Fallback - создаем простые изображения
+            try:
+                mel_targets, gate_targets = y[0], y[1]
+                if mel_targets.size(0) > 0:
+                    mel_target_img = plot_spectrogram_to_numpy(mel_targets[0].data.cpu().numpy())
+                    writer.add_image("mel_target_fallback", mel_target_img, iteration, dataformats='HWC')
+                    print(f"✅ Fallback mel target изображение создано")
+            except Exception as fallback_e:
+                print(f"❌ Даже fallback изображение не удалось создать: {fallback_e}")
 
         if MLFLOW_AVAILABLE:
             validation_metrics = {
