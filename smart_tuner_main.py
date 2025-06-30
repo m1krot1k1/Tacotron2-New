@@ -994,7 +994,8 @@ def main():
             print("🚂 Режим: TTS Обучение")
             hyperparams = None
             if args.epochs is None:
-                recommended_epochs = self.analyze_dataset(args.dataset_path)['optimal_epochs']
+                dataset_analysis = analyze_dataset(args.dataset_path)
+                recommended_epochs = dataset_analysis.get('optimal_epochs', 1000)
                 print(f"🎯 Используем рекомендованное количество эпох: {recommended_epochs}")
             else:
                 recommended_epochs = args.epochs
@@ -1094,9 +1095,23 @@ def analyze_dataset(dataset_path: str) -> dict:
         # Конвертация pitch range в полутоны (приблизительно)
         pitch_range_semitones = min(24, max(6, pitch_range / 10))
         
+        # Вычисляем оптимальное количество эпох на основе размера датасета
+        base_epochs = 1000
+        if total_duration_hours < 0.5:
+            optimal_epochs = 2000  # Маленький датасет - больше эпох
+        elif total_duration_hours < 2:
+            optimal_epochs = 1500  # Средний датасет
+        elif total_duration_hours < 10:
+            optimal_epochs = 1000  # Большой датасет
+        else:
+            optimal_epochs = 800   # Очень большой датасет - меньше эпох
+        
         return {
             'total_duration_hours': total_duration_hours,
             'num_samples': len(audio_files),
+            'optimal_epochs': optimal_epochs,
+            'recommended_epochs_range': [max(500, optimal_epochs // 2), optimal_epochs * 2],
+            'confidence': 0.8,  # Уверенность в оценке
             'quality_metrics': {
                 'background_noise_level': min(1.0, avg_noise * 2),  # Нормализация
                 'voice_consistency': 0.8,  # Пока статическое значение
@@ -1116,6 +1131,9 @@ def analyze_dataset(dataset_path: str) -> dict:
         return {
             'total_duration_hours': 1.0,
             'num_samples': 1000,
+            'optimal_epochs': 1000,
+            'recommended_epochs_range': [500, 2000],
+            'confidence': 0.5,  # Низкая уверенность при ошибке
             'quality_metrics': {
                 'background_noise_level': 0.3,
                 'voice_consistency': 0.8,

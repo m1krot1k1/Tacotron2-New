@@ -66,6 +66,7 @@ install_environment() {
         echo "Следующие пакеты будут установлены: ${PKGS_TO_INSTALL[*]}"
         sudo apt-get update
         sudo apt-get install -y "${PKGS_TO_INSTALL[@]}"
+        conda install opencv -y
         if [ $? -ne 0 ]; then
             echo -e "${RED}Ошибка при установке системных пакетов. Пожалуйста, проверьте вывод.${NC}"
             exit 1

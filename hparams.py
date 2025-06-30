@@ -270,9 +270,11 @@ def _validate_attention_params(hparams):
     if hparams.max_gaf > 0.7:
         warnings.append("max_gaf > 0.7 может размазать attention")
     
-    # Проверка batch size
-    if hparams.batch_size < 32:
-        warnings.append("batch_size < 32 может ухудшить стабильность attention")
+    # Проверка batch size для TTS (меньший batch_size лучше для качества)
+    if hparams.batch_size < 4:
+        warnings.append("batch_size < 4 слишком мал для стабильного обучения")
+    elif hparams.batch_size > 32:
+        warnings.append("batch_size > 32 может ухудшить качество attention для TTS")
     
     # Проверка GST параметров
     if hparams.token_num > 10:

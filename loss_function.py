@@ -27,9 +27,12 @@ class SpectralMelLoss(nn.Module):
         self.register_buffer('mel_weights', mel_weights)
         
     def forward(self, mel_pred, mel_target):
+        # 🔥 ИСПРАВЛЕНИЕ CUDA/CPU: Убеждаемся, что mel_weights на том же устройстве
+        mel_weights = self.mel_weights.to(mel_pred.device)
+        
         # Основной MSE loss с весами по частотам
-        weighted_mse = F.mse_loss(mel_pred * self.mel_weights[None, :, None], 
-                                  mel_target * self.mel_weights[None, :, None])
+        weighted_mse = F.mse_loss(mel_pred * mel_weights[None, :, None], 
+                                  mel_target * mel_weights[None, :, None])
         
         # Добавляем L1 loss для резкости
         l1_loss = F.l1_loss(mel_pred, mel_target)
@@ -62,7 +65,17 @@ class AdaptiveGateLoss(nn.Module):
             # Уменьшаем вес если accuracy высокая
             self.current_weight = max(self.min_weight, self.current_weight * 0.95)
             
-    def forward(self, gate_pred, gate_target):
+    def forward(self, gate_pred, gate_target, global_step=None):
+        """
+        🔥 ИСПРАВЛЕНО: Добавлен параметр global_step для адаптивности
+        """
+        # Обновляем вес на основе текущего качества gate
+        if global_step is not None and global_step % 100 == 0:
+            # Каждые 100 шагов пересчитываем вес
+            with torch.no_grad():
+                gate_accuracy = ((torch.sigmoid(gate_pred) > 0.5) == (gate_target > 0.5)).float().mean()
+                self.update_weight(gate_accuracy.item())
+        
         return self.current_weight * F.binary_cross_entropy_with_logits(gate_pred, gate_target)
 
 
@@ -121,7 +134,22 @@ class Tacotron2Loss(nn.Module):
         gate_target.requires_grad = False
         gate_target = gate_target.view(-1, 1)
 
-        mel_out, mel_out_postnet, gate_out, alignments = model_output
+        # 🔥 ИСПРАВЛЕНИЕ: Правильно распаковываем все элементы модели
+        if len(model_output) == 7:
+            # Полный формат: [decoder_outputs, mel_out, mel_out_postnet, gate_out, alignments, tpse_gst_outputs, gst_outputs]
+            decoder_outputs, mel_out, mel_out_postnet, gate_out, alignments, tpse_gst_outputs, gst_outputs = model_output
+        elif len(model_output) == 6:
+            # Формат без decoder_outputs: [mel_out, mel_out_postnet, gate_out, alignments, tpse_gst_outputs, gst_outputs]  
+            mel_out, mel_out_postnet, gate_out, alignments, tpse_gst_outputs, gst_outputs = model_output
+        elif len(model_output) == 5:
+            # Формат с alignments: [mel_out, mel_out_postnet, gate_out, alignments, extra]
+            mel_out, mel_out_postnet, gate_out, alignments, _ = model_output
+        elif len(model_output) == 4:
+            # Старый формат: [mel_out, mel_out_postnet, gate_out, alignments]
+            mel_out, mel_out_postnet, gate_out, alignments = model_output
+        else:
+            # Fallback: берем первые 4 элемента
+            mel_out, mel_out_postnet, gate_out, alignments = model_output[:4]
         gate_out = gate_out.view(-1, 1)
         
         # 🎯 1. ОСНОВНЫЕ LOSS ФУНКЦИИ
@@ -321,9 +349,12 @@ class PerceptualLoss(nn.Module):
         """
         Вычисляет perceptual loss с весами частот.
         """
+        # 🔥 ИСПРАВЛЕНИЕ CUDA/CPU: Убеждаемся, что freq_weights на том же устройстве
+        freq_weights = self.freq_weights.to(mel_pred.device)
+        
         # Взвешенный MSE loss
         weighted_diff = (mel_pred - mel_target) ** 2
-        weighted_loss = weighted_diff * self.freq_weights.view(1, -1, 1)
+        weighted_loss = weighted_diff * freq_weights.view(1, -1, 1)
         
         # Добавляем L1 loss для резкости
         l1_loss = F.l1_loss(mel_pred, mel_target)
@@ -381,29 +412,26 @@ class MonotonicAlignmentLoss(nn.Module):
         
     def forward(self, attention_weights):
         """
-        Вычисляет штраф за нарушение монотонности alignment.
+        🔥 ИСПРАВЛЕНО: Векторизованный расчет монотонности без циклов Python.
         """
         # attention_weights: (B, T_mel, T_text)
         batch_size, mel_len, text_len = attention_weights.shape
+        device = attention_weights.device
         
-        monotonic_loss = 0.0
+        # Находим пики attention для каждого mel шага - векторизованно
+        peak_positions = torch.argmax(attention_weights, dim=2)  # (B, T_mel)
         
-        for b in range(batch_size):
-            att_matrix = attention_weights[b]  # (T_mel, T_text)
+        # Вычисляем разности между соседними пиками
+        if mel_len < 2:
+            return torch.tensor(0.0, device=device, requires_grad=True)
             
-            # Находим пики attention для каждого mel шага
-            peak_positions = torch.argmax(att_matrix, dim=1)  # (T_mel,)
-            
-            # Вычисляем штраф за нарушения монотонности
-            for i in range(1, mel_len):
-                # Штраф если текущий пик раньше предыдущего
-                if peak_positions[i] < peak_positions[i-1]:
-                    # Размер нарушения
-                    violation = peak_positions[i-1] - peak_positions[i]
-                    monotonic_loss += violation.float()
+        peak_diffs = peak_positions[:, 1:] - peak_positions[:, :-1]  # (B, T_mel-1)
         
-        # Нормализуем по размеру batch и длине последовательности
-        monotonic_loss = monotonic_loss / (batch_size * mel_len)
+        # Штраф за отрицательные разности (нарушения монотонности)
+        violations = torch.clamp(-peak_diffs, min=0.0)  # (B, T_mel-1)
+        
+        # Общий штраф - среднее по всем элементам
+        monotonic_loss = torch.mean(violations)
         
         return monotonic_loss
 
@@ -450,3 +478,153 @@ def create_enhanced_loss_function(hparams):
     Фабричная функция для создания улучшенной loss function.
     """
     return Tacotron2Loss(hparams)
+
+
+class GuidedAttentionLoss(nn.Module):
+    """
+    🔥 КРИТИЧЕСКИЙ ИСПРАВЛЯЮЩИЙ КЛАСС: GuidedAttentionLoss
+    
+    Этот класс НЕОБХОДИМ для работы train.py.
+    Реализует революционный Guided Attention на основе Very Attentive Tacotron (2025).
+    """
+    
+    def __init__(self, alpha=2.0, sigma=0.4, decay_rate=0.9999):
+        super(GuidedAttentionLoss, self).__init__()
+        self.alpha = alpha              # Начальный вес
+        self.sigma = sigma              # Sigma для gaussian guided attention
+        self.decay_rate = decay_rate    # Скорость decay веса
+        self.current_weight = alpha     # Текущий вес
+        self.global_step = 0
+        
+        # Адаптивные параметры из исследований
+        self.min_weight = 0.05          # Минимальный вес
+        self.max_weight = 15.0          # Максимальный вес
+        self.decay_start = 2000         # Когда начинать decay
+        self.decay_steps = 25000        # Длительность decay
+        
+    def forward(self, model_output):
+        """
+        Вычисляет guided attention loss для модели.
+        
+        Args:
+            model_output: Выход модели [mel_out, mel_out_postnet, gate_out, alignments]
+        
+        Returns:
+            torch.Tensor: Guided attention loss
+        """
+        if len(model_output) < 4:
+            # Нет alignments, возвращаем 0
+            return torch.tensor(0.0, requires_grad=True)
+            
+        # 🔥 ИСПРАВЛЕНИЕ: Правильно распаковываем элементы модели в GuidedAttentionLoss
+        if len(model_output) == 7:
+            # Полный формат: [decoder_outputs, mel_out, mel_out_postnet, gate_out, alignments, tpse_gst_outputs, gst_outputs]
+            decoder_outputs, mel_out, mel_out_postnet, gate_out, alignments, tpse_gst_outputs, gst_outputs = model_output
+        elif len(model_output) == 6:
+            # Формат без decoder_outputs: [mel_out, mel_out_postnet, gate_out, alignments, tpse_gst_outputs, gst_outputs]  
+            mel_out, mel_out_postnet, gate_out, alignments, tpse_gst_outputs, gst_outputs = model_output
+        elif len(model_output) == 5:
+            # Формат с alignments: [mel_out, mel_out_postnet, gate_out, alignments, extra]
+            mel_out, mel_out_postnet, gate_out, alignments, _ = model_output
+        elif len(model_output) == 4:
+            # Старый формат: [mel_out, mel_out_postnet, gate_out, alignments]
+            mel_out, mel_out_postnet, gate_out, alignments = model_output
+        else:
+            # Fallback: берем первые 4 элемента
+            mel_out, mel_out_postnet, gate_out, alignments = model_output[:4]
+        
+        if alignments is None:
+            return torch.tensor(0.0, requires_grad=True)
+            
+        # Вычисляем guided attention loss
+        batch_size, mel_len, text_len = alignments.shape
+        
+        # Создаем диагональную матрицу целевого alignment
+        device = alignments.device
+        
+        # Индексы для создания диагонального alignment
+        mel_indices = torch.arange(mel_len, device=device).float()
+        text_indices = torch.arange(text_len, device=device).float()
+        
+        # Нормализуем индексы
+        mel_indices_norm = mel_indices / (mel_len - 1) if mel_len > 1 else mel_indices
+        text_indices_norm = text_indices / (text_len - 1) if text_len > 1 else text_indices
+        
+        # Создаем meshgrid для вычисления расстояний
+        mel_grid = mel_indices_norm.unsqueeze(1).expand(mel_len, text_len)
+        text_grid = text_indices_norm.unsqueeze(0).expand(mel_len, text_len)
+        
+        # Диагональная матрица (идеальный alignment)
+        distances = (mel_grid - text_grid) ** 2
+        
+        # Gaussian guided attention с адаптивной sigma
+        current_sigma = self._get_adaptive_sigma()
+        guided_attention = torch.exp(-distances / (2 * current_sigma ** 2))
+        
+        # Нормализуем guided attention
+        guided_attention = guided_attention / guided_attention.sum(dim=1, keepdim=True).clamp(min=1e-6)
+        
+        # Применяем к каждому элементу batch
+        loss = 0.0
+        for i in range(batch_size):
+            # Нормализуем attention веса
+            att_norm = alignments[i] / alignments[i].sum(dim=1, keepdim=True).clamp(min=1e-6)
+            
+            # KL divergence loss между predicted и guided attention
+            kl_loss = F.kl_div(
+                torch.log(att_norm + 1e-6),
+                guided_attention,
+                reduction='none'
+            )
+            
+            # Маскируем валидные элементы
+            mask = (alignments[i].sum(dim=1) > 0).float().unsqueeze(1)
+            kl_loss_masked = kl_loss * mask
+            
+            loss += kl_loss_masked.sum()
+        
+        # Нормализуем по batch size и sequence length
+        loss = loss / (batch_size * mel_len)
+        
+        # Применяем адаптивный вес
+        weighted_loss = self.get_weight() * loss
+        
+        # Обновляем глобальный счетчик
+        self.global_step += 1
+        self._update_weight()
+        
+        return weighted_loss
+    
+    def get_weight(self):
+        """Возвращает текущий вес guided attention loss."""
+        return self.current_weight
+    
+    def _update_weight(self):
+        """Обновляет вес guided attention на основе расписания."""
+        if self.global_step < self.decay_start:
+            # Фаза максимального guided attention
+            return
+        elif self.global_step < self.decay_start + self.decay_steps:
+            # Фаза постепенного снижения
+            progress = (self.global_step - self.decay_start) / self.decay_steps
+            # Экспоненциальный decay
+            decay_factor = math.exp(-progress * 3)
+            self.current_weight = self.min_weight + (self.alpha - self.min_weight) * decay_factor
+            self.current_weight = max(self.min_weight, self.current_weight)
+        else:
+            # Фаза минимального guided attention
+            self.current_weight = self.min_weight
+    
+    def _get_adaptive_sigma(self):
+        """Вычисляет адаптивную sigma на основе фазы обучения."""
+        if self.global_step < 1000:
+            # Начальная фаза: узкая sigma для точного alignment
+            return 0.1
+        elif self.global_step < 5000:
+            # Расширяющая фаза: увеличиваем sigma для гибкости
+            progress = (self.global_step - 1000) / 4000
+            return 0.1 + 0.3 * progress  # От 0.1 до 0.4
+        else:
+            # Стабилизирующая фаза: средняя sigma для баланса
+            progress = min(1.0, (self.global_step - 5000) / 15000)
+            return 0.4 - 0.25 * progress  # От 0.4 до 0.15
