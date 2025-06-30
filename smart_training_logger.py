@@ -43,7 +43,7 @@ class TrainingMetrics:
         if not self.timestamp:
             self.timestamp = datetime.now().isoformat()
 
-
+    
 class SmartTrainingLogger:
     """
     🧠 Интеллектуальная система логирования для TTS обучения

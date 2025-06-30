@@ -403,7 +403,7 @@ class TrainingExportSystem:
                     f.write("```\n\n")
                 
                 f.write("## ✅ Экспорт завершен успешно!\n")
-                
+            
         except Exception as e:
             self.logger.error(f"❌ Ошибка создания отчета: {e}")
             

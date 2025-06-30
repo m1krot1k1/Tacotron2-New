@@ -156,7 +156,7 @@ class Tacotron2Loss(nn.Module):
         
         # Mel loss (основа качества)
         mel_loss = nn.MSELoss()(mel_out, mel_target) + \
-                   nn.MSELoss()(mel_out_postnet, mel_target)
+            nn.MSELoss()(mel_out_postnet, mel_target)
         
         # Gate loss (адаптивный с весом)
         raw_gate_loss = self.adaptive_gate_loss(gate_out, gate_target, self.global_step)
@@ -506,7 +506,7 @@ class GuidedAttentionLoss(nn.Module):
         
         Args:
             model_output: Выход модели [mel_out, mel_out_postnet, gate_out, alignments]
-        
+            
         Returns:
             torch.Tensor: Guided attention loss
         """
@@ -530,7 +530,7 @@ class GuidedAttentionLoss(nn.Module):
         else:
             # Fallback: берем первые 4 элемента
             mel_out, mel_out_postnet, gate_out, alignments = model_output[:4]
-        
+            
         if alignments is None:
             return torch.tensor(0.0, requires_grad=True)
             

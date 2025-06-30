@@ -123,6 +123,10 @@ class TelegramMonitor:
         if not self.enabled:
             return False
             
+        # Разрешаем уведомление на самом первом шаге (0) для первичного отчёта
+        if current_step == 0 and self.last_notification_step == 0:
+            return True
+
         return (current_step - self.last_notification_step) >= self.notification_interval
     
     def send_training_update(self, step: int, metrics: Dict[str, Any],
