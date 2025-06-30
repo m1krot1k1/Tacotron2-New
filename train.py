@@ -656,7 +656,7 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
                             
                             print(f"📱 Telegram уведомление {'УСПЕШНО' if result else 'НЕ'} отправлено для шага {iteration}")
                         else:
-                            
+                            print(f"   - Пропускаем шаг {iteration} (не кратен 100)")
                         
                     except Exception as e:
                         print(f"⚠️ Ошибка Telegram уведомления: {e}")
