@@ -61,6 +61,10 @@ class AdvancedQualityController:
         self.quality_interventions = []
         self.last_intervention_step = 0
         
+        # Отслеживание изменений параметров
+        self.parameter_changes = []
+        self.last_recommendations = []
+        
         # База данных качества
         self.db_path = "smart_tuner/quality_control_history.db"
         self._init_quality_database()
@@ -866,3 +870,72 @@ class AdvancedQualityController:
         }
         
         return summary 
+    
+    def get_status(self) -> Dict[str, Any]:
+        """Возвращает текущий статус контроллера."""
+        return {
+            "active": True,
+            "status": "Анализ качества",
+            "current_phase": self.current_phase,
+            "quality_score": self.quality_history[-1].get('overall_quality_score', 0.0) if self.quality_history else 0.0,
+            "interventions_applied": len(self.quality_interventions),
+            "last_intervention": self.last_intervention_step
+        }
+    
+    def get_recommendations(self) -> List[str]:
+        """Возвращает текущие рекомендации контроллера."""
+        if not self.quality_history:
+            return ["Мониторинг качества обучения"]
+        
+        latest = self.quality_history[-1]
+        recommendations = []
+        
+        # Рекомендации на основе attention качества
+        attention_quality = latest.get('attention_quality', {})
+        diagonality = attention_quality.get('diagonality_score', 0.0)
+        if diagonality < 0.3:
+            recommendations.append("Увеличить guided attention weight для улучшения диагональности")
+        elif diagonality < 0.6:
+            recommendations.append("Снизить learning rate для стабилизации attention")
+        
+        # Рекомендации на основе gate качества
+        gate_quality = latest.get('gate_quality', {})
+        gate_accuracy = gate_quality.get('accuracy_score', 0.0)
+        if gate_accuracy < 0.7:
+            recommendations.append("Проверить gate threshold и dropout параметры")
+        
+        # Рекомендации на основе общего качества
+        overall_score = latest.get('overall_quality_score', 0.0)
+        if overall_score < 0.5:
+            recommendations.append("Критически низкое качество - требуется вмешательство")
+        elif overall_score < 0.7:
+            recommendations.append("Умеренное качество - продолжать обучение с текущими параметрами")
+        
+        # Рекомендации на основе проблем
+        issues = latest.get('quality_issues', [])
+        if any('attention drift' in str(issue) for issue in issues):
+            recommendations.append("Обнаружен attention drift - увеличить guided attention")
+        if any('gate instability' in str(issue) for issue in issues):
+            recommendations.append("Нестабильность gate - снизить learning rate")
+        
+        return recommendations[:3]  # Возвращаем до 3 рекомендаций
+    
+    def track_parameter_change(self, param_name: str, old_value: Any, new_value: Any, reason: str, step: int):
+        """Отслеживает изменение параметра."""
+        change_info = {
+            'param_name': param_name,
+            'old_value': old_value,
+            'new_value': new_value,
+            'reason': reason,
+            'step': step,
+            'timestamp': datetime.now().isoformat()
+        }
+        self.parameter_changes.append(change_info)
+        
+        # Ограничиваем историю изменений
+        if len(self.parameter_changes) > 50:
+            self.parameter_changes = self.parameter_changes[-50:]
+    
+    def get_parameter_changes(self) -> List[Dict[str, Any]]:
+        """Возвращает последние изменения параметров."""
+        return self.parameter_changes[-10:]  # Последние 10 изменений 

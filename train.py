@@ -20,7 +20,10 @@ from plotting_utils import plot_alignment_to_numpy, plot_spectrogram_to_numpy, p
 from text import symbol_to_id
 from utils import to_gpu
 # from logger import Tacotron2Logger  # Не используется
-from auto_param_controller import AutoParamController
+from smart_tuner.advanced_quality_controller import AdvancedQualityController
+from smart_tuner.intelligent_epoch_optimizer import IntelligentEpochOptimizer
+from smart_tuner.param_scheduler import ParamScheduler
+from smart_tuner.early_stop_controller import EarlyStopController
 
 # MLflow for experiment tracking
 try:
@@ -294,6 +297,14 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
                 writer.flush()
                 print(f"🔄 TensorBoard данные сохранены для итерации {iteration}")
                 
+                # Сохраняем данные для внешних контроллеров
+                try:
+                    model.last_validation_alignments = alignments_inf
+                    model.last_validation_gate_outputs = gate_outputs_inf
+                    model.last_validation_mel_outputs = mel_outputs_postnet_inf
+                except Exception:
+                    pass
+                
             else:
                 print(f"⚠️ Inference не вернул корректные данные для изображений")
                 
@@ -496,16 +507,29 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
         print("✅ Guided Attention Loss загружен")
 
     # --- Auto Hyper-parameter Controller ---
-    auto_ctrl = None
-    if is_main_node and hparams.use_guided_attn:
+    quality_ctrl = None
+    if is_main_node:
         try:
-            auto_ctrl = AutoParamController(optimizer=optimizer,
-                                            guide_loss=guide_loss,
-                                            hparams=hparams,
-                                            writer=writer)
-            print("🤖 AutoParamController активирован")
+            quality_ctrl = AdvancedQualityController()
+            print("🤖 AdvancedQualityController активирован")
         except Exception as e:
-            print(f"⚠️ Не удалось инициализировать AutoParamController: {e}")
+            print(f"⚠️ Не удалось инициализировать AdvancedQualityController: {e}")
+
+    # --- ParamScheduler и EarlyStopController ---
+    sched_ctrl = None
+    stop_ctrl = None
+    if is_main_node:
+        try:
+            sched_ctrl = ParamScheduler()
+            print("📅 ParamScheduler активирован")
+        except Exception as e:
+            print(f"⚠️ Не удалось инициализировать ParamScheduler: {e}")
+        
+        try:
+            stop_ctrl = EarlyStopController()
+            print("🛑 EarlyStopController активирован")
+        except Exception as e:
+            print(f"⚠️ Не удалось инициализировать EarlyStopController: {e}")
 
     global_mean = calculate_global_mean(train_loader, hparams.global_mean_npy)
 
@@ -532,6 +556,33 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
         mlflow.log_params(model_params)
         print(f"📊 Параметры модели залогированы в MLflow: {model_params['model.total_params']} параметров")
     
+    # --- Intelligent Epoch Optimizer ---
+    optimizer_epochs = None
+    if is_main_node:
+        try:
+            optimizer_epochs = IntelligentEpochOptimizer()
+            # Создаем dataset_meta из доступной информации
+            dataset_meta = {
+                'total_duration_hours': len(train_loader) * hparams.batch_size * 0.1,  # примерная оценка
+                'quality_metrics': {
+                    'background_noise_level': 0.3,
+                    'voice_consistency': 0.8,
+                    'speech_clarity': 0.85
+                },
+                'voice_features': {
+                    'has_accent': False,
+                    'emotional_range': 'neutral',
+                    'speaking_style': 'normal',
+                    'pitch_range_semitones': 12
+                }
+            }
+            analysis = optimizer_epochs.analyze_dataset(dataset_meta)
+            if 'recommended_epochs' in analysis:
+                hparams.epochs = analysis['recommended_epochs']
+                print(f"🔧 Epochs set to {hparams.epochs} (было {hparams.epochs})")
+        except Exception as e:
+            print(f"⚠️ IntelligentEpochOptimizer ошибка: {e}")
+
     for epoch in range(epoch_offset, hparams.epochs):
         print("Epoch: {} / {}".format(epoch, hparams.epochs))
         for i, batch in enumerate(train_loader):
@@ -588,6 +639,58 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
             else:
                 optimizer.step()
 
+            # --- ParamScheduler обновление ---
+            if is_main_node and sched_ctrl:
+                try:
+                    new_params = sched_ctrl.update(iteration)
+                    for k, v in new_params.items():
+                        if k == 'learning_rate':
+                            old_lr = optimizer.param_groups[0]['lr']
+                            for g in optimizer.param_groups:
+                                g['lr'] = v
+                            hparams.learning_rate = v
+                            # Отслеживаем изменение
+                            sched_ctrl.track_parameter_change('learning_rate', old_lr, v, 'ParamScheduler update', iteration)
+                        elif k == 'p_attention_dropout':
+                            old_val = hparams.p_attention_dropout
+                            hparams.p_attention_dropout = v
+                            sched_ctrl.track_parameter_change('p_attention_dropout', old_val, v, 'ParamScheduler update', iteration)
+                        elif k == 'p_decoder_dropout':
+                            old_val = hparams.p_decoder_dropout
+                            hparams.p_decoder_dropout = v
+                            sched_ctrl.track_parameter_change('p_decoder_dropout', old_val, v, 'ParamScheduler update', iteration)
+                        elif k == 'gate_threshold':
+                            old_val = hparams.gate_threshold
+                            hparams.gate_threshold = v
+                            sched_ctrl.track_parameter_change('gate_threshold', old_val, v, 'ParamScheduler update', iteration)
+                        # Логируем изменения в TensorBoard
+                        writer.add_scalar(f"autotune.{k}", v, iteration)
+                        # Логируем в MLflow
+                        if MLFLOW_AVAILABLE:
+                            mlflow.log_metric(f"autotune.{k}", v, step=iteration)
+                    
+                    # Сохраняем изменения в модели для Telegram
+                    if not hasattr(model, 'last_param_changes'):
+                        model.last_param_changes = {}
+                    
+                    for k, v in new_params.items():
+                        if k == 'learning_rate':
+                            old_lr = optimizer.param_groups[0]['lr']
+                            model.last_param_changes[k] = {
+                                'old_value': old_lr,
+                                'new_value': v,
+                                'reason': 'ParamScheduler update'
+                            }
+                        else:
+                            old_val = getattr(hparams, k, 'N/A')
+                            model.last_param_changes[k] = {
+                                'old_value': old_val,
+                                'new_value': v,
+                                'reason': 'ParamScheduler update'
+                            }
+                except Exception as e:
+                    print(f"⚠️ ParamScheduler ошибка: {e}")
+
             if is_main_node:
                 duration = time.perf_counter() - start
                 print("Train loss {} {:.6f} Grad Norm {:.6f} {:.2f}s/it".format(
@@ -595,6 +698,19 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
                 
                 # Обновляем learning_rate переменную из optimizer (мог измениться авто-контроллером)
                 learning_rate = optimizer.param_groups[0]['lr']
+
+                # --- EarlyStopController: добавляем метрики ---
+                if stop_ctrl:
+                    try:
+                        stop_ctrl.add_metrics({
+                            'train_loss': reduced_loss,
+                            'grad_norm': grad_norm,
+                            'learning_rate': learning_rate,
+                            'guide_loss': reduced_guide_loss if hparams.use_guided_attn else 0.0,
+                            'gate_loss': reduced_gate_loss
+                        })
+                    except Exception as e:
+                        print(f"⚠️ EarlyStopController add_metrics ошибка: {e}")
 
                 # Логирование в TensorBoard
                 writer.add_scalar("training.loss", reduced_loss, iteration)
@@ -670,13 +786,108 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
                                 "epoch": epoch
                             }
                             
-                            print(f"   - telegram_metrics: {telegram_metrics}")
+                            # 🤖 Собираем информацию о решениях Smart Tuner
+                            smart_tuner_decisions = {}
+                            
+                            # Информация от AdvancedQualityController
+                            if quality_ctrl:
+                                try:
+                                    quality_summary = quality_ctrl.get_quality_summary()
+                                    if quality_summary:
+                                        smart_tuner_decisions['quality_controller'] = {
+                                            'active': True,
+                                            'status': 'Анализ качества',
+                                            'summary': quality_summary
+                                        }
+                                except Exception as e:
+                                    print(f"⚠️ Ошибка получения quality summary: {e}")
+                            
+                            # Информация от ParamScheduler
+                            if sched_ctrl:
+                                try:
+                                    sched_status = sched_ctrl.get_status()
+                                    if sched_status:
+                                        smart_tuner_decisions['param_scheduler'] = {
+                                            'active': True,
+                                            'status': sched_status.get('phase', 'Активен'),
+                                            'current_params': sched_status.get('current_params', {})
+                                        }
+                                except Exception as e:
+                                    print(f"⚠️ Ошибка получения scheduler status: {e}")
+                            
+                            # Информация от EarlyStopController
+                            if stop_ctrl:
+                                try:
+                                    stop_status = stop_ctrl.get_status()
+                                    if stop_status:
+                                        smart_tuner_decisions['early_stop_controller'] = {
+                                            'active': True,
+                                            'status': stop_status.get('status', 'Мониторинг'),
+                                            'patience_remaining': stop_status.get('patience_remaining', 'N/A')
+                                        }
+                                except Exception as e:
+                                    print(f"⚠️ Ошибка получения stop controller status: {e}")
+                            
+                            # Информация от IntelligentEpochOptimizer
+                            if optimizer_epochs:
+                                try:
+                                    epoch_status = optimizer_epochs.get_status()
+                                    if epoch_status:
+                                        smart_tuner_decisions['epoch_optimizer'] = {
+                                            'active': True,
+                                            'status': epoch_status.get('status', 'Оптимизация'),
+                                            'recommended_epochs': epoch_status.get('recommended_epochs', 'N/A')
+                                        }
+                                except Exception as e:
+                                    print(f"⚠️ Ошибка получения epoch optimizer status: {e}")
+                            
+                            # Собираем изменения параметров
+                            param_changes = {}
+                            if hasattr(model, 'last_param_changes'):
+                                param_changes = model.last_param_changes
+                            
+                            if param_changes:
+                                smart_tuner_decisions['parameter_changes'] = param_changes
+                            
+                            # Рекомендации от всех контроллеров
+                            all_recommendations = []
+                            if quality_ctrl and hasattr(quality_ctrl, 'get_recommendations'):
+                                try:
+                                    quality_recs = quality_ctrl.get_recommendations()
+                                    all_recommendations.extend(quality_recs)
+                                except Exception:
+                                    pass
+                            
+                            if sched_ctrl and hasattr(sched_ctrl, 'get_recommendations'):
+                                try:
+                                    sched_recs = sched_ctrl.get_recommendations()
+                                    all_recommendations.extend(sched_recs)
+                                except Exception:
+                                    pass
+                            
+                            if all_recommendations:
+                                smart_tuner_decisions['recommendations'] = all_recommendations[:3]  # До 3 рекомендаций
+                            
+                            # Предупреждения
+                            warnings = []
+                            if reduced_loss > 5.0:
+                                warnings.append("Высокий loss - возможны проблемы с обучением")
+                            if grad_norm > 10.0:
+                                warnings.append("Высокий grad_norm - возможен взрыв градиентов")
+                            if learning_rate > 0.01:
+                                warnings.append("Высокий learning rate - возможна нестабильность")
+                            
+                            if warnings:
+                                smart_tuner_decisions['warnings'] = warnings
+                            
+                            print(f"   - smart_tuner_decisions: {smart_tuner_decisions}")
                             
                             result = telegram_monitor.send_training_update(
                                 step=iteration,
                                 metrics=telegram_metrics,
                                 attention_weights=attention_weights,
-                                gate_outputs=gate_outputs
+                                gate_outputs=gate_outputs,
+                                smart_tuner_decisions=smart_tuner_decisions
                             )
                             
                             print(f"📱 Telegram уведомление {'УСПЕШНО' if result else 'НЕ'} отправлено для шага {iteration}")
@@ -693,9 +904,95 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
                 val_loss = validate(model, criterion, valset, iteration, hparams.batch_size, n_gpus, collate_fn, writer, hparams.distributed_run, rank)
                 print(f"📊 Validation loss: {val_loss}")
                 # Auto hyper-parameter tuning (on main node)
-                if is_main_node and auto_ctrl:
+                if is_main_node and quality_ctrl:
+                    # Формируем метрики для анализа
                     align_score = getattr(model, 'last_validation_alignment_score', None)
-                    auto_ctrl.after_validation(iteration, val_loss, align_score)
+                    metrics_dict = {
+                        'val_loss': val_loss,
+                        'attention_alignment_score': align_score if align_score is not None else 0.0
+                    }
+                    attention_w = getattr(model, 'last_validation_alignments', None)
+                    gate_out = getattr(model, 'last_validation_gate_outputs', None)
+                    mel_out = getattr(model, 'last_validation_mel_outputs', None)
+                    try:
+                        analysis = quality_ctrl.analyze_training_quality(epoch=iteration,
+                                                                         metrics=metrics_dict,
+                                                                         attention_weights=attention_w,
+                                                                         gate_outputs=gate_out,
+                                                                         mel_outputs=mel_out)
+                        for intrv in analysis.get('recommended_interventions', []):
+                            new_hp = quality_ctrl.apply_quality_intervention(intrv, vars(hparams), step=iteration)
+                            # Применяем изменения к объекту hparams и модели
+                            for k, v in new_hp.items():
+                                if hasattr(hparams, k):
+                                    old_value = getattr(hparams, k)
+                                    setattr(hparams, k, v)
+                                    # Отслеживаем изменение параметра
+                                    quality_ctrl.track_parameter_change(k, old_value, v, f"Quality intervention: {intrv.get('type', 'unknown')}", iteration)
+                                if k in ['guide_loss_weight', 'guided_attn_weight'] and hparams.use_guided_attn:
+                                    guide_loss.alpha = v
+                                    guide_loss.current_weight = v
+                                    # Синхронизируем оба возможных названия в hparams
+                                    setattr(hparams, 'guided_attn_weight', v)
+                                    setattr(hparams, 'guide_loss_weight', v)
+                                if k == 'learning_rate':
+                                    for g in optimizer.param_groups:
+                                        g['lr'] = v
+                                if k == 'gate_threshold' and hasattr(model.decoder, 'gate_threshold'):
+                                    model.decoder.gate_threshold = v
+                            
+                            # Сохраняем изменения параметров в модели для Telegram
+                            if not hasattr(model, 'last_param_changes'):
+                                model.last_param_changes = {}
+                            
+                            for k, v in new_hp.items():
+                                if hasattr(hparams, k):
+                                    old_value = getattr(hparams, k)
+                                    model.last_param_changes[k] = {
+                                        'old_value': old_value,
+                                        'new_value': v,
+                                        'reason': f"Quality intervention: {intrv.get('type', 'unknown')}"
+                                    }
+                    except Exception as e:
+                        print(f"⚠️ AdvancedQualityController ошибка: {e}")
+
+                # --- EarlyStopController: анализ и решения ---
+                if is_main_node and stop_ctrl:
+                    try:
+                        # Добавляем validation метрики
+                        align_score = getattr(model, 'last_validation_alignment_score', None)
+                        stop_ctrl.add_metrics({
+                            'val_loss': val_loss,
+                            'attention_alignment_score': align_score if align_score is not None else 0.0
+                        })
+                        
+                        # Получаем решение контроллера
+                        decision = stop_ctrl.decide_next_step(vars(hparams))
+                        if decision['action'] == 'apply_patch':
+                            hparams_dict = decision['new_hparams']
+                            for k, v in hparams_dict.items():
+                                if hasattr(hparams, k):
+                                    setattr(hparams, k, v)
+                                if k == 'learning_rate':
+                                    for g in optimizer.param_groups:
+                                        g['lr'] = v
+                                if k in ['guide_loss_weight', 'guided_attn_weight'] and hparams.use_guided_attn:
+                                    guide_loss.alpha = v
+                                    guide_loss.current_weight = v
+                            print(f"🛠  EarlyStop/Rescue применил патч: {decision['reason']}")
+                        
+                        # Проверяем ранний останов
+                        should_stop, reason = stop_ctrl.should_stop_early({'val_loss': val_loss})
+                        if should_stop:
+                            print(f"🟥 Ранний останов: {reason}")
+                            return {
+                                "validation_loss": val_loss,
+                                "iteration": iteration,
+                                "checkpoint_path": None,
+                                "early_stop_reason": reason
+                            }
+                    except Exception as e:
+                        print(f"⚠️ EarlyStopController ошибка: {e}")
 
             if is_main_node and (iteration % hparams.iters_per_checkpoint == 0):
                 checkpoint_path = os.path.join(
@@ -720,6 +1017,23 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
             "checkpoint_path": final_checkpoint_path
         }
         print(f"📊 Финальные метрики: {final_metrics}")
+        
+        # --- Финальные сводки от контроллеров ---
+        if is_main_node:
+            try:
+                if quality_ctrl:
+                    quality_summary = quality_ctrl.get_quality_summary()
+                    print(f"🎯 Quality Summary: {quality_summary}")
+                
+                if stop_ctrl:
+                    stop_summary = stop_ctrl.get_tts_training_summary()
+                    print(f"🛑 EarlyStop Summary: {stop_summary}")
+                
+                if optimizer_epochs:
+                    epoch_summary = optimizer_epochs.get_optimization_summary()
+                    print(f"📈 Epoch Optimization Summary: {epoch_summary}")
+            except Exception as e:
+                print(f"⚠️ Ошибка при получении финальных сводок: {e}")
         
         if writer:
             writer.close()

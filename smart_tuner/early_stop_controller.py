@@ -11,6 +11,7 @@ from typing import Dict, Any, List, Tuple, Optional
 import sqlite3
 import json
 import os
+from datetime import datetime
 
 # Настраиваем логирование только для критически важных сообщений
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - [%(levelname)s] - (EarlyStopController) - %(message)s')
@@ -41,6 +42,10 @@ class EarlyStopController:
         self.tts_metrics_config = self.config.get('tts_metrics', {})
         self.current_phase = "pre_alignment"  # Начальная фаза
         self.phase_start_step = 0
+        
+        # Отслеживание изменений параметров
+        self.parameter_changes = []
+        self.interventions_applied = []
 
         # Создаем "пустой" логгер, который ничего не делает
         class DummyLogger:
@@ -763,3 +768,75 @@ class EarlyStopController:
             return "moderate_issues"
         else:
             return "critical_issues"
+    
+    def get_status(self) -> Dict[str, Any]:
+        """Возвращает текущий статус контроллера."""
+        return {
+            "active": True,
+            "status": "Мониторинг",
+            "current_phase": self.current_phase,
+            "total_steps": len(self.metrics_history),
+            "interventions_applied": len(self.interventions_applied),
+            "patience_remaining": self._calculate_patience_remaining()
+        }
+    
+    def get_recommendations(self) -> List[str]:
+        """Возвращает текущие рекомендации контроллера."""
+        if not self.metrics_history:
+            return ["Мониторинг обучения"]
+        
+        latest = self.metrics_history[-1]
+        recommendations = []
+        
+        # Рекомендации на основе фазы
+        if self.current_phase == "pre_alignment":
+            recommendations.append("Фаза предварительного выравнивания - фокус на guided attention")
+        elif self.current_phase == "alignment_learning":
+            recommendations.append("Фаза обучения выравниванию - стабилизация attention")
+        elif self.current_phase == "fine_tuning":
+            recommendations.append("Фаза тонкой настройки - оптимизация качества")
+        
+        # Рекомендации на основе проблем
+        val_loss = latest.get('val_loss', 0)
+        if val_loss > 5.0:
+            recommendations.append("Высокий validation loss - проверить переобучение")
+        
+        grad_norm = latest.get('grad_norm', 0)
+        if grad_norm > 10.0:
+            recommendations.append("Высокий grad norm - снизить learning rate")
+        
+        attention_score = latest.get('attention_alignment_score', 0)
+        if attention_score < 0.5:
+            recommendations.append("Низкая диагональность attention - увеличить guided attention weight")
+        
+        return recommendations[:3]  # До 3 рекомендаций
+    
+    def track_parameter_change(self, param_name: str, old_value: Any, new_value: Any, reason: str, step: int):
+        """Отслеживает изменение параметра."""
+        change_info = {
+            'param_name': param_name,
+            'old_value': old_value,
+            'new_value': new_value,
+            'reason': reason,
+            'step': step,
+            'timestamp': datetime.now().isoformat()
+        }
+        self.parameter_changes.append(change_info)
+        
+        # Ограничиваем историю изменений
+        if len(self.parameter_changes) > 50:
+            self.parameter_changes = self.parameter_changes[-50:]
+    
+    def get_parameter_changes(self) -> List[Dict[str, Any]]:
+        """Возвращает последние изменения параметров."""
+        return self.parameter_changes[-10:]  # Последние 10 изменений
+    
+    def _calculate_patience_remaining(self) -> str:
+        """Вычисляет оставшееся терпение для раннего останова."""
+        early_stop_config = self.config.get('early_stopping', {})
+        patience = early_stop_config.get('patience', 150)
+        
+        if len(self.metrics_history) < patience:
+            return f"{patience - len(self.metrics_history)} шагов"
+        else:
+            return "Проверка стагнации"

@@ -53,6 +53,10 @@ class IntelligentEpochOptimizer:
         self.optimal_epochs_estimate = None
         self.confidence_score = 0.0
         
+        # Отслеживание изменений параметров
+        self.parameter_changes = []
+        self.optimization_decisions = []
+        
     def _init_database(self):
         """Инициализирует базу данных для хранения истории оптимизации."""
         try:
@@ -594,4 +598,65 @@ class IntelligentEpochOptimizer:
                 "epochs_completed": len(self.training_history),
                 "last_metrics": self.training_history[-1]["metrics"] if self.training_history else None
             }
-        } 
+        }
+    
+    def get_status(self) -> Dict[str, Any]:
+        """Возвращает текущий статус оптимизатора."""
+        return {
+            "active": True,
+            "status": "Оптимизация",
+            "current_phase": self.current_phase,
+            "optimal_epochs_estimate": self.optimal_epochs_estimate,
+            "confidence_score": self.confidence_score,
+            "total_decisions": len(self.optimization_decisions)
+        }
+    
+    def get_recommendations(self) -> List[str]:
+        """Возвращает текущие рекомендации оптимизатора."""
+        if not self.dataset_analysis:
+            return ["Анализ датасета не выполнен"]
+        
+        recommendations = []
+        
+        # Рекомендации на основе анализа датасета
+        size_category = self.dataset_analysis.get("dataset_size_category", "unknown")
+        if size_category == "very_small":
+            recommendations.append("Очень маленький датасет - требуется больше эпох для обучения")
+        elif size_category == "very_large":
+            recommendations.append("Большой датасет - можно использовать меньше эпох")
+        
+        quality_assessment = self.dataset_analysis.get("quality_assessment", {})
+        quality_score = quality_assessment.get("overall_score", 0.5)
+        if quality_score < 0.5:
+            recommendations.append("Низкое качество датасета - увеличить количество эпох")
+        
+        complexity_analysis = self.dataset_analysis.get("complexity_analysis", {})
+        complexity_score = complexity_analysis.get("complexity_score", 0.5)
+        if complexity_score > 0.7:
+            recommendations.append("Сложный голос - требуется больше эпох для качественного обучения")
+        
+        # Рекомендации на основе текущего прогресса
+        if self.optimal_epochs_estimate:
+            recommendations.append(f"Рекомендуемое количество эпох: {self.optimal_epochs_estimate}")
+        
+        return recommendations[:3]  # До 3 рекомендаций
+    
+    def track_parameter_change(self, param_name: str, old_value: Any, new_value: Any, reason: str, step: int):
+        """Отслеживает изменение параметра."""
+        change_info = {
+            'param_name': param_name,
+            'old_value': old_value,
+            'new_value': new_value,
+            'reason': reason,
+            'step': step,
+            'timestamp': datetime.now().isoformat()
+        }
+        self.parameter_changes.append(change_info)
+        
+        # Ограничиваем историю изменений
+        if len(self.parameter_changes) > 50:
+            self.parameter_changes = self.parameter_changes[-50:]
+    
+    def get_parameter_changes(self) -> List[Dict[str, Any]]:
+        """Возвращает последние изменения параметров."""
+        return self.parameter_changes[-10:]  # Последние 10 изменений 

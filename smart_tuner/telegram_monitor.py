@@ -131,14 +131,19 @@ class TelegramMonitor:
     
     def send_training_update(self, step: int, metrics: Dict[str, Any],
                            attention_weights: Optional[torch.Tensor] = None,
-                           gate_outputs: Optional[torch.Tensor] = None) -> bool:
-        """Отправляет обновление с изображениями."""
+                           gate_outputs: Optional[torch.Tensor] = None,
+                           smart_tuner_decisions: Optional[Dict[str, Any]] = None) -> bool:
+        """Отправляет обновление с изображениями и решениями умной системы."""
         if not self.should_send_notification(step):
             return False
         
         try:
             # Анализ данных
             analysis = self._analyze_step(step, metrics, attention_weights, gate_outputs)
+            
+            # Добавляем информацию о решениях Smart Tuner
+            if smart_tuner_decisions:
+                analysis['smart_tuner_decisions'] = smart_tuner_decisions
             
             # Отправка текстового сообщения
             message = self._create_message(analysis)
@@ -233,6 +238,44 @@ class TelegramMonitor:
             elif diag > 0.7:
                 message += f"  ✅ *Отличная диагональность!*\n"
         
+        # 🤖 РЕШЕНИЯ SMART TUNER
+        smart_decisions = analysis.get('smart_tuner_decisions', {})
+        if smart_decisions:
+            message += f"\n🤖 **УМНАЯ СИСТЕМА ПРИНЯЛА РЕШЕНИЯ:**\n"
+            
+            # Изменения гиперпараметров
+            param_changes = smart_decisions.get('parameter_changes', {})
+            if param_changes:
+                message += f"⚙️ **Изменения параметров:**\n"
+                for param, change_info in param_changes.items():
+                    old_val = change_info.get('old_value', 'N/A')
+                    new_val = change_info.get('new_value', 'N/A')
+                    reason = change_info.get('reason', 'Автоматическая оптимизация')
+                    message += f"  • `{param}`: {old_val} → {new_val}\n"
+                    message += f"    💡 Причина: {reason}\n"
+            
+            # Рекомендации от контроллеров
+            recommendations = smart_decisions.get('recommendations', [])
+            if recommendations:
+                message += f"💡 **Рекомендации:**\n"
+                for rec in recommendations[:3]:  # Показываем до 3 рекомендаций
+                    message += f"  • {rec}\n"
+            
+            # Статус контроллеров
+            controller_status = smart_decisions.get('controller_status', {})
+            if controller_status:
+                message += f"🎛️ **Статус контроллеров:**\n"
+                for controller, status in controller_status.items():
+                    status_emoji = "✅" if status.get('active', False) else "⏸️"
+                    message += f"  {status_emoji} {controller}: {status.get('status', 'Неизвестно')}\n"
+            
+            # Предупреждения и проблемы
+            warnings = smart_decisions.get('warnings', [])
+            if warnings:
+                message += f"⚠️ **Предупреждения:**\n"
+                for warning in warnings[:2]:  # Показываем до 2 предупреждений
+                    message += f"  • {warning}\n"
+        
         # Проблемы
         issues = analysis.get('issues', [])
         if issues:
@@ -240,12 +283,13 @@ class TelegramMonitor:
             for issue in issues[:2]:
                 message += f"  • {issue}\n"
         
-        # Рекомендации
-        recommendations = analysis.get('recommendations', [])
-        if recommendations:
-            message += f"\n💡 **Что делать:**\n"
-            for rec in recommendations[:2]:
-                message += f"  • {rec}\n"
+        # Рекомендации (если нет решений от Smart Tuner)
+        if not smart_decisions:
+            recommendations = analysis.get('recommendations', [])
+            if recommendations:
+                message += f"\n💡 **Что делать:**\n"
+                for rec in recommendations[:2]:
+                    message += f"  • {rec}\n"
         
         message += f"\n🕐 {datetime.now().strftime('%H:%M:%S')}"
         
