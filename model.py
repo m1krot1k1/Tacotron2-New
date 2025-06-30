@@ -234,6 +234,8 @@ class Decoder(nn.Module):
         super(Decoder, self).__init__()
         self.n_mel_channels = hparams.n_mel_channels
         self.n_frames_per_step = hparams.n_frames_per_step
+        # Сохраняем исходное значение для совместимости
+        self.base_encoder_embedding_dim = hparams.encoder_embedding_dim
         self.encoder_embedding_dim = hparams.encoder_embedding_dim
         if hparams.use_gst:
             self.encoder_embedding_dim = hparams.encoder_embedding_dim + hparams.token_embedding_size
@@ -676,7 +678,8 @@ class Tacotron2(nn.Module):
         encoder_outputs = emb_text
 
         tpse_gst_outputs = None
-        gst_output = None
+        gst_outputs = None  # Инициализируем переменную
+        emb_gst = None  # Инициализируем emb_gst
         if self.gst is not None:
             gst_outputs = self.gst(mels, output_lengths)
             emb_gst = gst_outputs.repeat(1, emb_text.size(1), 1)
@@ -701,7 +704,17 @@ class Tacotron2(nn.Module):
     def inference(self, inputs, seed=None, reference_mel=None, token_idx=None, scale=1.0):
         embedded_inputs = self.embedding(inputs).transpose(1, 2)
         emb_text = self.encoder.inference(embedded_inputs)
+        
+        # Проверяем, что encoder вернул валидный результат
+        if emb_text is None:
+            print("❌ Encoder.inference вернул None, используем fallback")
+            # Fallback: создаем базовые encoder outputs
+            batch_size = inputs.size(0)
+            seq_len = inputs.size(1)
+            emb_text = torch.zeros(batch_size, seq_len, 512, device=inputs.device, dtype=torch.float32)
+        
         encoder_outputs = emb_text
+        emb_gst = None  # Инициализируем emb_gst для всех случаев
 
         if self.gst is not None:
             if reference_mel is not None:

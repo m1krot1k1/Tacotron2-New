@@ -17,7 +17,7 @@ def create_hparams(hparams_string=None, verbose=False):
         iters_per_checkpoint=1000,          # Увеличено для стабильности
         save_interval=2000,                 # Увеличено для экономии места
         validate_interval=200,              # Более частая валидация
-        validation_freq=200,                # Частота валидации (iterations)
+        validation_freq=50,                 # Частота валидации (iterations) - уменьшено для тестирования
         warmup_steps=2000,                  # Увеличено для лучшей стабильности
         seed=1234,
         dynamic_loss_scaling=True,
@@ -88,7 +88,7 @@ def create_hparams(hparams_string=None, verbose=False):
         postnet_n_convolutions=5,
 
         # GST - оптимизированные параметры Global Style Tokens
-        use_gst=True,
+        use_gst=False,  # ВРЕМЕННО ОТКЛЮЧЕНО для отладки
         ref_enc_filters=[32, 32, 64, 64, 128, 128],
         ref_enc_size=[3, 3],
         ref_enc_strides=[2, 2],

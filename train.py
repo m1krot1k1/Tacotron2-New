@@ -168,7 +168,9 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
         writer.add_scalar("validation.loss", val_loss, iteration)
 
         # Логирование изображений (взято из Tacotron2Logger)
-        _, mel_outputs, gate_outputs, alignments = model.inference(x[0].unsqueeze(0))
+        inference_outputs = model.inference(x[0].unsqueeze(0))
+        # inference возвращает [None, mel_outputs, mel_outputs_postnet, gate_outputs, alignments, emb_gst]
+        _, mel_outputs, mel_outputs_postnet, gate_outputs, alignments, emb_gst = inference_outputs
         mel_targets, gate_targets = y[0], y[1]
         
         # plot distribution of parameters
@@ -342,8 +344,9 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
     global_mean = calculate_global_mean(train_loader, hparams.global_mean_npy)
 
     # ================ MAIN TRAINNIG LOOP ===================
+    print(f"🚀 Начинаем обучение: epochs={hparams.epochs}, batch_size={hparams.batch_size}, dataset_size={len(train_loader)}")
     for epoch in range(epoch_offset, hparams.epochs):
-        print("Epoch: {}".format(epoch))
+        print("Epoch: {} / {}".format(epoch, hparams.epochs))
         for i, batch in enumerate(train_loader):
             start = time.perf_counter()
             model.zero_grad()
@@ -418,14 +421,17 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
                      writer.add_scalar("training.guide_loss_weight", guide_loss.get_weight(), iteration)
 
             if (iteration % hparams.validation_freq == 0):
+                print(f"🔍 Выполняем валидацию на итерации {iteration}")
                 val_loss = validate(model, criterion, valset, iteration,
                          hparams.batch_size, n_gpus, collate_fn, writer,
                          hparams.distributed_run, rank)
+                print(f"📊 Validation loss: {val_loss}")
                 if is_main_node:
                     # Логирование validation loss для Optuna
                     if smart_tuner_trial:
                         smart_tuner_trial.report(val_loss, iteration)
                         if smart_tuner_trial.should_prune():
+                            print(f"✂️ Trial обрезан на итерации {iteration}")
                             raise optuna.TrialPruned()
 
             if is_main_node and (iteration % hparams.iters_per_checkpoint == 0):
@@ -438,12 +444,20 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
 
     # Сохраняем финальные метрики для Smart Tuner
     if is_main_node:
+        print(f"🏁 Обучение завершено после {iteration} итераций")
         val_loss = validate(model, criterion, valset, iteration, hparams.batch_size, n_gpus, collate_fn, writer, hparams.distributed_run, rank)
+        
+        # Сохраняем финальный checkpoint
+        final_checkpoint_path = os.path.join(output_directory, f"checkpoint_final_{iteration}")
+        save_checkpoint(model, optimizer, learning_rate, iteration, final_checkpoint_path)
+        
         final_metrics = {
             "validation_loss": val_loss,
             "iteration": iteration,
-            "checkpoint_path": checkpoint_path
+            "checkpoint_path": final_checkpoint_path
         }
+        print(f"📊 Финальные метрики: {final_metrics}")
+        
         if writer:
             writer.close()
         return final_metrics

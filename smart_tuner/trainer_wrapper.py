@@ -63,7 +63,11 @@ class TrainerWrapper:
             log_directory = os.path.join(output_directory, "logs")
             os.makedirs(log_directory, exist_ok=True)
             
-            logging.info(f"Вызываем core_train_func с output_directory={output_directory}")
+            logging.info(f"🚀 Запускаем обучение с параметрами:")
+            logging.info(f"   - epochs: {hparams.epochs}")
+            logging.info(f"   - batch_size: {hparams.batch_size}")
+            logging.info(f"   - learning_rate: {hparams.learning_rate}")
+            logging.info(f"   - output_directory: {output_directory}")
 
             final_metrics = core_train_func(
                 output_directory=output_directory,
@@ -83,6 +87,8 @@ class TrainerWrapper:
                 tensorboard_writer=writer
             )
             
+            logging.info(f"✅ Обучение завершено, получены метрики: {final_metrics}")
+            
             if final_metrics and final_metrics.get('checkpoint_path'):
                 self.last_checkpoint_path = final_metrics['checkpoint_path']
             
@@ -92,7 +98,17 @@ class TrainerWrapper:
             import traceback
             logging.error(f"❌ Критическая ошибка в ядре обучения: {e}")
             logging.error(f"Полный traceback: {traceback.format_exc()}")
-            return None
+            
+            # Возвращаем частичные метрики, если возможно
+            try:
+                return {
+                    "validation_loss": float('inf'),
+                    "iteration": 0,
+                    "checkpoint_path": None,
+                    "error": str(e)
+                }
+            except:
+                return None
 
     def _setup_logger(self, output_directory: str) -> logging.Logger:
         """Настраивает стандартный Python логгер для этого запуска."""
