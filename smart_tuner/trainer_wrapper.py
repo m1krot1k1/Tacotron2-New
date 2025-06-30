@@ -81,6 +81,15 @@ class TrainerWrapper:
             logging.info(f"   - learning_rate: {hparams.learning_rate}")
             logging.info(f"   - output_directory: {output_directory}")
 
+            # 📱 Инициализируем Telegram Monitor
+            telegram_monitor = None
+            try:
+                from smart_tuner.telegram_monitor import TelegramMonitor
+                telegram_monitor = TelegramMonitor()
+                logging.info("📱 Telegram Monitor инициализирован")
+            except Exception as e:
+                logging.warning(f"⚠️ Не удалось инициализировать Telegram Monitor: {e}")
+
             final_metrics = core_train_func(
                 output_directory=output_directory,
                 log_directory=log_directory,
@@ -96,7 +105,8 @@ class TrainerWrapper:
                 # Интеграция со Smart Tuner
                 smart_tuner_trial=trial,
                 smart_tuner_logger=self._setup_logger(output_directory),
-                tensorboard_writer=writer
+                tensorboard_writer=writer,
+                telegram_monitor=telegram_monitor
             )
             
             logging.info(f"✅ Обучение завершено, получены метрики: {final_metrics}")

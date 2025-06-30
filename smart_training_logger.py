@@ -366,6 +366,64 @@ def get_training_logger(log_dir: str = "logs",
     return create_smart_logger(log_dir, experiment_name, **kwargs)
 
 
+def log_training_start(experiment_name: str = "TTS_Training", 
+                      hparams: Dict[str, Any] = None, 
+                      **kwargs) -> None:
+    """
+    🤖 НЕДОСТАЮЩАЯ ФУНКЦИЯ: Логирование начала обучения
+    
+    Эта функция нужна для совместимости со Smart Tuner системой.
+    """
+    try:
+        logger = get_training_logger(experiment_name=experiment_name)
+        
+        if hparams:
+            logger.log_hyperparameters(hparams)
+            
+        # Логируем начало обучения
+        import logging
+        logging.info(f"🚀 Начато обучение эксперимента: {experiment_name}")
+        
+        if hparams:
+            logging.info(f"📊 Гиперпараметры: {hparams}")
+            
+    except Exception as e:
+        import logging
+        logging.warning(f"⚠️ Ошибка логирования начала обучения: {e}")
+
+
+def log_training_metrics(metrics: Dict[str, Any], step: int = None, **kwargs) -> None:
+    """
+    🤖 НЕДОСТАЮЩАЯ ФУНКЦИЯ: Логирование метрик обучения
+    
+    Эта функция нужна для совместимости со Smart Tuner системой.
+    """
+    try:
+        # Логируем через обычный logging
+        import logging
+        
+        if step is not None:
+            logging.info(f"📊 Метрики (шаг {step}): {metrics}")
+        else:
+            logging.info(f"📊 Метрики: {metrics}")
+        
+        # Пытаемся использовать MLflow если доступен
+        try:
+            import mlflow
+            for metric_name, metric_value in metrics.items():
+                if isinstance(metric_value, (int, float)):
+                    mlflow.log_metric(metric_name, metric_value, step=step)
+                    
+        except ImportError:
+            pass  # MLflow недоступен
+        except Exception as e:
+            logging.warning(f"⚠️ Ошибка MLflow логирования: {e}")
+            
+    except Exception as e:
+        import logging
+        logging.warning(f"⚠️ Ошибка логирования метрик: {e}")
+
+
 if __name__ == "__main__":
     # Тестирование системы логирования
     logger = create_smart_logger(experiment_name="Test_TTS")

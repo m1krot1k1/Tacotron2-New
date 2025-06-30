@@ -165,6 +165,7 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
             val_loss += reduced_val_loss
         val_loss = val_loss / (i + 1)
 
+    # 🔥 ФИНАЛЬНОЕ возвращение в train режим
     model.train()
     model.decoder.p_teacher_forcing = 1.0
     if rank == 0:
@@ -175,9 +176,47 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
 
         # Логирование изображений (взято из Tacotron2Logger)
         try:
-            # Выполняем inference для получения изображений
+            # 🔥 ИСПРАВЛЕНИЕ: Правильный inference с корректными размерами
             with torch.no_grad():
-                inference_outputs = model.inference(x[0][:1])  # Берем только первый элемент батча
+                # Используем eval режим для предотвращения BatchNorm ошибок
+                model.eval()
+                
+                # 🔥 ВАЖНО: Используем данные из validation для правильных размеров
+                # Вместо inference используем training forward pass для корректных размеров
+                try:
+                    # Используем реальные данные из validation batch
+                    validation_outputs = model(x, minimize=False)
+                    
+                    # validation_outputs: [decoder_outputs, mel_outputs, mel_outputs_postnet, gate_outputs, alignments, ...]
+                    if len(validation_outputs) >= 5:
+                        decoder_outputs_val, mel_outputs_val, mel_outputs_postnet_val, gate_outputs_val, alignments_val = validation_outputs[:5]
+                        
+                        # Для изображений используем validation outputs (они корректного размера)
+                        inference_outputs = [None, mel_outputs_val, mel_outputs_postnet_val, gate_outputs_val, alignments_val]
+                        print(f"✅ Validation forward pass: mel={mel_outputs_postnet_val.shape if mel_outputs_postnet_val is not None else 'None'}, "
+                              f"gate={gate_outputs_val.shape if gate_outputs_val is not None else 'None'}, "
+                              f"align={alignments_val.shape if alignments_val is not None else 'None'}")
+                    else:
+                        print(f"⚠️ Validation outputs неполные: {len(validation_outputs)} элементов")
+                        inference_outputs = None
+                        
+                except Exception as val_e:
+                    print(f"⚠️ Ошибка validation forward pass: {val_e}")
+                    
+                    # Fallback к inference с более безопасными параметрами
+                    try:
+                        # Берем первый элемент батча
+                        input_text = x[0][:1] if x[0].size(0) > 0 else x[0]
+                        
+                        if input_text.size(0) == 0:
+                            print("⚠️ Пустой батч для создания изображений")
+                            inference_outputs = None
+                        else:
+                            inference_outputs = model.inference(input_text)
+                            print(f"📝 Fallback inference завершен")
+                    except Exception as inf_e:
+                        print(f"⚠️ Ошибка fallback inference: {inf_e}")
+                        inference_outputs = None
             
             # inference возвращает [None, mel_outputs, mel_outputs_postnet, gate_outputs, alignments, emb_gst]
             if inference_outputs is not None and len(inference_outputs) >= 5:
@@ -194,42 +233,59 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
                 
                 idx = 0  # Используем первый элемент из батча
                 
+                # 🔥 ИСПРАВЛЕННОЕ создание изображений с проверкой размеров
+                
                 # Alignment изображение
                 if alignments_inf is not None and alignments_inf.size(0) > idx:
                     try:
-                        alignment_img = plot_alignment_to_numpy(alignments_inf[idx].data.cpu().numpy().T)
-                        writer.add_image("alignment", alignment_img, iteration, dataformats='HWC')
-                        print(f"✅ Alignment изображение создано: {alignment_img.shape}")
+                        alignment_data = alignments_inf[idx].data.cpu().numpy()
+                        if alignment_data.shape[0] > 1 and alignment_data.shape[1] > 1:
+                            alignment_img = plot_alignment_to_numpy(alignment_data.T)
+                            writer.add_image("alignment", alignment_img, iteration, dataformats='HWC')
+                            print(f"✅ Alignment изображение создано: {alignment_img.shape}")
+                        else:
+                            print(f"⚠️ Alignment матрица слишком маленькая: {alignment_data.shape}")
                     except Exception as e:
                         print(f"❌ Ошибка создания alignment изображения: {e}")
                 
                 # Mel target изображение
                 if mel_targets.size(0) > idx:
                     try:
-                        mel_target_img = plot_spectrogram_to_numpy(mel_targets[idx].data.cpu().numpy())
-                        writer.add_image("mel_target", mel_target_img, iteration, dataformats='HWC')
-                        print(f"✅ Mel target изображение создано: {mel_target_img.shape}")
+                        mel_target_data = mel_targets[idx].data.cpu().numpy()
+                        if mel_target_data.shape[0] > 1 and mel_target_data.shape[1] > 1:
+                            mel_target_img = plot_spectrogram_to_numpy(mel_target_data)
+                            writer.add_image("mel_target", mel_target_img, iteration, dataformats='HWC')
+                            print(f"✅ Mel target изображение создано: {mel_target_img.shape}")
+                        else:
+                            print(f"⚠️ Mel target слишком маленький: {mel_target_data.shape}")
                     except Exception as e:
                         print(f"❌ Ошибка создания mel target изображения: {e}")
                 
                 # Mel predicted изображение
                 if mel_outputs_inf is not None and mel_outputs_inf.size(0) > idx:
                     try:
-                        mel_pred_img = plot_spectrogram_to_numpy(mel_outputs_inf[idx].data.cpu().numpy())
-                        writer.add_image("mel_predicted", mel_pred_img, iteration, dataformats='HWC')
-                        print(f"✅ Mel predicted изображение создано: {mel_pred_img.shape}")
+                        mel_pred_data = mel_outputs_inf[idx].data.cpu().numpy()
+                        if mel_pred_data.shape[0] > 1 and mel_pred_data.shape[1] > 1:
+                            mel_pred_img = plot_spectrogram_to_numpy(mel_pred_data)
+                            writer.add_image("mel_predicted", mel_pred_img, iteration, dataformats='HWC')
+                            print(f"✅ Mel predicted изображение создано: {mel_pred_img.shape}")
+                        else:
+                            print(f"⚠️ Mel predicted слишком маленький: {mel_pred_data.shape}")
                     except Exception as e:
                         print(f"❌ Ошибка создания mel predicted изображения: {e}")
                 
                 # Gate outputs изображение
                 if gate_outputs_inf is not None and gate_outputs_inf.size(0) > idx and gate_targets.size(0) > idx:
                     try:
-                        gate_img = plot_gate_outputs_to_numpy(
-                            gate_targets[idx].data.cpu().numpy(),
-                            torch.sigmoid(gate_outputs_inf[idx]).data.cpu().numpy()
-                        )
-                        writer.add_image("gate", gate_img, iteration, dataformats='HWC')
-                        print(f"✅ Gate изображение создано: {gate_img.shape}")
+                        gate_target_data = gate_targets[idx].data.cpu().numpy()
+                        gate_pred_data = torch.sigmoid(gate_outputs_inf[idx]).data.cpu().numpy()
+                        
+                        if len(gate_target_data) > 1 and len(gate_pred_data) > 1:
+                            gate_img = plot_gate_outputs_to_numpy(gate_target_data, gate_pred_data)
+                            writer.add_image("gate", gate_img, iteration, dataformats='HWC')
+                            print(f"✅ Gate изображение создано: {gate_img.shape}")
+                        else:
+                            print(f"⚠️ Gate данные слишком маленькие: target={len(gate_target_data)}, pred={len(gate_pred_data)}")
                     except Exception as e:
                         print(f"❌ Ошибка создания gate изображения: {e}")
                         
@@ -239,6 +295,9 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
                 
             else:
                 print(f"⚠️ Inference не вернул корректные данные для изображений")
+                
+            # 🔥 ВАЖНО: Возвращаем модель в train режим
+            model.train()
                 
         except Exception as e:
             print(f"❌ Общая ошибка при создании изображений: {e}")
@@ -251,6 +310,9 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
                     print(f"✅ Fallback mel target изображение создано")
             except Exception as fallback_e:
                 print(f"❌ Даже fallback изображение не удалось создать: {fallback_e}")
+                
+        # 🔥 ОБЯЗАТЕЛЬНО: Убеждаемся что модель в train режиме
+        model.train()
 
         if MLFLOW_AVAILABLE:
             validation_metrics = {
@@ -326,7 +388,8 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
           # Параметры для интеграции со Smart Tuner
           smart_tuner_trial=None,
           smart_tuner_logger=None,
-          tensorboard_writer=None):
+          tensorboard_writer=None,
+          telegram_monitor=None):
     """Training and validation logging results to tensorboard and stdout
 
     Params
@@ -550,6 +613,40 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
                         # Базовое MLflow логирование
                         for metric_name, metric_value in training_metrics.items():
                             mlflow.log_metric(metric_name, metric_value, step=iteration)
+                
+                # 📱 Telegram уведомления каждые 100 шагов (чаще для отладки)
+                if telegram_monitor and iteration % 100 == 0:
+                    try:
+                        # Получаем attention weights из y_pred
+                        attention_weights = None
+                        gate_outputs = None
+                        
+                        if len(y_pred) >= 5:
+                            attention_weights = y_pred[4] if y_pred[4] is not None else None
+                        if len(y_pred) >= 4:
+                            gate_outputs = y_pred[3] if y_pred[3] is not None else None
+                        
+                        # Метрики для Telegram
+                        telegram_metrics = {
+                            "loss": reduced_loss,
+                            "mel_loss": reduced_taco_loss,
+                            "gate_loss": reduced_gate_loss,
+                            "guide_loss": reduced_guide_loss,
+                            "grad_norm": grad_norm,
+                            "learning_rate": learning_rate,
+                            "epoch": epoch
+                        }
+                        
+                        telegram_monitor.send_training_update(
+                            step=iteration,
+                            metrics=telegram_metrics,
+                            attention_weights=attention_weights,
+                            gate_outputs=gate_outputs
+                        )
+                        print(f"📱 Telegram уведомление отправлено для шага {iteration}")
+                        
+                    except Exception as e:
+                        print(f"⚠️ Ошибка Telegram уведомления: {e}")
 
             if (iteration % hparams.validation_freq == 0):
                 print(f"🔍 Выполняем валидацию на итерации {iteration}")

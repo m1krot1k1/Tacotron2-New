@@ -37,7 +37,7 @@ class TelegramMonitor:
         self.enabled = telegram_config.get('enabled', False)
         
         # Параметры мониторинга
-        self.notification_interval = 1000
+        self.notification_interval = 100  # Чаще для отладки
         self.last_notification_step = 0
         self.training_history = []
         
