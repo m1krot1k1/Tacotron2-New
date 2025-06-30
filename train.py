@@ -205,27 +205,52 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
             iteration, dataformats='HWC')
 
         if MLFLOW_AVAILABLE:
+            validation_metrics = {
+                "validation.loss": val_loss,
+                "validation.step": iteration
+            }
+            
+            # Дополнительные метрики из модели
+            if hasattr(model, 'decoder') and hasattr(model.decoder, 'attention_weights'):
+                try:
+                    # Логируем метрики attention
+                    attention_weights = model.decoder.attention_weights
+                    if attention_weights is not None:
+                        validation_metrics["validation.attention_entropy"] = float(
+                            torch.mean(torch.sum(-attention_weights * torch.log(attention_weights + 1e-8), dim=-1))
+                        )
+                except Exception as e:
+                    print(f"⚠️ Ошибка при вычислении attention entropy: {e}")
+            
+            # Метрики из alignments
+            if alignments is not None:
+                try:
+                    # Диагональность alignment матрицы
+                    alignment_diag = torch.diagonal(alignments[0], dim1=-2, dim2=-1)
+                    validation_metrics["validation.alignment_score"] = float(torch.mean(alignment_diag))
+                    
+                    # Фокусировка attention (концентрация на диагонали)
+                    attention_focus = torch.max(alignments[0], dim=-1)[0]
+                    validation_metrics["validation.attention_focus"] = float(torch.mean(attention_focus))
+                except Exception as e:
+                    print(f"⚠️ Ошибка при вычислении alignment метрик: {e}")
+            
+            # Метрики из gate outputs
+            if gate_outputs is not None:
+                try:
+                    gate_probs = torch.sigmoid(gate_outputs[0])
+                    validation_metrics["validation.gate_mean"] = float(torch.mean(gate_probs))
+                    validation_metrics["validation.gate_std"] = float(torch.std(gate_probs))
+                except Exception as e:
+                    print(f"⚠️ Ошибка при вычислении gate метрик: {e}")
+            
             if ENHANCED_LOGGING:
                 # Расширенное логирование validation метрик
-                validation_metrics = {
-                    "validation.loss": val_loss,
-                    "validation.step": iteration
-                }
                 log_enhanced_training_metrics(validation_metrics, iteration)
-                
-                # Дополнительные метрики из модели
-                if hasattr(model, 'decoder') and hasattr(model.decoder, 'attention_weights'):
-                    try:
-                        # Логируем метрики attention
-                        attention_weights = model.decoder.attention_weights
-                        if attention_weights is not None:
-                            validation_metrics["validation.attention_entropy"] = float(
-                                torch.mean(torch.sum(-attention_weights * torch.log(attention_weights + 1e-8), dim=-1))
-                            )
-                    except:
-                        pass
             else:
-                mlflow.log_metric("validation.loss", val_loss, step=iteration)
+                # Базовое MLflow логирование
+                for metric_name, metric_value in validation_metrics.items():
+                    mlflow.log_metric(metric_name, metric_value, step=iteration)
     
     return val_loss  # Возвращаем validation loss для scheduler'а
 
@@ -353,6 +378,27 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
 
     # ================ MAIN TRAINNIG LOOP ===================
     print(f"🚀 Начинаем обучение: epochs={hparams.epochs}, batch_size={hparams.batch_size}, dataset_size={len(train_loader)}")
+    
+    # Логирование параметров модели в MLflow
+    if is_main_node and MLFLOW_AVAILABLE:
+        model_params = {
+            "model.total_params": sum(p.numel() for p in model.parameters()),
+            "model.trainable_params": sum(p.numel() for p in model.parameters() if p.requires_grad),
+            "hparams.batch_size": hparams.batch_size,
+            "hparams.learning_rate": hparams.learning_rate,
+            "hparams.epochs": hparams.epochs,
+            "hparams.grad_clip_thresh": hparams.grad_clip_thresh,
+            "hparams.fp16_run": hparams.fp16_run,
+            "hparams.use_mmi": hparams.use_mmi,
+            "hparams.use_guided_attn": hparams.use_guided_attn,
+            "dataset.train_size": len(train_loader),
+            "dataset.val_size": len(valset)
+        }
+        
+        # Логируем параметры
+        mlflow.log_params(model_params)
+        print(f"📊 Параметры модели залогированы в MLflow: {model_params['model.total_params']} параметров")
+    
     for epoch in range(epoch_offset, hparams.epochs):
         print("Epoch: {} / {}".format(epoch, hparams.epochs))
         for i, batch in enumerate(train_loader):
@@ -427,6 +473,35 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, ignore_m
                 writer.add_scalar("duration", duration, iteration)
                 if hparams.use_guided_attn:
                      writer.add_scalar("training.guide_loss_weight", guide_loss.get_weight(), iteration)
+
+                # Логирование в MLflow
+                if MLFLOW_AVAILABLE:
+                    training_metrics = {
+                        "training.loss": reduced_loss,
+                        "training.taco_loss": reduced_taco_loss,
+                        "training.atten_loss": reduced_atten_loss,
+                        "training.mi_loss": reduced_mi_loss,
+                        "training.guide_loss": reduced_guide_loss,
+                        "training.gate_loss": reduced_gate_loss,
+                        "training.emb_loss": reduced_emb_loss,
+                        "grad.norm": grad_norm,
+                        "learning.rate": learning_rate,
+                        "duration": duration,
+                        "epoch": epoch,
+                        "iteration": iteration
+                    }
+                    
+                    if hparams.use_guided_attn:
+                        training_metrics["training.guide_loss_weight"] = guide_loss.get_weight()
+                    
+                    if ENHANCED_LOGGING:
+                        # Используем расширенное логирование
+                        log_enhanced_training_metrics(training_metrics, iteration)
+                        log_system_metrics(iteration)
+                    else:
+                        # Базовое MLflow логирование
+                        for metric_name, metric_value in training_metrics.items():
+                            mlflow.log_metric(metric_name, metric_value, step=iteration)
 
             if (iteration % hparams.validation_freq == 0):
                 print(f"🔍 Выполняем валидацию на итерации {iteration}")
