@@ -85,22 +85,22 @@ training_safety:
 # 🔧 Оптимизированные гиперпараметры 
 hyperparameter_search_space:
   batch_size:
-    type: categorical
-    choices: [8, 16, 24, 32]  # Убраны большие размеры 48,64
-    default: 16
+    type: int
+    min: 8
+    max: 64
+    default: 32
     
   epochs:
     type: int
-    min: 50      # Уменьшено с 100
-    max: 300     # Уменьшено с 500
-    default: 150 # Разумное значение
+    min: 500          # Минимум для базового качества
+    max: 5000         # Максимум для предотвращения переобучения  
+    default: 2000     # Оптимальное значение для большинства случаев
     
   learning_rate:
     type: float
-    min: 0.0002  # Увеличено минимальное
-    max: 0.005   # Уменьшено максимальное
-    default: 0.001
-    log: true
+    min: 1e-6
+    max: 1e-3
+    default: 1e-4     # Сбалансированное значение
     
   warmup_steps:
     type: int
@@ -175,39 +175,33 @@ optimization:
 # 🛑 Система раннего останова (обновлена для предотвращения преждевременной остановки)
 early_stopping:
   enabled: true
-  patience: 150        # Увеличено с 100 для большей терпимости
-  min_delta: 0.0005    # Уменьшено с 0.001 для большей чувствительности
-  mode: min
-  monitor: validation.loss
   
-  # 🛡️ Дополнительные защиты от преждевременной остановки
-  min_training_steps: 500     # Минимум шагов перед проверкой early stopping
-  min_training_time_minutes: 15  # Минимум 15 минут обучения
+  # Современные критерии останова
+  patience_epochs: 200        # Увеличено для TTS
+  min_delta: 0.001           # Минимальное улучшение
+  monitor_metric: "val_loss"
   
-  # Мульти-критериальная остановка (более консервативная)
-  multi_criteria:
+  # Адаптивные пороги на основе фазы обучения
+  adaptive_thresholds:
     enabled: true
-    min_criteria_count: 3   # Минимум 3 критерия должны быть выполнены
-    criteria:
-      validation_loss:
-        weight: 0.6      # Увеличен вес
-        patience: 120    # Увеличено с 80
-        min_delta: 0.0005
-      attention_alignment_score:
-        weight: 0.15     # Уменьшен вес
-        patience: 100    # Увеличено с 60
-        min_delta: 0.005  # Уменьшено с 0.01
-        mode: max
-      gate_accuracy:
-        weight: 0.15
-        patience: 80     # Увеличено с 50
-        min_delta: 0.005  # Уменьшено с 0.01
-        mode: max
-      mel_quality_score:
-        weight: 0.1
-        patience: 100    # Увеличено с 60
-        min_delta: 0.005  # Уменьшено с 0.01
-        mode: max
+    
+    # Фаза выравнивания attention (0-500 эпох)
+    alignment_phase:
+      patience: 100
+      min_improvement: 0.01
+      attention_threshold: 0.5
+      
+    # Фаза обучения (500-2000 эпох)  
+    learning_phase:
+      patience: 150
+      min_improvement: 0.005
+      attention_threshold: 0.8
+      
+    # Фаза тонкой настройки (2000+ эпох)
+    fine_tuning_phase:
+      patience: 200
+      min_improvement: 0.001
+      attention_threshold: 0.9
 
 # 📈 TTS метрики с реалистичными весами
 tts_metrics:
@@ -228,20 +222,11 @@ tts_phase_training:
   enabled: true
   phases:
     pre_alignment:
-      duration_epochs: 30  # Уменьшено с 50
-      guided_attention_weight: 2.0  # Уменьшено с 3.0
-      learning_rate_multiplier: 1.0
-      focus_metrics: [attention_alignment_score]
+      max_epochs: 500
     alignment_learning:
-      duration_epochs: 60  # Уменьшено с 100
-      guided_attention_weight: 1.2  # Уменьшено с 1.5
-      learning_rate_multiplier: 0.9  # Увеличено с 0.8
-      focus_metrics: [attention_alignment_score, gate_accuracy]
+      max_epochs: 1500
     fine_tuning:
-      duration_epochs: 90  # Уменьшено с 150
-      guided_attention_weight: 0.7  # Увеличено с 0.5
-      learning_rate_multiplier: 0.7  # Увеличено с 0.6
-      focus_metrics: [validation_loss, mel_quality_score]
+      max_epochs: 3000
 
 # 🔧 Системные настройки
 experiment_name: tacotron2_smart_v2
@@ -318,4 +303,4 @@ telegram:
     optimization_updates: true
     error_alerts: true
     early_stop: true
-    metrics_summary: false 
+    metrics_summary: true 

@@ -62,6 +62,7 @@ from smart_tuner.optimization_engine import OptimizationEngine
 from smart_tuner.early_stop_controller import EarlyStopController
 from smart_tuner.alert_manager import AlertManager
 from smart_tuner.model_registry import ModelRegistry
+from smart_tuner.intelligent_epoch_optimizer import IntelligentEpochOptimizer
 
 # Импорты систем логирования (упрощенные)
 try:
@@ -953,8 +954,16 @@ def main():
     parser.add_argument('--trials', '-t',
                        type=int,
                        help='Количество trials для оптимизации (перекрывает настройку в конфиге)')
-    parser.add_argument('--hyperparams', '-p',
-                       help='JSON строка с гиперпараметрами для режима train')
+    parser.add_argument('--epochs', type=int, default=None,
+                       help='Количество эпох (если не указано, используется интеллектуальная оптимизация)')
+    parser.add_argument('--batch_size', type=int, default=None,
+                       help='Размер batch')
+    parser.add_argument('--learning_rate', type=float, default=None,
+                       help='Скорость обучения')
+    parser.add_argument('--dataset_path', type=str, default='training_data',
+                       help='Путь к датасету')
+    parser.add_argument('--output_directory', type=str, default='output',
+                       help='Директория для сохранения результатов')
     
     args = parser.parse_args()
     
@@ -984,14 +993,13 @@ def main():
         elif args.mode == 'train':
             print("🚂 Режим: TTS Обучение")
             hyperparams = None
-            if args.hyperparams:
-                import json
-                try:
-                    hyperparams = json.loads(args.hyperparams)
-                except json.JSONDecodeError:
-                    print("❌ Неверный формат JSON для гиперпараметров")
-                    return 1
-                    
+            if args.epochs is None:
+                recommended_epochs = self.analyze_dataset(args.dataset_path)['optimal_epochs']
+                print(f"🎯 Используем рекомендованное количество эпох: {recommended_epochs}")
+            else:
+                recommended_epochs = args.epochs
+                print(f"🎯 Используем заданное количество эпох: {recommended_epochs}")
+            
             results = smart_tuner.run_single_training(hyperparams)
             print(f"🎉 TTS Обучение завершено! Финальные метрики: {results}")
             
@@ -1018,6 +1026,237 @@ def main():
     finally:
         if smart_tuner:
             smart_tuner.cleanup()
+
+def analyze_dataset(dataset_path: str) -> dict:
+    """Анализирует датасет для определения его характеристик."""
+    import os
+    import librosa
+    import numpy as np
+    from pathlib import Path
+    
+    try:
+        # Поиск аудиофайлов
+        audio_files = []
+        for ext in ['.wav', '.mp3', '.flac']:
+            audio_files.extend(Path(dataset_path).glob(f'**/*{ext}'))
+        
+        if not audio_files:
+            # Если аудиофайлы не найдены, используем значения по умолчанию
+            return {
+                'total_duration_hours': 1.0,
+                'num_samples': 1000,
+                'quality_metrics': {
+                    'background_noise_level': 0.3,
+                    'voice_consistency': 0.8,
+                    'speech_clarity': 0.7
+                },
+                'voice_features': {
+                    'has_accent': False,
+                    'emotional_range': 'neutral',
+                    'speaking_style': 'normal',
+                    'pitch_range_semitones': 12
+                }
+            }
+        
+        # Анализ случайной выборки файлов (максимум 50 для скорости)
+        sample_files = np.random.choice(audio_files, min(50, len(audio_files)), replace=False)
+        
+        total_duration = 0
+        pitch_values = []
+        noise_levels = []
+        
+        for audio_file in sample_files:
+            try:
+                y, sr = librosa.load(str(audio_file), duration=30)  # Максимум 30 секунд на файл
+                duration = len(y) / sr
+                total_duration += duration
+                
+                # Анализ pitch
+                pitches, magnitudes = librosa.core.piptrack(y=y, sr=sr)
+                pitch_values.extend(pitches[pitches > 0])
+                
+                # Оценка уровня шума (энергия в тихих участках)
+                rms = librosa.feature.rms(y=y)[0]
+                noise_level = np.percentile(rms, 10)  # 10-й процентиль как оценка шума
+                noise_levels.append(noise_level)
+                
+            except Exception as e:
+                print(f"⚠️ Ошибка анализа файла {audio_file}: {e}")
+                continue
+        
+        # Экстраполяция на весь датасет
+        total_duration_hours = (total_duration / len(sample_files)) * len(audio_files) / 3600
+        
+        # Анализ характеристик
+        avg_noise = np.mean(noise_levels) if noise_levels else 0.3
+        pitch_range = np.ptp(pitch_values) if len(pitch_values) > 0 else 12
+        
+        # Конвертация pitch range в полутоны (приблизительно)
+        pitch_range_semitones = min(24, max(6, pitch_range / 10))
+        
+        return {
+            'total_duration_hours': total_duration_hours,
+            'num_samples': len(audio_files),
+            'quality_metrics': {
+                'background_noise_level': min(1.0, avg_noise * 2),  # Нормализация
+                'voice_consistency': 0.8,  # Пока статическое значение
+                'speech_clarity': max(0.3, 1.0 - avg_noise)  # Обратная корреляция с шумом
+            },
+            'voice_features': {
+                'has_accent': False,  # Требует более сложного анализа
+                'emotional_range': 'neutral',  # Требует анализа эмоций
+                'speaking_style': 'normal',  # Требует анализа темпа
+                'pitch_range_semitones': pitch_range_semitones
+            }
+        }
+        
+    except Exception as e:
+        print(f"⚠️ Ошибка анализа датасета: {e}")
+        # Возвращаем значения по умолчанию
+        return {
+            'total_duration_hours': 1.0,
+            'num_samples': 1000,
+            'quality_metrics': {
+                'background_noise_level': 0.3,
+                'voice_consistency': 0.8,
+                'speech_clarity': 0.7
+            },
+            'voice_features': {
+                'has_accent': False,
+                'emotional_range': 'neutral',
+                'speaking_style': 'normal',
+                'pitch_range_semitones': 12
+            }
+        }
+
+def run_intelligent_training(trainer_wrapper, early_stop_controller, epoch_optimizer, 
+                           hyperparams, dataset_analysis):
+    """Запускает интеллектуальное обучение с мониторингом прогресса."""
+    
+    print(f"\n🚀 Запуск интеллектуального обучения...")
+    print(f"   • Режим: Адаптивное обучение с мониторингом качества")
+    print(f"   • Максимальные эпохи: {hyperparams['epochs']}")
+    print(f"   • Уверенность в оценке: {dataset_analysis['confidence']:.2f}")
+    
+    # Callback для мониторинга прогресса
+    def progress_callback(epoch, metrics):
+        """Callback для мониторинга прогресса обучения."""
+        progress_info = epoch_optimizer.monitor_training_progress(epoch, metrics)
+        
+        # Выводим рекомендации каждые 50 эпох
+        if epoch % 50 == 0:
+            recommendations = progress_info['recommendations']
+            print(f"\n📊 Эпоха {epoch} - Анализ прогресса:")
+            print(f"   • Статус: {progress_info['progress_analysis'].get('convergence_status', {}).get('status', 'unknown')}")
+            print(f"   • Риск переобучения: {progress_info['progress_analysis'].get('overfitting_risk', {}).get('risk', 'unknown')}")
+            print(f"   • Продолжить обучение: {'Да' if recommendations['continue_training'] else 'Нет'}")
+            
+            if recommendations['estimated_epochs_remaining']:
+                print(f"   • Оставшиеся эпохи: ~{recommendations['estimated_epochs_remaining']}")
+            
+            for action in recommendations['suggested_actions']:
+                print(f"   • Рекомендация: {action}")
+        
+        return progress_info['recommendations']['continue_training']
+    
+    # Запуск обучения с callback
+    start_time = time.time()
+    
+    try:
+        result = trainer_wrapper.train_with_callback(
+            hyperparams=hyperparams,
+            progress_callback=progress_callback,
+            early_stop_controller=early_stop_controller
+        )
+        
+        training_time = (time.time() - start_time) / 60  # В минутах
+        
+        return {
+            'final_metrics': result.get('metrics', {}),
+            'actual_epochs': result.get('epochs_completed', hyperparams['epochs']),
+            'training_time_minutes': training_time,
+            'optimizer_summary': epoch_optimizer.get_optimization_summary()
+        }
+        
+    except Exception as e:
+        print(f"❌ Ошибка во время обучения: {e}")
+        return {
+            'final_metrics': {},
+            'actual_epochs': 0,
+            'training_time_minutes': (time.time() - start_time) / 60
+        }
+
+def run_intelligent_optimization(optimization_engine, epoch_optimizer, trials, 
+                                hyperparams, dataset_analysis):
+    """Запускает интеллектуальную оптимизацию гиперпараметров."""
+    
+    print(f"\n🔍 Запуск интеллектуальной оптимизации...")
+    print(f"   • Количество trials: {trials}")
+    print(f"   • Базовые эпохи: {hyperparams['epochs']}")
+    
+    # Настройка диапазона эпох для оптимизации
+    epochs_range = dataset_analysis['recommended_epochs_range']
+    
+    # Обновляем конфигурацию оптимизации
+    optimization_config = {
+        'epochs': {
+            'type': 'int',
+            'min': epochs_range[0],
+            'max': epochs_range[1],
+            'default': dataset_analysis['optimal_epochs']
+        }
+    }
+    
+    try:
+        result = optimization_engine.optimize(
+            n_trials=trials,
+            hyperparams_override=hyperparams,
+            epochs_config=optimization_config
+        )
+        
+        return {
+            'best_params': result.get('best_params', {}),
+            'best_score': result.get('best_value', float('inf')),
+            'optimization_history': result.get('trials_history', [])
+        }
+        
+    except Exception as e:
+        print(f"❌ Ошибка во время оптимизации: {e}")
+        return {
+            'best_params': hyperparams,
+            'best_score': float('inf'),
+            'optimization_history': []
+        }
+
+def run_auto_mode(optimization_engine, trainer_wrapper, early_stop_controller,
+                  epoch_optimizer, trials, hyperparams, dataset_analysis):
+    """Запускает автоматический режим: сначала оптимизация, затем обучение."""
+    
+    print(f"\n🤖 Запуск автоматического режима...")
+    
+    # Этап 1: Оптимизация
+    print(f"   Этап 1: Оптимизация гиперпараметров ({trials} trials)")
+    optimization_result = run_intelligent_optimization(
+        optimization_engine, epoch_optimizer, trials, hyperparams, dataset_analysis
+    )
+    
+    # Этап 2: Обучение с лучшими параметрами
+    print(f"   Этап 2: Обучение с оптимальными параметрами")
+    best_hyperparams = optimization_result['best_params']
+    best_hyperparams.update(hyperparams)  # Сохраняем неоптимизированные параметры
+    
+    training_result = run_intelligent_training(
+        trainer_wrapper, early_stop_controller, epoch_optimizer,
+        best_hyperparams, dataset_analysis
+    )
+    
+    return {
+        'optimization_result': optimization_result,
+        'training_result': training_result,
+        'final_metrics': training_result.get('final_metrics', {}),
+        'actual_epochs': training_result.get('actual_epochs', 0),
+        'training_time_minutes': training_result.get('training_time_minutes', 0)
+    }
 
 if __name__ == "__main__":
     sys.exit(main())
