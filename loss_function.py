@@ -1,6 +1,67 @@
 from torch import nn
 import torch
 import numpy as np
+import torch.nn.functional as F
+
+
+class SpectralMelLoss(nn.Module):
+    """
+    🎵 Улучшенная Mel Loss с акцентом на спектральное качество
+    """
+    def __init__(self, n_mel_channels=80, sample_rate=22050):
+        super(SpectralMelLoss, self).__init__()
+        self.n_mel_channels = n_mel_channels
+        self.sample_rate = sample_rate
+        
+        # Веса для разных частотных диапазонов
+        mel_weights = torch.ones(n_mel_channels)
+        # Больший вес на средних частотах (важных для голоса)
+        mid_range = slice(n_mel_channels//4, 3*n_mel_channels//4)
+        mel_weights[mid_range] *= 1.5
+        # Меньший вес на очень высоких частотах
+        high_range = slice(3*n_mel_channels//4, n_mel_channels)
+        mel_weights[high_range] *= 0.8
+        
+        self.register_buffer('mel_weights', mel_weights)
+        
+    def forward(self, mel_pred, mel_target):
+        # Основной MSE loss с весами по частотам
+        weighted_mse = F.mse_loss(mel_pred * self.mel_weights[None, :, None], 
+                                  mel_target * self.mel_weights[None, :, None])
+        
+        # Добавляем L1 loss для резкости
+        l1_loss = F.l1_loss(mel_pred, mel_target)
+        
+        # Спектральный loss (разности соседних фреймов)
+        mel_pred_diff = mel_pred[:, :, 1:] - mel_pred[:, :, :-1]
+        mel_target_diff = mel_target[:, :, 1:] - mel_target[:, :, :-1]
+        spectral_loss = F.mse_loss(mel_pred_diff, mel_target_diff)
+        
+        return weighted_mse + 0.3 * l1_loss + 0.2 * spectral_loss
+
+
+class AdaptiveGateLoss(nn.Module):
+    """
+    🚪 Адаптивная Gate Loss с динамическим весом
+    """
+    def __init__(self, initial_weight=1.3, min_weight=0.8, max_weight=2.0):
+        super(AdaptiveGateLoss, self).__init__()
+        self.initial_weight = initial_weight
+        self.min_weight = min_weight
+        self.max_weight = max_weight
+        self.current_weight = initial_weight
+        
+    def update_weight(self, gate_accuracy):
+        """Обновляет вес на основе текущей gate accuracy"""
+        if gate_accuracy < 0.5:
+            # Увеличиваем вес если accuracy низкая
+            self.current_weight = min(self.max_weight, self.current_weight * 1.1)
+        elif gate_accuracy > 0.8:
+            # Уменьшаем вес если accuracy высокая
+            self.current_weight = max(self.min_weight, self.current_weight * 0.95)
+            
+    def forward(self, gate_pred, gate_target):
+        return self.current_weight * F.binary_cross_entropy_with_logits(gate_pred, gate_target)
 
 
 class Tacotron2Loss(nn.Module):
@@ -13,27 +74,34 @@ class Tacotron2Loss(nn.Module):
         self.guide_lowbound = 0.1
         self.criterion_attention = nn.L1Loss()
         
+        # 🔧 НОВЫЕ улучшенные loss функции
+        self.spectral_mel_loss = SpectralMelLoss(hparams.n_mel_channels)
+        self.adaptive_gate_loss = AdaptiveGateLoss()
+        
         self.guided_attention = GuidedAttentionLoss(sigma=0.4, alpha=1.0)
 
     def forward(self, model_output, targets):
-        _, mel_out, mel_out_postnet, gate_out, alignments_out, tpse_gst_pred,gst_target = model_output
+        _, mel_out, mel_out_postnet, gate_out, alignments_out, tpse_gst_pred, gst_target = model_output
         mel_target, gate_target, guide_target = targets[0], targets[1], targets[2]
 
         mel_target.requires_grad = False
         gate_target.requires_grad = False
         gate_target = gate_target.view(-1, 1)
         guide_target = guide_target.transpose(2,1)
-        _,w,h = alignments_out.shape
+        _, w, h = alignments_out.shape
         guide_target = guide_target[:,:w,:h]
 
-        
         gate_out = gate_out.view(-1, 1)
-        emb_loss = torch.tensor(0)
+        emb_loss = torch.tensor(0, device=mel_target.device)
         if tpse_gst_pred is not None:
             emb_loss = nn.L1Loss()(tpse_gst_pred, gst_target.detach())
-        mel_loss = nn.MSELoss()(mel_out, mel_target) + \
-            nn.MSELoss()(mel_out_postnet, mel_target)
-        gate_loss = 1.3 * nn.BCEWithLogitsLoss()(gate_out, gate_target)
+        
+        # 🔧 УЛУЧШЕННЫЙ mel loss с спектральным качеством
+        mel_loss = (self.spectral_mel_loss(mel_out, mel_target) + 
+                   self.spectral_mel_loss(mel_out_postnet, mel_target))
+        
+        # 🔧 АДАПТИВНЫЙ gate loss
+        gate_loss = self.adaptive_gate_loss(gate_out, gate_target)
 
         attention_masks = torch.ones_like(alignments_out)
         loss_atten = torch.mean(alignments_out * guide_target) * self.scale

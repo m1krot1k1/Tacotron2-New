@@ -111,11 +111,15 @@ class Prenet(nn.Module):
             [LinearNorm(in_size, out_size, bias=False)
              for (in_size, out_size) in zip(in_sizes, sizes)])
         self.dropout_rate = dropout_rate
+        self.inference_dropout_rate = min(0.1, dropout_rate * 0.2)
 
     def forward(self, x):
         for linear in self.layers:
             x = F.relu(linear(x))
-            x = F.dropout(x, p=self.dropout_rate, training=self.training)
+            if self.training:
+                x = F.dropout(x, p=self.dropout_rate, training=True)
+            else:
+                x = F.dropout(x, p=self.inference_dropout_rate, training=False)
         return x
 
 
@@ -268,8 +272,14 @@ class Decoder(nn.Module):
         self.prenet_dim = hparams.prenet_dim
         self.max_decoder_steps = hparams.max_decoder_steps
         self.gate_threshold = hparams.gate_threshold
+        # 🔧 ДОБАВЛЕНИЕ: Адаптивный gate threshold для лучшего качества остановки
+        self.adaptive_gate = getattr(hparams, 'adaptive_gate_threshold', True)
+        self.gate_min_threshold = getattr(hparams, 'gate_min_threshold', 0.3)
+        self.gate_max_threshold = getattr(hparams, 'gate_max_threshold', 0.8)
         self.dropout_rate = hparams.dropout_rate
+        # 🔧 ИСПРАВЛЕНИЕ: Поддержка curriculum learning для teacher forcing
         self.p_teacher_forcing = hparams.p_teacher_forcing
+        self.curriculum_teacher_forcing = getattr(hparams, 'curriculum_teacher_forcing', False)
 
         # Maximazing Mutual Inforamtion
         # https://arxiv.org/abs/1909.01145
@@ -558,7 +568,15 @@ class Decoder(nn.Module):
                 # if decoder_output is not None:
                 #     decoder_outputs += [decoder_output.squeeze(1)]
 
-                if not suppress_gate and torch.sigmoid(gate_output.data) > self.gate_threshold:
+                # 🔧 АДАПТИВНЫЙ GATE THRESHOLD для лучшего качества остановки
+                gate_prob = torch.sigmoid(gate_output.data)
+                if self.adaptive_gate and not suppress_gate:
+                    # Адаптивный порог: начинаем с низкого, повышаем со временем
+                    step_ratio = len(mel_outputs) / self.max_decoder_steps
+                    adaptive_threshold = self.gate_min_threshold + (self.gate_max_threshold - self.gate_min_threshold) * step_ratio
+                    if gate_prob > adaptive_threshold:
+                        break
+                elif not suppress_gate and gate_prob > self.gate_threshold:
                     break
                 elif len(mel_outputs) == self.max_decoder_steps:
                     # Warning: Reached max decoder steps (скрыто для чистоты логов)
@@ -575,10 +593,12 @@ class Decoder(nn.Module):
 class MIEsitmator(nn.Module):
     def __init__(self, vocab_size, decoder_dim, hidden_size, dropout=0.5):
         super(MIEsitmator, self).__init__()
+        # 🔧 ИСПРАВЛЕНИЕ: Снижен dropout для лучшей стабильности MMI
+        safe_dropout = min(0.2, dropout)  # Максимум 0.2 для MMI
         self.proj = nn.Sequential(
             LinearNorm(decoder_dim, hidden_size, bias=True, w_init_gain='relu'),
             nn.ReLU(),
-            nn.Dropout(p=dropout)
+            nn.Dropout(p=safe_dropout)  # Безопасный dropout
         )
         self.ctc_proj = LinearNorm(hidden_size, vocab_size + 1, bias=True)
         self.ctc = nn.CTCLoss(blank=vocab_size, reduction='none')

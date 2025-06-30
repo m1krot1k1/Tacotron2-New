@@ -70,9 +70,19 @@ def create_hparams(hparams_string=None, verbose=False):
         prenet_dim=256,
         max_decoder_steps=2500,             # Увеличено для длинных последовательностей
         gate_threshold=0.5,
+        # 🔧 НОВЫЕ параметры для адаптивного gate threshold
+        adaptive_gate_threshold=True,       # Включить адаптивный gate threshold
+        gate_min_threshold=0.3,            # Минимальный порог gate
+        gate_max_threshold=0.8,            # Максимальный порог gate
+        
         p_attention_dropout=0.1,            # СНИЖЕНО с 0.15 до 0.1 для тонкого attention
         p_decoder_dropout=0.1,              # СНИЖЕНО с 0.15 до 0.1
-        p_teacher_forcing=1.0,
+        
+        # 🔧 НОВЫЕ параметры для curriculum learning
+        p_teacher_forcing=1.0,             # Начальное значение
+        curriculum_teacher_forcing=True,    # Включить curriculum learning
+        teacher_forcing_decay=0.999,       # Коэффициент уменьшения
+        min_teacher_forcing=0.7,           # Минимальное значение
 
         # Attention parameters - оптимизированы для тонких полос
         attention_rnn_dim=1024,
