@@ -48,3 +48,6 @@ out.png
 smart_tuner/optuna_studies.db
 *.yaml
 *.db
+# Checkpoint files (слишком большие для GitHub)
+test_output/
+output/
