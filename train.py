@@ -271,22 +271,22 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
                     print(f"⚠️ Ошибка при вычислении attention entropy: {e}")
             
             # Метрики из alignments
-            if alignments is not None:
+            if alignments_inf is not None:
                 try:
                     # Диагональность alignment матрицы
-                    alignment_diag = torch.diagonal(alignments[0], dim1=-2, dim2=-1)
+                    alignment_diag = torch.diagonal(alignments_inf[0], dim1=-2, dim2=-1)
                     validation_metrics["validation.alignment_score"] = float(torch.mean(alignment_diag))
                     
                     # Фокусировка attention (концентрация на диагонали)
-                    attention_focus = torch.max(alignments[0], dim=-1)[0]
+                    attention_focus = torch.max(alignments_inf[0], dim=-1)[0]
                     validation_metrics["validation.attention_focus"] = float(torch.mean(attention_focus))
                 except Exception as e:
                     print(f"⚠️ Ошибка при вычислении alignment метрик: {e}")
             
             # Метрики из gate outputs
-            if gate_outputs is not None:
+            if gate_outputs_inf is not None:
                 try:
-                    gate_probs = torch.sigmoid(gate_outputs[0])
+                    gate_probs = torch.sigmoid(gate_outputs_inf[0])
                     validation_metrics["validation.gate_mean"] = float(torch.mean(gate_probs))
                     validation_metrics["validation.gate_std"] = float(torch.std(gate_probs))
                 except Exception as e:

@@ -88,7 +88,7 @@ def create_hparams(hparams_string=None, verbose=False):
         postnet_n_convolutions=5,
 
         # GST - оптимизированные параметры Global Style Tokens
-        use_gst=False,  # ВРЕМЕННО ОТКЛЮЧЕНО для отладки
+        use_gst=True,  # ✅ ВКЛЮЧЕНО для тестирования стилей речи
         ref_enc_filters=[32, 32, 64, 64, 128, 128],
         ref_enc_size=[3, 3],
         ref_enc_strides=[2, 2],
