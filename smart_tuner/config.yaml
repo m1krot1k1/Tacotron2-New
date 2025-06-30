@@ -98,9 +98,10 @@ hyperparameter_search_space:
     
   learning_rate:
     type: float
-    min: 1e-6
-    max: 1e-3
-    default: 1e-4     # Сбалансированное значение
+    min: 0.000001     # 1e-6
+    max: 0.001        # 1e-3
+    default: 0.0001   # 1e-4 - Сбалансированное значение
+    log: true         # Логарифмическая шкала для learning rate
     
   warmup_steps:
     type: int

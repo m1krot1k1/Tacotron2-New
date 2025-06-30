@@ -179,10 +179,16 @@ class OptimizationEngine:
                     
             except Exception as e:
                 self.logger.error(f"Ошибка при предложении параметра {param_name}: {e}")
-                # Используем значение по умолчанию
+                # Используем значение по умолчанию с правильным типом
                 default_value = param_config.get('default')
                 if default_value is not None:
-                    suggested_params[param_name] = default_value
+                    # Преобразуем в правильный тип
+                    if param_type == 'float':
+                        suggested_params[param_name] = float(default_value)
+                    elif param_type == 'int':
+                        suggested_params[param_name] = int(default_value)
+                    else:
+                        suggested_params[param_name] = default_value
         
         # Логируем предложенные параметры для TTS
         self.logger.debug(f"TTS параметры для trial {trial.number}: {suggested_params}")
@@ -200,8 +206,8 @@ class OptimizationEngine:
         
         # Корректировка learning rate в зависимости от batch size
         if 'learning_rate' in params and 'batch_size' in params:
-            batch_size = params['batch_size']
-            learning_rate = params['learning_rate']
+            batch_size = int(params['batch_size'])
+            learning_rate = float(params['learning_rate'])
             
             # Для TTS меньшие batch sizes требуют меньшие learning rates
             if batch_size <= 16 and learning_rate > 0.003:
@@ -210,19 +216,19 @@ class OptimizationEngine:
         
         # Корректировка guided attention в зависимости от эпох
         if 'guided_attention_enabled' in params and 'epochs' in params:
-            epochs = params['epochs']
+            epochs = int(params['epochs'])
             # Для коротких обучений принудительно включаем guided attention
             if epochs < 150:
                 validated_params['guided_attention_enabled'] = True
                 if 'guide_loss_weight' in validated_params:
-                    validated_params['guide_loss_weight'] = max(validated_params.get('guide_loss_weight', 1.0), 1.5)
+                    validated_params['guide_loss_weight'] = max(float(validated_params.get('guide_loss_weight', 1.0)), 1.5)
         
         # Корректировка dropout параметров для стабильности
         dropout_params = ['p_attention_dropout', 'dropout_rate', 'postnet_dropout_rate']
         for dropout_param in dropout_params:
             if dropout_param in validated_params:
                 # Ограничиваем dropout для стабильности TTS
-                validated_params[dropout_param] = min(validated_params[dropout_param], 0.6)
+                validated_params[dropout_param] = min(float(validated_params[dropout_param]), 0.6)
         
         return validated_params
     
