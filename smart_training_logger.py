@@ -424,6 +424,54 @@ def log_training_metrics(metrics: Dict[str, Any], step: int = None, **kwargs) ->
         logging.warning(f"⚠️ Ошибка логирования метрик: {e}")
 
 
+def log_param_change(param_name: str, old_value: Any, new_value: Any, reason: str = "", **kwargs) -> None:
+    """
+    🤖 НЕДОСТАЮЩАЯ ФУНКЦИЯ: Логирование изменений параметров
+    
+    Эта функция нужна для совместимости со Smart Tuner системой.
+    """
+    try:
+        import logging
+        
+        # Форматируем сообщение об изменении
+        if reason:
+            message = f"🔧 Параметр изменен: {param_name} = {old_value} → {new_value} (причина: {reason})"
+        else:
+            message = f"🔧 Параметр изменен: {param_name} = {old_value} → {new_value}"
+            
+        logging.info(message)
+        
+        # Пытаемся использовать MLflow если доступен
+        try:
+            import mlflow
+            # Логируем как параметр
+            mlflow.log_param(f"{param_name}_change", f"{old_value}_to_{new_value}")
+            
+        except ImportError:
+            pass  # MLflow недоступен
+        except Exception as e:
+            logging.warning(f"⚠️ Ошибка MLflow логирования изменения параметра: {e}")
+            
+    except Exception as e:
+        import logging
+        logging.warning(f"⚠️ Ошибка логирования изменения параметра: {e}")
+
+
+def log_training_warning(message: str, **kwargs) -> None:
+    """
+    🤖 НЕДОСТАЮЩАЯ ФУНКЦИЯ: Логирование предупреждений обучения
+    
+    Эта функция нужна для совместимости со Smart Tuner системой.
+    """
+    try:
+        import logging
+        logging.warning(f"⚠️ {message}")
+        
+    except Exception as e:
+        import logging
+        logging.error(f"❌ Ошибка логирования предупреждения: {e}")
+
+
 if __name__ == "__main__":
     # Тестирование системы логирования
     logger = create_smart_logger(experiment_name="Test_TTS")
