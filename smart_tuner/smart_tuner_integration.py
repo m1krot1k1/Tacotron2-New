@@ -368,6 +368,25 @@ class SmartTunerIntegration:
             except Exception as e:
                 self.logger.error(f"Ошибка в Early Stop Controller: {e}")
         
+        # Уведомление в Telegram о действии Smart Tuner
+        if hasattr(self, 'telegram_monitor') and self.telegram_monitor:
+            try:
+                reasoning = self._get_human_readable_reasoning('early_stop', metrics, {})
+                action_details = {
+                    'changes': decision_result['hyperparameter_updates'],
+                    'trigger_metrics': metrics,
+                    'context': {}
+                }
+                
+                self.telegram_monitor.send_smart_tuner_action(
+                    action_type='early_stop',
+                    action_details=action_details,
+                    reasoning=reasoning,
+                    step=0
+                )
+            except Exception as e:
+                self.logger.warning(f"Ошибка отправки Telegram уведомления: {e}")
+        
         return decision_result
     
     def apply_quality_interventions(self, interventions: list, 
@@ -517,4 +536,200 @@ class SmartTunerIntegration:
             'quality_controller': self.quality_controller is not None,
             'current_epoch': self.current_epoch,
             'interventions_count': len(self.hyperparameter_adjustments)
-        } 
+        }
+    
+    def _get_human_readable_reasoning(self, decision_type: str, metrics: Dict[str, float], 
+                                    context: Dict[str, Any]) -> str:
+        """
+        🧠 Генерирует понятное человеку объяснение решения Smart Tuner.
+        
+        Args:
+            decision_type: Тип принятого решения
+            metrics: Текущие метрики
+            context: Контекст обучения
+            
+        Returns:
+            Человекопонятное объяснение на русском языке
+        """
+        
+        attention_diag = metrics.get('attention_diagonality', 0)
+        val_loss = metrics.get('val_loss', float('inf'))
+        quality_score = metrics.get('quality_score', 0)
+        phase = context.get('phase', 'unknown')
+        
+        # Анализ ситуации и формирование объяснения
+        if decision_type == 'learning_rate_reduction':
+            if attention_diag < 0.3:
+                return (f"🎯 Обнаружена горизонтальная полоса вместо диагонали в attention (диагональность {attention_diag:.3f}). "
+                       f"Это критическая проблема! Снижаю learning rate для более аккуратного обучения attention механизма. "
+                       f"Цель: получить четкую диагональ для правильного выравнивания текст-аудио.")
+            elif attention_diag < 0.6:
+                return (f"📊 Attention диагональность {attention_diag:.3f} ниже нормы. "
+                       f"Модель плохо выравнивает текст и аудио. Снижаю learning rate для более стабильного обучения. "
+                       f"Ожидаю улучшения качества голоса.")
+            else:
+                return (f"⚡ Обучение идет слишком быстро (loss {val_loss:.4f}). "
+                       f"Снижаю learning rate для предотвращения пропуска оптимума и получения лучшего качества.")
+        
+        elif decision_type == 'dropout_adjustment':
+            if quality_score < 0.5:
+                return (f"🎵 Качество голоса низкое ({quality_score:.1%}). "
+                       f"Возможно, высокий dropout создает артефакты. Снижаю dropout для более четкой генерации. "
+                       f"Цель: убрать посторонние шумы и улучшить естественность.")
+            else:
+                return (f"🛡️ Защищаю модель от переобучения. "
+                       f"Качество хорошее ({quality_score:.1%}), но нужно сохранить стабильность. "
+                       f"Корректирую dropout для баланса качества и надежности.")
+        
+        elif decision_type == 'batch_size_optimization':
+            if attention_diag < 0.5:
+                return (f"🔍 Attention плохо фокусируется (диагональность {attention_diag:.3f}). "
+                       f"Большие батчи мешают качественному обучению attention. "
+                       f"Уменьшаю batch size для лучшего градиентного обновления. "
+                       f"Ожидаю более четкого выравнивания.")
+            else:
+                return (f"⚡ Оптимизирую скорость обучения. "
+                       f"Attention работает хорошо, можно увеличить batch size для ускорения без потери качества.")
+        
+        elif decision_type == 'guided_attention_boost':
+            return (f"🎯 КРИТИЧНО! Диагональность {attention_diag:.3f} означает, что модель не учится правильно выравнивать текст и аудио. "
+                   f"Это приведет к неразборчивому голосу с артефактами. "
+                   f"Усиливаю guided attention loss для принудительного обучения правильному alignment. "
+                   f"Цель: заставить модель создать четкую диагональ.")
+        
+        elif decision_type == 'phase_transition':
+            new_phase = context.get('new_phase', 'unknown')
+            if new_phase == 'quality_optimization':
+                return (f"🎭 Базовое обучение завершено. Диагональность {attention_diag:.3f} достаточна для перехода. "
+                       f"Переключаюсь на фазу качественной оптимизации. "
+                       f"Теперь фокус на получении максимально человеческого голоса без артефактов.")
+            elif new_phase == 'fine_tuning':
+                return (f"🏆 Основные проблемы решены! Качество {quality_score:.1%}. "
+                       f"Переходжу к тонкой настройке для достижения студийного качества голоса. "
+                       f"Цель: идеальная естественность и отсутствие любых артефактов.")
+            else:
+                return (f"🔄 Изменение стратегии обучения. Переход в фазу '{new_phase}' для оптимизации процесса.")
+        
+        elif decision_type == 'early_stop':
+            if val_loss == float('inf') or val_loss > 10:
+                return (f"🚨 КРИТИЧЕСКАЯ ОШИБКА! Loss взорвался ({val_loss}). "
+                       f"Модель полностью разрушена и генерирует только шум. "
+                       f"Останавливаю обучение для предотвращения дальнейшего ущерба. "
+                       f"Нужно перезапустить с меньшим learning rate.")
+            elif attention_diag < 0.1:
+                return (f"🛑 Attention полностью сломан (диагональность {attention_diag:.3f}). "
+                       f"Модель не способна выравнивать текст и аудио. "
+                       f"Дальнейшее обучение бесполезно. Нужна коррекция параметров.")
+            else:
+                return (f"📉 Обучение застопорилось. Val loss {val_loss:.4f} не улучшается. "
+                       f"Останавливаю для экономии ресурсов и анализа проблемы.")
+        
+        # Общий случай
+        return (f"🧠 Smart Tuner обнаружил ситуацию, требующую вмешательства. "
+               f"Текущие метрики: диагональность {attention_diag:.3f}, качество {quality_score:.1%}. "
+               f"Применяю оптимизацию для улучшения обучения.")
+    
+    def send_critical_alert_if_needed(self, metrics: Dict[str, float], step: int) -> None:
+        """
+        🚨 Отправляет критическое предупреждение если обнаружены серьезные проблемы.
+        """
+        if not hasattr(self, 'telegram_monitor') or not self.telegram_monitor:
+            return
+            
+        try:
+            critical_issues = []
+            recommendations = []
+            
+            # Проверка критических проблем
+            attention_diag = metrics.get('attention_diagonality', 0)
+            if attention_diag < 0.1:
+                critical_issues.append("Полное разрушение attention механизма")
+                recommendations.extend([
+                    "Немедленно снизить learning rate в 10 раз",
+                    "Увеличить guided attention weight до 20.0",
+                    "Проверить guided attention реализацию"
+                ])
+            
+            val_loss = metrics.get('val_loss', 0)
+            if val_loss > 50:
+                critical_issues.append("Взрывной рост validation loss")
+                recommendations.extend([
+                    "Откатиться к предыдущему checkpoint",
+                    "Снизить learning rate в 5 раз",
+                    "Проверить gradient clipping"
+                ])
+            
+            quality_score = metrics.get('quality_score', 1)
+            if quality_score < 0.1:
+                critical_issues.append("Критически низкое качество генерации")
+                recommendations.extend([
+                    "Проверить dropout параметры",
+                    "Убедиться в корректности loss функций",
+                    "Проанализировать данные обучения"
+                ])
+            
+            # Отправляем предупреждение если есть критические проблемы
+            if critical_issues:
+                alert_details = {
+                    'description': f"Обнаружено {len(critical_issues)} критических проблем на шаге {step}",
+                    'metrics': {
+                        'attention_diagonality': f"{attention_diag:.4f}",
+                        'val_loss': f"{val_loss:.4f}",
+                        'quality_score': f"{quality_score:.1%}"
+                    },
+                    'issues': critical_issues
+                }
+                
+                self.telegram_monitor.send_critical_alert(
+                    alert_type="Критические проблемы обучения",
+                    details=alert_details,
+                    recommendations=recommendations
+                )
+                
+        except Exception as e:
+            self.logger.error(f"Ошибка отправки критического предупреждения: {e}")
+    
+    def send_milestone_achievement(self, metrics: Dict[str, float], step: int) -> None:
+        """
+        🏆 Отправляет уведомление о достижении важных целей.
+        """
+        if not hasattr(self, 'telegram_monitor') or not self.telegram_monitor:
+            return
+            
+        try:
+            attention_diag = metrics.get('attention_diagonality', 0)
+            quality_score = metrics.get('quality_score', 0)
+            
+            # Проверка достижений
+            if attention_diag >= 0.8 and not getattr(self, '_attention_milestone_sent', False):
+                achievement = {'diagonality': attention_diag}
+                self.telegram_monitor.send_success_milestone(
+                    milestone_type='attention_quality',
+                    achievement=achievement,
+                    step=step
+                )
+                self._attention_milestone_sent = True
+            
+            if quality_score >= 0.8 and not getattr(self, '_quality_milestone_sent', False):
+                achievement = {'quality_score': quality_score}
+                self.telegram_monitor.send_success_milestone(
+                    milestone_type='quality_threshold',
+                    achievement=achievement,
+                    step=step
+                )
+                self._quality_milestone_sent = True
+            
+            # Проверка стабильности обучения
+            if len(self._recent_losses) >= 10:
+                recent_std = np.std(self._recent_losses[-10:])
+                if recent_std < 0.01 and not getattr(self, '_stability_milestone_sent', False):
+                    achievement = {'stability_metric': recent_std}
+                    self.telegram_monitor.send_success_milestone(
+                        milestone_type='stable_training', 
+                        achievement=achievement,
+                        step=step
+                    )
+                    self._stability_milestone_sent = True
+                    
+        except Exception as e:
+            self.logger.error(f"Ошибка отправки уведомления о достижении: {e}") 

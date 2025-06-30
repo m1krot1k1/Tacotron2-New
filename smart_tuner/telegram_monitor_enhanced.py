@@ -553,4 +553,366 @@ class TelegramMonitorEnhanced:
         else:
             message += f"💡 **Рекомендация:** Продолжить обучение для улучшения alignment"
         
-        asyncio.create_task(self._send_message_async(message)) 
+        asyncio.create_task(self._send_message_async(message))
+    
+    def send_smart_tuner_action(self, action_type: str, action_details: Dict[str, Any], 
+                               reasoning: str, step: int) -> None:
+        """
+        🧠 Отправляет уведомление о действии Smart Tuner с понятным объяснением.
+        
+        Args:
+            action_type: Тип действия ('hyperparameter_update', 'early_stop', 'phase_change', etc.)
+            action_details: Детали действия
+            reasoning: Человекопонятное объяснение причины
+            step: Номер шага обучения
+        """
+        if not self.enabled:
+            return
+            
+        try:
+            # Формируем сообщение в зависимости от типа действия
+            if action_type == 'hyperparameter_update':
+                message = self._format_hyperparameter_update_message(action_details, reasoning, step)
+            elif action_type == 'early_stop':
+                message = self._format_early_stop_message(action_details, reasoning, step)
+            elif action_type == 'phase_change':
+                message = self._format_phase_change_message(action_details, reasoning, step)
+            elif action_type == 'quality_intervention':
+                message = self._format_quality_intervention_message(action_details, reasoning, step)
+            else:
+                message = self._format_generic_action_message(action_type, action_details, reasoning, step)
+            
+            asyncio.create_task(self._send_message_async(message))
+            
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка отправки Smart Tuner уведомления: {e}")
+    
+    def _format_hyperparameter_update_message(self, details: Dict[str, Any], 
+                                            reasoning: str, step: int) -> str:
+        """Форматирует сообщение об обновлении гиперпараметров."""
+        message = f"🧠 **SMART TUNER ВМЕШАЛСЯ!** (Шаг {step})\n\n"
+        message += f"🔧 **ДЕЙСТВИЕ:** Изменение параметров обучения\n\n"
+        
+        # Показываем изменения
+        message += f"📊 **ЧТО ИЗМЕНЕНО:**\n"
+        for param, change in details.get('changes', {}).items():
+            old_val = change.get('old', 'N/A')
+            new_val = change.get('new', 'N/A')
+            message += f"• `{param}`: {old_val} → {new_val}\n"
+        
+        message += f"\n🧐 **ПОЧЕМУ:** {reasoning}\n\n"
+        
+        # Ожидаемый эффект
+        expected_effect = self._get_expected_effect(details.get('changes', {}))
+        message += f"🎯 **ОЖИДАЕМЫЙ ЭФФЕКТ:** {expected_effect}\n\n"
+        message += f"⏳ **Проверим результат через несколько шагов...**"
+        
+        return message
+    
+    def _format_early_stop_message(self, details: Dict[str, Any], 
+                                 reasoning: str, step: int) -> str:
+        """Форматирует сообщение о досрочной остановке."""
+        message = f"🛑 **SMART TUNER ОСТАНОВИЛ ОБУЧЕНИЕ!** (Шаг {step})\n\n"
+        message += f"⚠️ **ПРИЧИНА:** {reasoning}\n\n"
+        
+        if 'metrics' in details:
+            message += f"📊 **КРИТИЧЕСКИЕ МЕТРИКИ:**\n"
+            for metric, value in details['metrics'].items():
+                message += f"• {metric}: `{value}`\n"
+        
+        message += f"\n💡 **РЕКОМЕНДАЦИЯ:** {details.get('recommendation', 'Проверить настройки модели')}\n"
+        message += f"🔧 **Можно попробовать изменить параметры и перезапустить**"
+        
+        return message
+    
+    def _format_phase_change_message(self, details: Dict[str, Any], 
+                                   reasoning: str, step: int) -> str:
+        """Форматирует сообщение о смене фазы обучения."""
+        old_phase = details.get('old_phase', 'Неизвестно')
+        new_phase = details.get('new_phase', 'Неизвестно')
+        
+        message = f"🎭 **СМЕНА ФАЗЫ ОБУЧЕНИЯ!** (Шаг {step})\n\n"
+        message += f"🔄 **ПЕРЕХОД:** `{old_phase}` → `{new_phase}`\n\n"
+        message += f"🧐 **ПОЧЕМУ:** {reasoning}\n\n"
+        
+        phase_benefits = self._get_phase_benefits(new_phase)
+        message += f"✨ **ЧТО ЭТО ДАСТ:** {phase_benefits}\n\n"
+        message += f"📈 **Ожидаем улучшения метрик в следующих шагах**"
+        
+        return message
+    
+    def _format_quality_intervention_message(self, details: Dict[str, Any], 
+                                           reasoning: str, step: int) -> str:
+        """Форматирует сообщение о вмешательстве из-за качества."""
+        message = f"🚨 **КАЧЕСТВЕННОЕ ВМЕШАТЕЛЬСТВО!** (Шаг {step})\n\n"
+        message += f"⚠️ **ПРОБЛЕМА:** {reasoning}\n\n"
+        
+        if 'detected_issues' in details:
+            message += f"🔍 **ОБНАРУЖЕНО:**\n"
+            for issue in details['detected_issues']:
+                message += f"• {issue}\n"
+        
+        if 'corrective_actions' in details:
+            message += f"\n🔧 **ПРИНЯТЫЕ МЕРЫ:**\n"
+            for action in details['corrective_actions']:
+                message += f"• {action}\n"
+        
+        message += f"\n🎯 **ЦЕЛЬ:** Восстановить качественное обучение и получить лучший голос"
+        
+        return message
+    
+    def _get_expected_effect(self, changes: Dict[str, Any]) -> str:
+        """Возвращает ожидаемый эффект от изменений."""
+        effects = []
+        
+        for param, change in changes.items():
+            if 'learning_rate' in param.lower():
+                if float(change['new']) < float(change['old']):
+                    effects.append("более стабильное обучение attention")
+                else:
+                    effects.append("ускорение сходимости")
+            elif 'dropout' in param.lower():
+                if float(change['new']) < float(change['old']):
+                    effects.append("лучшее качество генерации")
+                else:
+                    effects.append("защита от переобучения")
+            elif 'guide' in param.lower():
+                effects.append("улучшение диагональности attention")
+            elif 'batch' in param.lower():
+                if int(change['new']) < int(change['old']):
+                    effects.append("лучшее качество attention")
+                else:
+                    effects.append("ускорение обучения")
+        
+        return " и ".join(effects) if effects else "оптимизация обучения"
+    
+    def _get_phase_benefits(self, phase: str) -> str:
+        """Возвращает преимущества новой фазы."""
+        phase_benefits = {
+            'initialization': "Быстрая настройка базовых параметров модели",
+            'alignment_learning': "Фокус на изучении правильного выравнивания текст-аудио", 
+            'quality_optimization': "Улучшение качества генерируемого голоса",
+            'fine_tuning': "Точная настройка для максимального качества",
+            'stabilization': "Стабилизация результатов и предотвращение переобучения"
+        }
+        return phase_benefits.get(phase.lower(), "Оптимизация обучения")
+    
+    def generate_and_send_test_audio(self, step: int, model, hparams, 
+                                   device: str = 'cuda') -> None:
+        """
+        🎵 Генерирует тестовое аудио и отправляет в Telegram.
+        
+        Args:
+            step: Номер шага обучения
+            model: Обученная модель Tacotron2
+            hparams: Гиперпараметры
+            device: Устройство для генерации
+        """
+        if not self.enabled or step % 5000 != 0:  # Каждые 5000 шагов
+            return
+            
+        try:
+            # Список тестовых фраз
+            test_phrases = [
+                "Привет! Как дела? Меня зовут Татьяна, и я ваш новый голосовой помощник.",
+                "Сегодня прекрасная погода для прогулки по парку.",
+                "Искусственный интеллект помогает людям в самых разных областях.",
+                "Музыка вдохновляет нас и делает жизнь ярче.",
+                "Спасибо за внимание! Увидимся завтра!"
+            ]
+            
+            # Выбираем случайную фразу
+            import random
+            test_text = random.choice(test_phrases)
+            
+            # Генерируем аудио
+            audio_data = self._generate_test_audio(model, test_text, hparams, device)
+            
+            if audio_data is not None:
+                # Сохраняем во временный файл
+                temp_filename = f"test_audio_step_{step}.wav"
+                self._save_audio_file(audio_data, temp_filename, hparams.sampling_rate)
+                
+                # Отправляем в Telegram
+                self._send_test_audio_message(step, test_text, temp_filename)
+                
+                # Удаляем временный файл
+                if os.path.exists(temp_filename):
+                    os.remove(temp_filename)
+            
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка генерации тестового аудио: {e}")
+    
+    def _generate_test_audio(self, model, text: str, hparams, device: str):
+        """Генерирует тестовое аудио из текста."""
+        try:
+            import torch
+            from text import text_to_sequence
+            
+            # Подготавливаем текст
+            sequence = text_to_sequence(text, ['russian_cleaners'])
+            sequence = torch.LongTensor(sequence).unsqueeze(0).to(device)
+            
+            # Переводим модель в режим eval
+            model.eval()
+            
+            with torch.no_grad():
+                # Генерируем mel спектрограмму
+                mel_outputs, gate_outputs, alignments = model.inference(sequence)
+                
+                if mel_outputs is not None and mel_outputs.size(-1) > 0:
+                    # Конвертируем в аудио (если есть вокодер)
+                    if hasattr(self, 'vocoder') and self.vocoder is not None:
+                        audio = self.vocoder.inference(mel_outputs)
+                        return audio.cpu().numpy()
+                    else:
+                        # Возвращаем mel спектрограмму для анализа
+                        return mel_outputs.cpu().numpy()
+                
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка в _generate_test_audio: {e}")
+            return None
+    
+    def _save_audio_file(self, audio_data, filename: str, sample_rate: int = 22050):
+        """Сохраняет аудио данные в файл."""
+        try:
+            import soundfile as sf
+            import numpy as np
+            
+            # Нормализуем аудио
+            if audio_data.ndim > 1:
+                audio_data = audio_data.squeeze()
+            
+            audio_data = np.clip(audio_data, -1.0, 1.0)
+            
+            # Сохраняем файл
+            sf.write(filename, audio_data, sample_rate)
+            
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка сохранения аудио: {e}")
+            # Fallback: создаем пустой файл для тестирования
+            with open(filename, 'w') as f:
+                f.write("test_audio_placeholder")
+    
+    def _send_test_audio_message(self, step: int, text: str, audio_file: str):
+        """Отправляет тестовое аудио с описанием."""
+        try:
+            message = f"🎵 **ТЕСТОВОЕ АУДИО** (Шаг {step})\n\n"
+            message += f"📝 **Текст:** _{text}_\n\n"
+            message += f"🎯 **Цель теста:** Проверка качества синтеза голоса\n"
+            message += f"👂 **Слушайте:** Четкость произношения, естественность интонации\n\n"
+            
+            # Добавляем анализ прогресса
+            if len(self.metrics_history['steps']) > 1:
+                current_quality = self.metrics_history['quality_score'][-1] if self.metrics_history['quality_score'] else 0
+                message += f"📊 **Текущее качество:** {current_quality:.1%}\n"
+                
+                if len(self.metrics_history['quality_score']) > 5:
+                    trend = "📈 Улучшается" if current_quality > self.metrics_history['quality_score'][-5] else "📊 Стабильно"
+                    message += f"📈 **Тренд:** {trend}\n"
+            
+            message += f"\n⏰ **Следующий тест через 5000 шагов**"
+            
+            # Отправляем текст
+            asyncio.create_task(self._send_message_async(message))
+            
+            # Отправляем аудио файл (если существует и не пустой)
+            if os.path.exists(audio_file) and os.path.getsize(audio_file) > 0:
+                asyncio.create_task(self._send_audio_file_async(audio_file, f"🎵 Голос на шаге {step}"))
+            
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка отправки тестового аудио: {e}")
+    
+    async def _send_audio_file_async(self, audio_file: str, caption: str) -> None:
+        """Асинхронно отправляет аудио файл."""
+        try:
+            if self.bot and os.path.exists(audio_file):
+                with open(audio_file, 'rb') as audio:
+                    await self.bot.send_audio(
+                        chat_id=self.chat_id,
+                        audio=audio,
+                        caption=caption,
+                        parse_mode='Markdown'
+                    )
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка отправки аудио файла: {e}")
+    
+    def send_critical_alert(self, alert_type: str, details: Dict[str, Any], 
+                          recommendations: List[str]) -> None:
+        """
+        🚨 Отправляет критическое предупреждение с рекомендациями.
+        
+        Args:
+            alert_type: Тип предупреждения
+            details: Детали проблемы
+            recommendations: Список рекомендаций
+        """
+        if not self.enabled:
+            return
+            
+        try:
+            message = f"🚨 **КРИТИЧЕСКОЕ ПРЕДУПРЕЖДЕНИЕ!**\n\n"
+            message += f"⚠️ **ПРОБЛЕМА:** {alert_type}\n\n"
+            
+            if 'description' in details:
+                message += f"📋 **ОПИСАНИЕ:** {details['description']}\n\n"
+            
+            if 'metrics' in details:
+                message += f"📊 **КРИТИЧЕСКИЕ МЕТРИКИ:**\n"
+                for metric, value in details['metrics'].items():
+                    message += f"• {metric}: `{value}`\n"
+                message += "\n"
+            
+            message += f"💡 **РЕКОМЕНДАЦИИ:**\n"
+            for i, rec in enumerate(recommendations, 1):
+                message += f"{i}. {rec}\n"
+            
+            message += f"\n🎯 **Smart Tuner попытается автоматически исправить ситуацию**"
+            
+            asyncio.create_task(self._send_message_async(message))
+            
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка отправки критического предупреждения: {e}")
+    
+    def send_success_milestone(self, milestone_type: str, achievement: Dict[str, Any], 
+                             step: int) -> None:
+        """
+        🏆 Отправляет уведомление о достижении важной цели.
+        
+        Args:
+            milestone_type: Тип достижения
+            achievement: Данные о достижении
+            step: Номер шага
+        """
+        if not self.enabled:
+            return
+            
+        try:
+            message = f"🏆 **ВАЖНОЕ ДОСТИЖЕНИЕ!** (Шаг {step})\n\n"
+            
+            if milestone_type == 'attention_quality':
+                diag = achievement.get('diagonality', 0)
+                message += f"🎯 **ПРОРЫВ В ATTENTION!**\n"
+                message += f"📊 Диагональность достигла: `{diag:.3f}`\n"
+                message += f"✨ Это означает отличное выравнивание текст-аудио!\n\n"
+                message += f"🎵 **Ожидаемый результат:** Значительно более естественный голос"
+                
+            elif milestone_type == 'quality_threshold':
+                quality = achievement.get('quality_score', 0)
+                message += f"📈 **КАЧЕСТВО ДОСТИГЛО ЦЕЛИ!**\n"
+                message += f"📊 Quality Score: `{quality:.1%}`\n"
+                message += f"🎉 Модель генерирует высококачественный голос!\n\n"
+                message += f"🎯 **Результат:** Готово для продакшена"
+                
+            elif milestone_type == 'stable_training':
+                message += f"✅ **СТАБИЛЬНОЕ ОБУЧЕНИЕ!**\n"
+                message += f"📊 Метрики стабилизировались\n"
+                message += f"🎵 Модель учится без сбоев и артефактов!\n\n"
+                message += f"🚀 **Продолжаем к совершенству**"
+            
+            asyncio.create_task(self._send_message_async(message))
+            
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка отправки уведомления о достижении: {e}") 

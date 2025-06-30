@@ -427,24 +427,41 @@ class EnhancedTacotronTrainer:
             self.best_validation_loss = val_result['val_loss']
             self.logger.info(f"🏆 Новый рекорд validation loss: {self.best_validation_loss:.4f}")
         
-        # 📱 Telegram уведомление каждые 1000 шагов
+        # 🎵 Генерация тестового аудио каждые 5000 шагов
+        if self.telegram_monitor and self.global_step % 5000 == 0:
+            try:
+                self.telegram_monitor.generate_and_send_test_audio(
+                    step=self.global_step,
+                    model=self.model,
+                    hparams=self.hparams,
+                    device=self.device
+                )
+            except Exception as e:
+                self.logger.warning(f"Ошибка генерации тестового аудио: {e}")
+        
+        # 📱 Обычное Telegram уведомление каждые 1000 шагов
         if self.telegram_monitor and self.global_step % 1000 == 0:
             try:
-                message = f"🎵 **Эпоха {self.current_epoch}** завершена\n"
-                message += f"📊 **Метрики:**\n"
-                message += f"• Train Loss: {epoch_metrics['train_loss']:.4f}\n"
-                message += f"• Val Loss: {val_result['val_loss']:.4f}\n"
-                message += f"• Quality: {val_result['quality_score']:.3f}\n"
-                message += f"• Фаза: {current_phase}\n"
-                message += f"• Время: {epoch_metrics['epoch_time']:.1f}с\n"
-                message += f"• Проблем качества: {quality_issues_count}\n"
+                # Собираем метрики для отправки
+                telegram_metrics = {
+                    'step': self.global_step,
+                    'train_loss': epoch_metrics['train_loss'],
+                    'val_loss': epoch_metrics['val_loss'],
+                    'quality_score': epoch_metrics['quality_score'],
+                    'learning_rate': self.optimizer.param_groups[0]['lr'],
+                    'phase': epoch_metrics['phase'],
+                    'epoch': epoch_metrics['epoch']
+                }
                 
-                if val_result['val_loss'] < self.best_validation_loss:
-                    message += f"\n🏆 **НОВЫЙ РЕКОРД!** Лучшая модель сохранена!"
+                # Отправляем обновление с изображениями attention
+                self.telegram_monitor.send_training_update(
+                    step=self.global_step,
+                    metrics=telegram_metrics,
+                    alignments=alignments
+                )
                 
-                self.telegram_monitor._send_text_message(message)
             except Exception as e:
-                self.logger.warning(f"Ошибка Telegram уведомления эпохи: {e}")
+                self.logger.warning(f"Ошибка Telegram уведомления: {e}")
         
         # Логирование результатов эпохи
         self.logger.info(
