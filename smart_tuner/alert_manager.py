@@ -247,6 +247,107 @@ class AlertManager:
             
         self.send_message(message, priority='warning')
         
+    def send_training_restart(self, restart_reason: str, restart_number: int, 
+                            current_metrics: Dict[str, float], 
+                            improvement_plan: Dict[str, Any]):
+        """
+        🔄 Уведомление о перезапуске обучения
+        
+        Args:
+            restart_reason: Причина перезапуска
+            restart_number: Номер перезапуска
+            current_metrics: Текущие метрики
+            improvement_plan: План улучшений
+        """
+        if not self.notifications.get('training_restart', True):
+            return
+            
+        message = f"🔄 *ПЕРЕЗАПУСК ОБУЧЕНИЯ #{restart_number}*\n\n"
+        message += f"📊 **Причина:** {restart_reason}\n"
+        message += f"🎯 **Цель:** Улучшение качества модели\n\n"
+        
+        # Текущие метрики
+        message += "📈 **Текущие метрики:**\n"
+        for metric_name, value in current_metrics.items():
+            if isinstance(value, (int, float)):
+                message += f"• {metric_name}: `{value:.4f}`\n"
+            else:
+                message += f"• {metric_name}: `{value}`\n"
+                
+        # План улучшений
+        if improvement_plan:
+            message += f"\n🛠️ **План улучшений:**\n"
+            for key, value in improvement_plan.items():
+                if key == 'hyperparameter_changes':
+                    message += f"⚙️ **Изменения параметров:**\n"
+                    for param, change in value.items():
+                        message += f"  • {param}: `{change}`\n"
+                elif key == 'strategy_changes':
+                    message += f"📋 **Изменения стратегии:**\n"
+                    for strategy in value:
+                        message += f"  • {strategy}\n"
+                elif key == 'expected_improvements':
+                    message += f"🎯 **Ожидаемые улучшения:**\n"
+                    for improvement in value:
+                        message += f"  • {improvement}\n"
+        
+        message += f"\n⏱️ **Время:** {datetime.now().strftime('%H:%M:%S')}"
+        message += f"\n🚀 **Система продолжает обучение с улучшенными параметрами!**"
+        
+        self.send_message(message, priority='warning')
+
+    def send_quality_intervention(self, intervention_type: str, 
+                                problem_detected: str,
+                                action_taken: Dict[str, Any],
+                                expected_outcome: str,
+                                step: int):
+        """
+        🤖 Уведомление об умном вмешательстве системы
+        
+        Args:
+            intervention_type: Тип вмешательства
+            problem_detected: Обнаруженная проблема
+            action_taken: Принятые меры
+            expected_outcome: Ожидаемый результат
+            step: Текущий шаг
+        """
+        if not self.notifications.get('quality_interventions', True):
+            return
+            
+        # Иконки для разных типов вмешательств
+        type_icons = {
+            'learning_rate_adjustment': '⚡',
+            'attention_correction': '🎯',
+            'dropout_optimization': '🛡️',
+            'batch_size_tuning': '📦',
+            'guided_attention_boost': '🧭',
+            'early_stop_prevention': '🚫',
+            'phase_transition': '🔄',
+            'quality_enhancement': '✨'
+        }
+        
+        icon = type_icons.get(intervention_type, '🤖')
+        
+        message = f"{icon} *УМНОЕ ВМЕШАТЕЛЬСТВО СИСТЕМЫ*\n\n"
+        message += f"📍 **Шаг:** `{step:,}`\n"
+        message += f"🔍 **Проблема:** {problem_detected}\n"
+        message += f"🎯 **Тип:** {intervention_type.replace('_', ' ').title()}\n\n"
+        
+        message += f"⚙️ **Принятые меры:**\n"
+        for key, value in action_taken.items():
+            if isinstance(value, (int, float)):
+                if isinstance(value, float) and abs(value) < 1:
+                    message += f"• {key}: `{value:.6f}`\n"
+                else:
+                    message += f"• {key}: `{value}`\n"
+            else:
+                message += f"• {key}: `{value}`\n"
+                
+        message += f"\n🎯 **Ожидаемый результат:** {expected_outcome}\n\n"
+        message += f"🧠 **Smart Tuner автоматически адаптирует обучение!**"
+        
+        self.send_message(message, priority='info')
+        
     def send_info_notification(self, message: str):
         """Отправка информационного уведомления"""
         self.send_message(message, priority='info')

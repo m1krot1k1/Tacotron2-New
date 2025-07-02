@@ -455,6 +455,23 @@ class SmartTunerMain:
                 if current_restart < max_restarts:
                     if self._should_restart_training(results):
                         self.logger.info("🔄 Обнаружены проблемы качества. Планируется перезапуск с оптимизацией...")
+                        
+                        # 📱 Отправляем Telegram уведомление о перезапуске
+                        if self.alert_manager:
+                            try:
+                                restart_reason = self._get_restart_reason(results)
+                                improvement_plan = self._create_improvement_plan(results, current_restart)
+                                
+                                self.alert_manager.send_training_restart(
+                                    restart_reason=restart_reason,
+                                    restart_number=current_restart + 1,
+                                    current_metrics=results,
+                                    improvement_plan=improvement_plan
+                                )
+                                self.logger.info("📱 Telegram уведомление о перезапуске отправлено")
+                            except Exception as e:
+                                self.logger.warning(f"⚠️ Не удалось отправить Telegram уведомление о перезапуске: {e}")
+                        
                         current_restart += 1
                         continue
                     else:
@@ -940,6 +957,111 @@ class SmartTunerMain:
             self.logger.error(f"❌ Ошибка в автоматическом режиме: {e}")
             final_results['error'] = str(e)
             return final_results
+    
+    def _get_restart_reason(self, results: Dict[str, Any]) -> str:
+        """
+        🔍 Определяет причину перезапуска обучения на основе результатов
+        
+        Args:
+            results: Результаты обучения
+            
+        Returns:
+            Человекопонятная причина перезапуска
+        """
+        if not results:
+            return "Пустые результаты обучения"
+            
+        reasons = []
+        
+        # Анализируем метрики
+        val_loss = results.get('validation_loss', float('inf'))
+        attention_score = results.get('attention_alignment_score', 0.0)
+        gate_accuracy = results.get('gate_accuracy', 0.0)
+        mel_quality = results.get('mel_quality_score', 0.0)
+        training_loss = results.get('training_loss', float('inf'))
+        
+        # Критические проблемы
+        if val_loss > 100.0:
+            reasons.append(f"Validation loss критично высокий ({val_loss:.2f})")
+        if attention_score < 0.05:
+            reasons.append(f"Attention практически отсутствует ({attention_score:.3f})")
+        if gate_accuracy < 0.1:
+            reasons.append(f"Gate accuracy критично низкий ({gate_accuracy:.3f})")
+        if mel_quality < 0.3:
+            reasons.append(f"Качество мел-спектрограмм низкое ({mel_quality:.3f})")
+        if training_loss == float('inf') or val_loss == float('inf'):
+            reasons.append("NaN или бесконечные значения в loss")
+        
+        # Проблемы стабильности
+        validation_step = results.get('validation.step', 0)
+        if validation_step < 3:
+            reasons.append(f"Недостаточно validation шагов ({validation_step})")
+            
+        # Если нет конкретных причин, общая формулировка
+        if not reasons:
+            reasons.append("Общая оценка качества ниже пороговых значений")
+            
+        return "; ".join(reasons)
+    
+    def _create_improvement_plan(self, results: Dict[str, Any], restart_number: int) -> Dict[str, Any]:
+        """
+        🛠️ Создает план улучшений на основе проблем в результатах
+        
+        Args:
+            results: Результаты обучения
+            restart_number: Номер перезапуска
+            
+        Returns:
+            План улучшений для следующего перезапуска
+        """
+        plan = {
+            'hyperparameter_changes': {},
+            'strategy_changes': [],
+            'expected_improvements': []
+        }
+        
+        # Анализируем проблемы и предлагаем решения
+        val_loss = results.get('validation_loss', float('inf'))
+        attention_score = results.get('attention_alignment_score', 0.0)
+        gate_accuracy = results.get('gate_accuracy', 0.0)
+        mel_quality = results.get('mel_quality_score', 0.0)
+        
+        # Стратегии улучшения на основе номера перезапуска
+        if restart_number == 0:  # Первый перезапуск - консервативные изменения
+            if val_loss > 100.0:
+                plan['hyperparameter_changes']['learning_rate'] = "снижен на 50%"
+                plan['hyperparameter_changes']['batch_size'] = "увеличен для стабильности"
+                plan['expected_improvements'].append("Стабилизация training loss")
+                
+            if attention_score < 0.05:
+                plan['hyperparameter_changes']['guided_attention_weight'] = "увеличен в 2 раза"
+                plan['strategy_changes'].append("Усиление guided attention")
+                plan['expected_improvements'].append("Улучшение attention alignment")
+                
+        elif restart_number == 1:  # Второй перезапуск - более агрессивные изменения
+            plan['strategy_changes'].append("Запуск мини-оптимизации (8 trials)")
+            plan['hyperparameter_changes']['epochs'] = "увеличено для лучшей сходимости"
+            plan['expected_improvements'].append("Подбор оптимальных гиперпараметров")
+            
+            if gate_accuracy < 0.1:
+                plan['hyperparameter_changes']['gate_threshold'] = "адаптивно настроен"
+                plan['expected_improvements'].append("Улучшение gate качества")
+                
+        else:  # Последующие перезапуски - экспериментальные стратегии
+            plan['strategy_changes'].append("Применение продвинутых TTS техник")
+            plan['strategy_changes'].append("Фазовое обучение с адаптивными порогами")
+            plan['expected_improvements'].append("Кардинальное улучшение качества")
+            
+        # Общие улучшения
+        if mel_quality < 0.3:
+            plan['strategy_changes'].append("Улучшение mel-спектрограмм preprocessing")
+            plan['expected_improvements'].append("Повышение качества мел-спектрограмм")
+            
+        # Добавляем мини-оптимизацию для поиска лучших параметров
+        if restart_number > 0:
+            plan['strategy_changes'].append("Мини-оптимизация для точной настройки")
+            
+        return plan
 
 def main():
     """Главная функция запуска Smart Tuner V2 TTS"""
@@ -1146,135 +1268,6 @@ def analyze_dataset(dataset_path: str) -> dict:
                 'pitch_range_semitones': 12
             }
         }
-
-def run_intelligent_training(trainer_wrapper, early_stop_controller, epoch_optimizer, 
-                           hyperparams, dataset_analysis):
-    """Запускает интеллектуальное обучение с мониторингом прогресса."""
-    
-    print(f"\n🚀 Запуск интеллектуального обучения...")
-    print(f"   • Режим: Адаптивное обучение с мониторингом качества")
-    print(f"   • Максимальные эпохи: {hyperparams['epochs']}")
-    print(f"   • Уверенность в оценке: {dataset_analysis['confidence']:.2f}")
-    
-    # Callback для мониторинга прогресса
-    def progress_callback(epoch, metrics):
-        """Callback для мониторинга прогресса обучения."""
-        progress_info = epoch_optimizer.monitor_training_progress(epoch, metrics)
-        
-        # Выводим рекомендации каждые 50 эпох
-        if epoch % 50 == 0:
-            recommendations = progress_info['recommendations']
-            print(f"\n📊 Эпоха {epoch} - Анализ прогресса:")
-            print(f"   • Статус: {progress_info['progress_analysis'].get('convergence_status', {}).get('status', 'unknown')}")
-            print(f"   • Риск переобучения: {progress_info['progress_analysis'].get('overfitting_risk', {}).get('risk', 'unknown')}")
-            print(f"   • Продолжить обучение: {'Да' if recommendations['continue_training'] else 'Нет'}")
-            
-            if recommendations['estimated_epochs_remaining']:
-                print(f"   • Оставшиеся эпохи: ~{recommendations['estimated_epochs_remaining']}")
-            
-            for action in recommendations['suggested_actions']:
-                print(f"   • Рекомендация: {action}")
-        
-        return progress_info['recommendations']['continue_training']
-    
-    # Запуск обучения с callback
-    start_time = time.time()
-    
-    try:
-        result = trainer_wrapper.train_with_callback(
-            hyperparams=hyperparams,
-            progress_callback=progress_callback,
-            early_stop_controller=early_stop_controller
-        )
-        
-        training_time = (time.time() - start_time) / 60  # В минутах
-        
-        return {
-            'final_metrics': result.get('metrics', {}),
-            'actual_epochs': result.get('epochs_completed', hyperparams['epochs']),
-            'training_time_minutes': training_time,
-            'optimizer_summary': epoch_optimizer.get_optimization_summary()
-        }
-        
-    except Exception as e:
-        print(f"❌ Ошибка во время обучения: {e}")
-        return {
-            'final_metrics': {},
-            'actual_epochs': 0,
-            'training_time_minutes': (time.time() - start_time) / 60
-        }
-
-def run_intelligent_optimization(optimization_engine, epoch_optimizer, trials, 
-                                hyperparams, dataset_analysis):
-    """Запускает интеллектуальную оптимизацию гиперпараметров."""
-    
-    print(f"\n🔍 Запуск интеллектуальной оптимизации...")
-    print(f"   • Количество trials: {trials}")
-    print(f"   • Базовые эпохи: {hyperparams['epochs']}")
-    
-    # Настройка диапазона эпох для оптимизации
-    epochs_range = dataset_analysis['recommended_epochs_range']
-    
-    # Обновляем конфигурацию оптимизации
-    optimization_config = {
-        'epochs': {
-            'type': 'int',
-            'min': epochs_range[0],
-            'max': epochs_range[1],
-            'default': dataset_analysis['optimal_epochs']
-        }
-    }
-    
-    try:
-        result = optimization_engine.optimize(
-            n_trials=trials,
-            hyperparams_override=hyperparams,
-            epochs_config=optimization_config
-        )
-        
-        return {
-            'best_params': result.get('best_params', {}),
-            'best_score': result.get('best_value', float('inf')),
-            'optimization_history': result.get('trials_history', [])
-        }
-        
-    except Exception as e:
-        print(f"❌ Ошибка во время оптимизации: {e}")
-        return {
-            'best_params': hyperparams,
-            'best_score': float('inf'),
-            'optimization_history': []
-        }
-
-def run_auto_mode(optimization_engine, trainer_wrapper, early_stop_controller,
-                  epoch_optimizer, trials, hyperparams, dataset_analysis):
-    """Запускает автоматический режим: сначала оптимизация, затем обучение."""
-    
-    print(f"\n🤖 Запуск автоматического режима...")
-    
-    # Этап 1: Оптимизация
-    print(f"   Этап 1: Оптимизация гиперпараметров ({trials} trials)")
-    optimization_result = run_intelligent_optimization(
-        optimization_engine, epoch_optimizer, trials, hyperparams, dataset_analysis
-    )
-    
-    # Этап 2: Обучение с лучшими параметрами
-    print(f"   Этап 2: Обучение с оптимальными параметрами")
-    best_hyperparams = optimization_result['best_params']
-    best_hyperparams.update(hyperparams)  # Сохраняем неоптимизированные параметры
-    
-    training_result = run_intelligent_training(
-        trainer_wrapper, early_stop_controller, epoch_optimizer,
-        best_hyperparams, dataset_analysis
-    )
-    
-    return {
-        'optimization_result': optimization_result,
-        'training_result': training_result,
-        'final_metrics': training_result.get('final_metrics', {}),
-        'actual_epochs': training_result.get('actual_epochs', 0),
-        'training_time_minutes': training_result.get('training_time_minutes', 0)
-    }
 
 if __name__ == "__main__":
     sys.exit(main())

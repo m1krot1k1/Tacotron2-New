@@ -122,7 +122,7 @@ def create_hparams(hparams_string=None, verbose=False):
         learning_rate_min=5e-7,             # 🔧 Минимальный learning rate
         weight_decay=1e-7,                  # 🔧 Еще меньше regularization
         grad_clip_thresh=0.5,               # 🔧 Меньший gradient clipping для стабильности
-        batch_size=12,                      # 🔥 КРИТИЧЕСКОЕ: снижено с 48 до 12 для лучшего attention quality
+        batch_size=32,                      # 🔥 КРИТИЧЕСКОЕ: увеличено до 32 для стабильности attention
         mask_padding=True,
 
         ################################
