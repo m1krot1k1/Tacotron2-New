@@ -604,7 +604,7 @@ def train(
 
     if hparams.fp16_run:
         try:
-            from apex import amp
+            from apex import amp  # type: ignore
 
             model, optimizer = amp.initialize(model, optimizer, opt_level="O2")
             apex_available = True
@@ -1417,8 +1417,8 @@ def train(
                                         # Собираем loss компоненты для детальной диагностики
                                         loss_components = {
                                             'total_loss': reduced_loss,
-                                            'mel_loss': mel_loss.item() if mel_loss is not None else 0.0,
-                                            'gate_loss': gate_loss.item() if gate_loss is not None else 0.0,
+                                            'mel_loss': reduced_taco_loss if 'reduced_taco_loss' in locals() else 0.0,
+                                            'gate_loss': reduced_gate_loss if 'reduced_gate_loss' in locals() else 0.0,
                                         }
                                         
                                         # Добавляем guided attention loss если есть
@@ -1448,8 +1448,8 @@ def train(
                                             'batch_size': hparams.batch_size,
                                             'iteration': iteration,
                                             'epoch': epoch,
-                                            'diagonality': diagonality if 'diagonality' in locals() else 0.0,
-                                            'quality': quality if 'quality' in locals() else 0.0,
+                                            'diagonality': 0.0,  # Будет вычислено в debug_reporter
+                                            'quality': 0.0,      # Будет вычислено в debug_reporter
                                         }
                                         
                                         # Отправляем данные в debug reporter
