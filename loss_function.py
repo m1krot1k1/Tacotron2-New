@@ -494,11 +494,15 @@ class GuidedAttentionLoss(nn.Module):
         self.current_weight = alpha     # Текущий вес
         self.global_step = 0
         
-        # Адаптивные параметры из исследований
-        self.min_weight = 0.05          # Минимальный вес
-        self.max_weight = 15.0          # Максимальный вес
-        self.decay_start = 2000         # Когда начинать decay
-        self.decay_steps = 25000        # Длительность decay
+        # 🚨 КРИТИЧЕСКИЕ параметры для восстановления после NaN
+        self.critical_mode = False      # Режим критического восстановления
+        self.min_weight = 0.1           # Повышенный минимальный вес
+        self.max_weight = 50.0          # Увеличенный максимальный вес
+        self.decay_start = 5000         # Отложенный decay для стабилизации
+        self.decay_steps = 40000        # Увеличенная длительность decay
+        
+        # 🛡️ Параметры для экстренного восстановления диагональности
+        self.emergency_weight = 25.0    # Экстренный вес при низкой диагональности
         
     def forward(self, model_output):
         """
@@ -595,7 +599,76 @@ class GuidedAttentionLoss(nn.Module):
     
     def get_weight(self):
         """Возвращает текущий вес guided attention loss."""
+        # 🚨 В критическом режиме используем экстренный вес
+        if self.critical_mode:
+            return self.emergency_weight
         return self.current_weight
+
+    def activate_critical_mode(self):
+        """
+        🚨 Активирует критический режим восстановления диагональности.
+        Используется при обнаружении NaN или критически низкой диагональности.
+        """
+        self.critical_mode = True
+        self.current_weight = self.emergency_weight
+        print(f"🛡️ GuidedAttentionLoss: КРИТИЧЕСКИЙ РЕЖИМ активирован! Вес: {self.emergency_weight}")
+
+    def deactivate_critical_mode(self):
+        """Деактивирует критический режим."""
+        self.critical_mode = False
+        print(f"✅ GuidedAttentionLoss: критический режим деактивирован")
+
+    def check_diagonality_and_adapt(self, alignments):
+        """
+        Проверяет диагональность attention и автоматически адаптирует режим.
+        
+        Args:
+            alignments: Attention веса [batch, mel_len, text_len]
+        """
+        if alignments is None or alignments.numel() == 0:
+            return
+        
+        # Быстрая проверка диагональности для первого элемента батча
+        attention = alignments[0].detach().cpu().numpy()
+        batch_size, mel_len, text_len = attention.shape if len(attention.shape) == 3 else (1, *attention.shape)
+        
+        if len(attention.shape) == 2:
+            attention = attention.reshape(1, *attention.shape)
+            
+        diagonality = self._calculate_quick_diagonality(attention[0] if len(attention.shape) == 3 else attention)
+        
+        # Автоматическая активация критического режима при низкой диагональности
+        if diagonality < 0.2 and not self.critical_mode:
+            self.activate_critical_mode()
+        elif diagonality > 0.5 and self.critical_mode:
+            self.deactivate_critical_mode()
+
+    def _calculate_quick_diagonality(self, attention_matrix):
+        """Быстрое вычисление диагональности."""
+        try:
+            if attention_matrix.size == 0:
+                return 0.0
+            
+            mel_len, text_len = attention_matrix.shape
+            
+            # Создаем идеальную диагональ
+            diagonal_sum = 0.0
+            total_sum = attention_matrix.sum()
+            
+            if total_sum == 0:
+                return 0.0
+            
+            # Суммируем веса по диагонали
+            for i in range(mel_len):
+                diagonal_pos = int(i * text_len / mel_len)
+                if diagonal_pos < text_len:
+                    diagonal_sum += attention_matrix[i, diagonal_pos]
+            
+            # Диагональность = доля весов на диагонали
+            return diagonal_sum / total_sum if total_sum > 0 else 0.0
+            
+        except Exception:
+            return 0.0
     
     def _update_weight(self):
         """Обновляет вес guided attention на основе расписания."""

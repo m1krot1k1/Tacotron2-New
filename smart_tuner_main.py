@@ -462,13 +462,37 @@ class SmartTunerMain:
                                 restart_reason = self._get_restart_reason(results)
                                 improvement_plan = self._create_improvement_plan(results, current_restart)
                                 
+                                # 🚨 Проверяем критичность ситуации для специального уведомления
+                                is_critical_nan = 'nan' in str(results.get('validation_loss', '')).lower() or results.get('validation_loss', 0) == float('inf')
+                                
+                                if is_critical_nan:
+                                    # Отправляем критическое уведомление о NaN
+                                    problematic_components = []
+                                    step = results.get('training_step', 0)
+                                    
+                                    # Собираем информацию о проблемных компонентах
+                                    for key, value in results.items():
+                                        if 'loss' in key and (str(value).lower() == 'nan' or value == float('inf')):
+                                            problematic_components.append(f"{key}: {value}")
+                                    
+                                    self.alert_manager.send_critical_nan_alert(
+                                        step=step,
+                                        problematic_components=problematic_components,
+                                        hyperparams={
+                                            'learning_rate': results.get('learning_rate', 'N/A'),
+                                            'batch_size': results.get('batch_size', 'N/A'),
+                                            'grad_clip_thresh': results.get('grad_clip_thresh', 'N/A')
+                                        }
+                                    )
+                                
+                                # Обычное уведомление о перезапуске
                                 self.alert_manager.send_training_restart(
                                     restart_reason=restart_reason,
                                     restart_number=current_restart + 1,
                                     current_metrics=results,
                                     improvement_plan=improvement_plan
                                 )
-                                self.logger.info("📱 Telegram уведомление о перезапуске отправлено")
+                                self.logger.info("📱 Telegram уведомления о перезапуске отправлены")
                             except Exception as e:
                                 self.logger.warning(f"⚠️ Не удалось отправить Telegram уведомление о перезапуске: {e}")
                         

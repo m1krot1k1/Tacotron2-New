@@ -262,40 +262,76 @@ class AlertManager:
         if not self.notifications.get('training_restart', True):
             return
             
-        message = f"🔄 *ПЕРЕЗАПУСК ОБУЧЕНИЯ #{restart_number}*\n\n"
-        message += f"📊 **Причина:** {restart_reason}\n"
-        message += f"🎯 **Цель:** Улучшение качества модели\n\n"
+        # Определяем критичность ситуации
+        is_critical = 'NaN' in restart_reason or 'Inf' in restart_reason or restart_number >= 3
+        
+        if is_critical:
+            message = "🚨 **КРИТИЧЕСКИЙ ПЕРЕЗАПУСК ОБУЧЕНИЯ!**\n\n"
+            message += f"⚠️ **СЕРЬЕЗНАЯ ПРОБЛЕМА:** `{restart_reason}`\n"
+        else:
+            message = "🔄 **Перезапуск обучения**\n\n"
+            message += f"📋 **Причина:** `{restart_reason}`\n"
+        
+        message += f"🔢 **Попытка:** `{restart_number}`\n"
+        message += f"📍 **Время:** `{datetime.now().strftime('%H:%M:%S')}`\n\n"
         
         # Текущие метрики
-        message += "📈 **Текущие метрики:**\n"
-        for metric_name, value in current_metrics.items():
-            if isinstance(value, (int, float)):
-                message += f"• {metric_name}: `{value:.4f}`\n"
-            else:
-                message += f"• {metric_name}: `{value}`\n"
-                
+        if current_metrics:
+            message += "📊 **Проблемные метрики:**\n"
+            for metric, value in current_metrics.items():
+                if isinstance(value, float):
+                    if 'loss' in metric.lower():
+                        message += f"• {metric}: `{value:.6f}`\n"
+                    elif 'accuracy' in metric.lower() or 'quality' in metric.lower():
+                        message += f"• {metric}: `{value:.1%}`\n"
+                    else:
+                        message += f"• {metric}: `{value:.4f}`\n"
+                else:
+                    message += f"• {metric}: `{value}`\n"
+        
         # План улучшений
         if improvement_plan:
-            message += f"\n🛠️ **План улучшений:**\n"
-            for key, value in improvement_plan.items():
-                if key == 'hyperparameter_changes':
-                    message += f"⚙️ **Изменения параметров:**\n"
-                    for param, change in value.items():
-                        message += f"  • {param}: `{change}`\n"
-                elif key == 'strategy_changes':
-                    message += f"📋 **Изменения стратегии:**\n"
-                    for strategy in value:
-                        message += f"  • {strategy}\n"
-                elif key == 'expected_improvements':
-                    message += f"🎯 **Ожидаемые улучшения:**\n"
-                    for improvement in value:
-                        message += f"  • {improvement}\n"
+            message += f"\n🛠️ **ПЛАН ВОССТАНОВЛЕНИЯ:**\n"
+            if 'parameter_changes' in improvement_plan:
+                for param, change in improvement_plan['parameter_changes'].items():
+                    old_val = change.get('old_value', 'N/A')
+                    new_val = change.get('new_value', 'N/A')
+                    message += f"• {param}: `{old_val}` → `{new_val}`\n"
+            
+            if 'actions' in improvement_plan:
+                message += f"\n🎯 **Действия:**\n"
+                for action in improvement_plan['actions']:
+                    message += f"• {action}\n"
         
-        message += f"\n⏱️ **Время:** {datetime.now().strftime('%H:%M:%S')}"
-        message += f"\n🚀 **Система продолжает обучение с улучшенными параметрами!**"
+        # Рекомендации
+        message += f"\n💡 **АВТОМАТИЧЕСКИЕ УЛУЧШЕНИЯ:**\n"
+        if is_critical:
+            message += f"• 🔥 Радикальное снижение learning rate\n"
+            message += f"• 🎯 Принудительная активация guided attention\n"
+            message += f"• 📦 Уменьшение batch size\n"
+            message += f"• ✂️ Строгое клипирование градиентов\n"
+            message += f"• 🛡️ Отключение нестабильных функций\n"
+        else:
+            message += f"• ⚙️ Адаптация гиперпараметров\n"
+            message += f"• 📊 Улучшение стабильности\n"
         
-        self.send_message(message, priority='warning')
-
+        # Прогноз
+        message += f"\n🔮 **ОЖИДАЕМЫЙ РЕЗУЛЬТАТ:**\n"
+        if restart_number == 1:
+            message += f"• 📈 Стабилизация loss\n"
+            message += f"• 🎯 Восстановление attention alignment\n"
+        elif restart_number <= 3:
+            message += f"• 🛡️ Максимальная стабильность\n"
+            message += f"• 🎯 Постепенное улучшение качества\n"
+        else:
+            message += f"• ⚠️ Требуется ручная диагностика\n"
+            message += f"• 🔧 Возможно, нужно пересмотреть данные\n"
+        
+        message += f"\n🚀 **Обучение перезапущено автоматически!**"
+        
+        priority = 'critical' if is_critical else 'warning'
+        self.send_message(message, priority=priority)
+        
     def send_quality_intervention(self, intervention_type: str, 
                                 problem_detected: str,
                                 action_taken: Dict[str, Any],
@@ -532,4 +568,42 @@ class AlertManager:
                 
         except requests.exceptions.RequestException as e:
             self.logger.error(f"Ошибка установки webhook: {e}")
-            return False 
+            return False
+        
+    def send_critical_nan_alert(self, step: int, problematic_components: List[str], 
+                              hyperparams: Dict[str, Any]):
+        """
+        🚨 Специальное уведомление о критической ошибке NaN/Inf
+        
+        Args:
+            step: Шаг обучения где произошла ошибка
+            problematic_components: Список проблемных компонентов loss
+            hyperparams: Текущие гиперпараметры
+        """
+        if not self.notifications.get('critical_alerts', True):
+            return
+            
+        message = "🚨 **КРИТИЧЕСКАЯ ОШИБКА: NaN/Inf В LOSS!**\n\n"
+        message += f"💥 **Шаг:** `{step}`\n"
+        message += f"🕐 **Время:** `{datetime.now().strftime('%H:%M:%S')}`\n\n"
+        
+        message += f"🔥 **Проблемные компоненты:**\n"
+        for component in problematic_components:
+            message += f"• {component}\n"
+        
+        message += f"\n⚙️ **Текущие параметры:**\n"
+        key_params = ['learning_rate', 'batch_size', 'grad_clip_thresh']
+        for param in key_params:
+            if param in hyperparams:
+                value = hyperparams[param]
+                message += f"• {param}: `{value}`\n"
+        
+        message += f"\n🛡️ **СИСТЕМА САМОЗАЩИТЫ АКТИВИРОВАНА:**\n"
+        message += f"• 🔄 Автоматический перезапуск\n"
+        message += f"• 📉 Радикальное снижение learning rate\n"
+        message += f"• 🎯 Принудительная guided attention\n"
+        message += f"• ✂️ Агрессивное клипирование градиентов\n"
+        
+        message += f"\n⏰ **Перезапуск через несколько секунд...**"
+        
+        self.send_message(message, priority='critical') 
