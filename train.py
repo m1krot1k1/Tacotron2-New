@@ -31,6 +31,7 @@ from smart_tuner.intelligent_epoch_optimizer import IntelligentEpochOptimizer
 from smart_tuner.param_scheduler import ParamScheduler
 from smart_tuner.early_stop_controller import EarlyStopController
 from gradient_stability_monitor import GradientStabilityMonitor
+from debug_reporter import initialize_debug_reporter, get_debug_reporter
 
 # MLflow for experiment tracking
 try:
@@ -701,6 +702,15 @@ def train(
         except Exception as e:
             print(f"⚠️ Не удалось инициализировать EarlyStopController: {e}")
 
+    # --- 🔍 Debug Reporter ---
+    debug_reporter = None
+    if is_main_node:
+        try:
+            debug_reporter = initialize_debug_reporter(telegram_monitor)
+            print("🔍 Debug Reporter активирован - отчеты каждые 1000 шагов")
+        except Exception as e:
+            print(f"⚠️ Не удалось инициализировать Debug Reporter: {e}")
+
     global_mean = calculate_global_mean(train_loader, hparams.global_mean_npy)
 
     # Переменные для отслеживания validation loss для отправки аудио
@@ -1072,6 +1082,15 @@ def train(
                         print(f"Проблемные компоненты: {problematic_components}")
                         print(f"Шаг: {i + epoch * len(train_loader)}")
                         
+                        # 🔍 Записываем критическую ошибку в debug reporter
+                        if debug_reporter:
+                            try:
+                                critical_info = f"NaN/Inf на шаге {iteration}. Компоненты: {', '.join(problematic_components)}"
+                                debug_reporter.add_warning(critical_info)
+                                print("🔍 Критическая ошибка записана в Debug Reporter")
+                            except Exception as e:
+                                print(f"⚠️ Ошибка записи в Debug Reporter: {e}")
+                        
                         # 📱 СРОЧНОЕ Telegram уведомление о критической ошибке
                         if telegram_monitor:
                             try:
@@ -1107,6 +1126,15 @@ def train(
                         # Создаем защищенные параметры
                         hparams = get_safe_hparams(hparams, restart_attempts)
                         print(f"[Smart Restart] Перезапуск с УЛЬТРА-безопасными параметрами (попытка {restart_attempts})...\n")
+                        
+                        # 🔍 Записываем информацию о перезапуске в debug reporter
+                        if debug_reporter:
+                            try:
+                                restart_info = f"Перезапуск #{restart_attempts}: learning_rate {old_learning_rate:.8f}→{hparams.learning_rate:.8f}, batch_size {old_batch_size}→{hparams.batch_size}, причина: NaN/Inf"
+                                debug_reporter.add_restart_info(restart_info)
+                                print("🔍 Информация о перезапуске записана в Debug Reporter")
+                            except Exception as e:
+                                print(f"⚠️ Ошибка записи перезапуска в Debug Reporter: {e}")
                         
                         # 📱 TELEGRAM уведомление о критическом перезапуске
                         if telegram_monitor:
@@ -1382,6 +1410,61 @@ def train(
                                     smart_tuner_decisions["warnings"] = warnings
 
                                 print(f"   - smart_tuner_decisions: {smart_tuner_decisions}")
+
+                                # 🔍 Собираем данные для DEBUG REPORTER
+                                if debug_reporter:
+                                    try:
+                                        # Собираем loss компоненты для детальной диагностики
+                                        loss_components = {
+                                            'total_loss': reduced_loss,
+                                            'mel_loss': mel_loss.item() if mel_loss is not None else 0.0,
+                                            'gate_loss': gate_loss.item() if gate_loss is not None else 0.0,
+                                        }
+                                        
+                                        # Добавляем guided attention loss если есть
+                                        if guide_loss is not None and y_pred is not None:
+                                            try:
+                                                if len(y_pred) >= 4:
+                                                    alignments = y_pred[3] if len(y_pred) == 4 else y_pred[4]
+                                                    if alignments is not None:
+                                                        guided_loss = guide_loss(alignments)
+                                                        loss_components['guided_loss'] = guided_loss.item()
+                                            except Exception as e:
+                                                print(f"⚠️ Ошибка вычисления guided loss для debug: {e}")
+                                        
+                                        # Добавляем MMI loss если есть
+                                        if mmi_loss is not None and y_pred is not None:
+                                            try:
+                                                mmi_loss_val = mmi_loss(y_pred, y)
+                                                loss_components['mmi_loss'] = mmi_loss_val.item()
+                                            except Exception as e:
+                                                print(f"⚠️ Ошибка вычисления MMI loss для debug: {e}")
+                                        
+                                        # Собираем основные метрики
+                                        debug_metrics = {
+                                            'loss': reduced_loss,
+                                            'grad_norm': grad_norm,
+                                            'learning_rate': learning_rate,
+                                            'batch_size': hparams.batch_size,
+                                            'iteration': iteration,
+                                            'epoch': epoch,
+                                            'diagonality': diagonality if 'diagonality' in locals() else 0.0,
+                                            'quality': quality if 'quality' in locals() else 0.0,
+                                        }
+                                        
+                                        # Отправляем данные в debug reporter
+                                        debug_reporter.collect_step_data(
+                                            step=iteration,
+                                            metrics=debug_metrics,
+                                            model=model,
+                                            y_pred=y_pred,
+                                            loss_components=loss_components,
+                                            hparams=hparams,
+                                            smart_tuner_decisions=smart_tuner_decisions
+                                        )
+                                        
+                                    except Exception as e:
+                                        print(f"⚠️ Ошибка сбора debug данных: {e}")
 
                                 # ГАРАНТИРОВАННО отправляем графики (send_plots=True)
                                 try:

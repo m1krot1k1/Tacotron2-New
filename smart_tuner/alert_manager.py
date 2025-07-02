@@ -169,7 +169,56 @@ class AlertManager:
         except requests.exceptions.RequestException as e:
             self.logger.error(f"Ошибка отправки в Telegram: {e}")
             return False
+    
+    def _send_document(self, file_path: str, caption: str = "", parse_mode: str = 'Markdown') -> bool:
+        """
+        Отправка файла через Telegram API
+        
+        Args:
+            file_path: Путь к файлу для отправки
+            caption: Подпись к файлу
+            parse_mode: Режим парсинга
             
+        Returns:
+            True, если файл отправлен успешно
+        """
+        if not self.enabled:
+            self.logger.debug(f"Уведомления отключены: файл {file_path}")
+            return False
+            
+        url = f"https://api.telegram.org/bot{self.bot_token}/sendDocument"
+        
+        try:
+            with open(file_path, 'rb') as f:
+                files = {'document': f}
+                data = {
+                    'chat_id': self.chat_id,
+                    'caption': caption,
+                    'parse_mode': parse_mode
+                }
+                
+                response = requests.post(url, files=files, data=data, timeout=30)
+                response.raise_for_status()
+                
+                self.logger.debug(f"Файл {file_path} отправлен в Telegram")
+                return True
+                
+        except requests.exceptions.RequestException as e:
+            self.logger.error(f"Ошибка отправки файла в Telegram: {e}")
+            return False
+        except FileNotFoundError:
+            self.logger.error(f"Файл {file_path} не найден")
+            return False
+        except Exception as e:
+            self.logger.error(f"Неожиданная ошибка при отправке файла: {e}")
+            return False
+    
+    def _send_text_message(self, text: str, parse_mode: str = "Markdown") -> bool:
+        """
+        Совместимость с debug_reporter - отправляет простое текстовое сообщение
+        """
+        return self._send_telegram_message(text, parse_mode)
+    
     def send_training_started(self, config: Dict[str, Any]):
         """
         Уведомление о начале обучения
