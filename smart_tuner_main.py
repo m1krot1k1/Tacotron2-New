@@ -20,6 +20,12 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional
+import mlflow
+import uuid
+import gc
+import torch
+import psutil
+import math
 
 # Добавляем корневую директорию в путь
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -81,6 +87,150 @@ except ImportError:
         pass
     def export_current_training(*args, **kwargs):
         return None
+
+class MLflowManager:
+    def __init__(self, experiment_name: str):
+        self.experiment_name = experiment_name
+        self.parent_run = None
+        
+    def start_parent_run(self, run_name: str = None):
+        """
+        Запуск родительского run для оптимизации
+        """
+        mlflow.set_experiment(self.experiment_name)
+        
+        self.parent_run = mlflow.start_run(
+            run_name=run_name or f"smart_tuner_{int(time.time())}"
+        )
+        
+        # Логируем общие параметры только один раз
+        mlflow.log_param("optimization_engine", "smart_tuner_v2")
+        mlflow.log_param("framework", "tacotron2")
+        
+        print(f"✅ Родительский run запущен: {self.parent_run.info.run_id}")
+        return self.parent_run
+        
+    def start_trial_run(self, trial_number: int, trial_params: Dict[str, Any]):
+        """
+        Запуск дочернего run для каждого trial
+        """
+        if not self.parent_run:
+            raise Exception("Родительский run не запущен!")
+            
+        # Создаем уникальное имя для trial
+        trial_name = f"trial_{trial_number}_{uuid.uuid4().hex[:8]}"
+        
+        trial_run = mlflow.start_run(
+            run_name=trial_name,
+            nested=True
+        )
+        
+        # Логируем параметры trial без конфликтов
+        trial_params_prefixed = {
+            f"trial_{trial_number}_{k}": v for k, v in trial_params.items()
+        }
+        
+        mlflow.log_params(trial_params_prefixed)
+        mlflow.log_param("trial_number", trial_number)
+        
+        print(f"✅ Trial run запущен: {trial_number}")
+        return trial_run
+        
+    def log_trial_metrics(self, metrics: Dict[str, Any], step: int = None):
+        """
+        Безопасное логирование метрик trial
+        """
+        try:
+            for metric_name, value in metrics.items():
+                if isinstance(value, (int, float)) and not math.isnan(value):
+                    mlflow.log_metric(metric_name, value, step=step)
+        except Exception as e:
+            print(f"⚠️ Ошибка логирования метрик: {e}")
+            
+    def end_trial_run(self):
+        """
+        Завершение trial run
+        """
+        try:
+            mlflow.end_run()
+        except Exception as e:
+            print(f"⚠️ Ошибка завершения trial run: {e}")
+            
+    def end_parent_run(self):
+        """
+        Завершение родительского run
+        """
+        try:
+            if self.parent_run:
+                mlflow.end_run()
+                self.parent_run = None
+        except Exception as e:
+            print(f"⚠️ Ошибка завершения parent run: {e}")
+
+class MemoryManager:
+    def __init__(self, memory_threshold: int = 85):
+        self.memory_threshold = memory_threshold
+        self.last_cleanup = time.time()
+        
+    def cleanup_trial_memory(self, force: bool = False):
+        """
+        Принудительная очистка памяти после trial
+        """
+        current_time = time.time()
+        memory_percent = psutil.virtual_memory().percent
+        
+        # Очищаем каждые 30 секунд или при превышении порога
+        if force or (current_time - self.last_cleanup > 30) or memory_percent > self.memory_threshold:
+            
+            # Python garbage collection
+            collected = gc.collect()
+            
+            # PyTorch cache cleanup
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+                
+            # Дополнительная очистка для del объектов
+            for obj in gc.get_objects():
+                if isinstance(obj, torch.Tensor) and obj.device.type == 'cuda':
+                    del obj
+                    
+            gc.collect()  # Еще один проход
+            
+            self.last_cleanup = current_time
+            new_memory_percent = psutil.virtual_memory().percent
+            
+            print(f"🧹 Очистка памяти: {memory_percent:.1f}% -> {new_memory_percent:.1f}% "
+                  f"(освобождено {collected} объектов)")
+                  
+    def monitor_memory_usage(self) -> Dict[str, Any]:
+        """
+        Мониторинг использования памяти
+        """
+        memory = psutil.virtual_memory()
+        gpu_memory = None
+        
+        if torch.cuda.is_available():
+            gpu_memory = torch.cuda.memory_summary()
+            
+        return {
+            "ram_percent": memory.percent,
+            "ram_available": memory.available // (1024**3),  # GB
+            "gpu_memory": gpu_memory
+        }
+        
+    def check_memory_health(self) -> bool:
+        """
+        Проверка состояния памяти
+        """
+        stats = self.monitor_memory_usage()
+        
+        if stats["ram_percent"] > 90:
+            print(f"⚠️ Критическое использование RAM: {stats['ram_percent']:.1f}%")
+            self.cleanup_trial_memory(force=True)
+            return False
+            
+        return True
 
 class SmartTunerMain:
     """
@@ -204,8 +354,12 @@ class SmartTunerMain:
         self.logger.info("🎯 Запуск TTS оптимизации гиперпараметров...")
         
         try:
-            # Создаем исследование с TTS настройками
-            study = self.optimization_engine.create_study(
+            # === MLflow: запускаем родительский run единожды ===
+            mlflow_manager = MLflowManager("tacotron2_optimization")
+            mlflow_manager.start_parent_run(run_name=f"tts_opt_session_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+            
+            # Создаем исследование с TTS настройками и улучшенной обработкой SQLite
+            study = self.optimization_engine.create_study_with_retry(
                 study_name=f"tacotron2_tts_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             )
             
@@ -214,15 +368,26 @@ class SmartTunerMain:
             
             def tts_objective_function(trial):
                 """
-                🎯 TTS-оптимизированная целевая функция для Optuna
+                🎯 TTS-оптимизированная целевая функция для Optuna с улучшенным управлением памятью и MLflow
                 Учитывает специфику обучения TTS моделей
                 """
+                # Инициализируем менеджеры
+                memory_manager = MemoryManager()
+                
                 # Инициализируем время начала обучения
                 from datetime import datetime
                 self.training_start_time = datetime.now()
                 
                 try:
+                    # Проверяем память перед началом
+                    if not memory_manager.check_memory_health():
+                        self.logger.warning("⚠️ Недостаточно памяти для trial")
+                        return float('inf')
+                    
                     self.logger.info(f"🎯 TTS trial {trial.number} начат")
+                    
+                    # Запускаем trial run в MLflow
+                    trial_run = mlflow_manager.start_trial_run(trial.number, trial.params)
                     
                     # Получаем предложенные гиперпараметры
                     suggested_params = self.optimization_engine.suggest_hyperparameters(trial)
@@ -246,6 +411,10 @@ class SmartTunerMain:
                     
                     self.logger.info(f"📊 TTS trial {trial.number} получил метрики: {metrics}")
                     
+                    # Логируем метрики в MLflow
+                    if metrics:
+                        mlflow_manager.log_trial_metrics(metrics)
+                    
                     # Проверяем качество результатов
                     if self._check_tts_quality_thresholds(metrics):
                         self.logger.info(f"✅ TTS trial {trial.number} прошел проверку качества")
@@ -264,7 +433,12 @@ class SmartTunerMain:
                     self.logger.error(f"Полный traceback: {traceback.format_exc()}")
                     return float('inf')  # Возвращаем худший возможный результат
                 finally:
-                    # Принудительная очистка памяти после каждого trial
+                    # ОБЯЗАТЕЛЬНАЯ очистка памяти и завершение MLflow run
+                    try:
+                        mlflow_manager.end_trial_run()
+                    except:
+                        pass
+                    memory_manager.cleanup_trial_memory(force=True)
                     self._cleanup_trial_memory()
             
             # Запускаем TTS оптимизацию
@@ -274,6 +448,12 @@ class SmartTunerMain:
             )
             
             self.logger.info("🎉 TTS оптимизация завершена успешно!")
+            
+            # Завершаем родительский MLflow run
+            try:
+                mlflow_manager.end_parent_run()
+            except Exception as e:
+                self.logger.warning(f"⚠️ Не удалось корректно завершить MLflow parent run: {e}")
             
             # Анализируем и сохраняем результаты
             self._save_tts_optimization_results(results)

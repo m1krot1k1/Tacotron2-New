@@ -202,8 +202,16 @@ class AdvancedQualityController:
             attention_quality['focus_score'] += focus
             
             # 4. Энтропия (мера неопределенности)
-            entropy = self._calculate_attention_entropy(att_matrix)
-            attention_quality['entropy_score'] += entropy
+            att_weights_safe = np.clip(att_matrix, 1e-10, 1.0)
+            entropy = -np.sum(att_weights_safe * np.log(att_weights_safe))
+            
+            # Нормализуем энтропию
+            max_entropy = np.log(len(att_weights_safe))
+            normalized_entropy = entropy / max_entropy if max_entropy > 0 else 0
+            
+            # Focus = 1 - normalized_entropy
+            focus = 1.0 - normalized_entropy
+            attention_quality['focus_score'] += focus
             
             # 5. Согласованность alignment
             consistency = self._calculate_alignment_consistency(att_matrix)
@@ -282,12 +290,11 @@ class AdvancedQualityController:
             att_weights = attention_matrix[t_out]
             
             # Вычисляем концентрацию как обратное к энтропии
-            # Убираем нули для избежания log(0)
-            att_weights_clean = att_weights + 1e-10
-            entropy = -np.sum(att_weights_clean * np.log(att_weights_clean))
+            att_weights_safe = np.clip(att_weights, 1e-10, 1.0)
+            entropy = -np.sum(att_weights_safe * np.log(att_weights_safe))
             
             # Нормализуем энтропию
-            max_entropy = np.log(len(att_weights))
+            max_entropy = np.log(len(att_weights_safe))
             normalized_entropy = entropy / max_entropy if max_entropy > 0 else 0
             
             # Focus = 1 - normalized_entropy
@@ -305,12 +312,12 @@ class AdvancedQualityController:
         for t_out in range(attention_matrix.shape[0]):
             att_weights = attention_matrix[t_out]
             
-            # Убираем нули
-            att_weights_clean = att_weights + 1e-10
-            entropy = -np.sum(att_weights_clean * np.log(att_weights_clean))
+            # Маскируем отрицательные и нулевые значения
+            att_weights_safe = np.clip(att_weights, 1e-10, 1.0)
+            entropy = -np.sum(att_weights_safe * np.log(att_weights_safe))
             
             # Нормализуем
-            max_entropy = np.log(len(att_weights))
+            max_entropy = np.log(len(att_weights_safe))
             normalized_entropy = entropy / max_entropy if max_entropy > 0 else 0
             
             entropies.append(normalized_entropy)
@@ -347,22 +354,24 @@ class AdvancedQualityController:
         """
         Вычисляет дрейф attention (нежелательные скачки).
         """
-        peak_positions = np.argmax(attention_matrix, axis=1)
+        peak_positions = np.argmax(attention_matrix, axis=1)  # (T_out,)
         
         if len(peak_positions) < 2:
             return 0.0
         
-        # Вычисляем среднее отклонение от ожидаемого прогресса
-        expected_step = len(peak_positions[0]) / len(peak_positions)
-        drifts = []
+        # Ожидаемый средний шаг между пиками
+        expected_step = (peak_positions[-1] - peak_positions[0]) / max(1, (len(peak_positions) - 1))
+        if expected_step == 0:
+            return 0.0
         
+        drifts = []
         for i in range(1, len(peak_positions)):
             expected_pos = peak_positions[0] + i * expected_step
             actual_pos = peak_positions[i]
-            drift = abs(actual_pos - expected_pos) / len(peak_positions[0])
+            drift = abs(actual_pos - expected_pos) / max(1, attention_matrix.shape[2] if attention_matrix.ndim == 3 else attention_matrix.shape[1])
             drifts.append(drift)
         
-        return np.mean(drifts)
+        return float(np.mean(drifts)) if drifts else 0.0
     
     def _analyze_gate_quality(self, gate_outputs: torch.Tensor) -> Dict[str, Any]:
         """

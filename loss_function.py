@@ -220,8 +220,16 @@ class Tacotron2Loss(nn.Module):
             # Вторичный декодер outputs: mel_out2, mel_post2, gate2, align2
             mel_out2 = model_output[4]
             mel_out_postnet2 = model_output[5]
-            # MSE между postnet выходами
-            ddc_loss = F.mse_loss(mel_out_postnet, mel_out_postnet2.detach())
+            # 🔥 ИСПРАВЛЕНИЕ: Проверяем размерности перед вычислением DDC loss
+            if mel_out_postnet.shape == mel_out_postnet2.shape:
+                ddc_loss = F.mse_loss(mel_out_postnet, mel_out_postnet2.detach())
+            else:
+                # Если размеры не совпадают, обрезаем до минимального
+                min_time = min(mel_out_postnet.size(2), mel_out_postnet2.size(2))
+                mel_out_postnet_trimmed = mel_out_postnet[:, :, :min_time]
+                mel_out_postnet2_trimmed = mel_out_postnet2[:, :, :min_time]
+                ddc_loss = F.mse_loss(mel_out_postnet_trimmed, mel_out_postnet2_trimmed.detach())
+                print(f"⚠️ DDC loss: размеры не совпадают, обрезаем до {min_time} временных шагов")
 
         # Добавляем DDC к composite mel loss
         combined_mel_loss = combined_mel_loss + self.ddc_consistency_weight * ddc_loss

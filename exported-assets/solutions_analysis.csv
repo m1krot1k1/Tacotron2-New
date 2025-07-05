@@ -1,0 +1,9 @@
+Проблема,Приоритет,Решение,Время_реализации
+tuple object has no attribute device,1,Исправить DataLoader collate_fn для правильной обработки device transfer,2-4 часа
+cmaes module missing,1,Установить cmaes: pip install cmaes,10 минут
+MLflow parameter overwrite,2,Использовать nested runs в MLflow для каждого trial,1-2 часа
+SQLite database locked,1,Настроить SQLite WAL режим и timeout,30 минут
+Tensor shape mismatch,1,Проверить размерности тензоров в forward pass,2-6 часов
+CmaEsSampler warnings,3,Настроить warn_independent_sampling=False,15 минут
+Memory leaks in trials,2,Добавить принудительную очистку памяти gc.collect(),1 час
+DataLoader collate_fn errors,1,Обновить collate_fn для правильной обработки tuple,1-3 часа

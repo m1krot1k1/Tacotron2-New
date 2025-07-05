@@ -445,9 +445,49 @@ class Decoder(nn.Module):
         """
         # (B, n_mel_channels, T_out) -> (B, T_out, n_mel_channels)
         decoder_inputs = decoder_inputs.transpose(1, 2)
-        decoder_inputs = decoder_inputs.view(
-            decoder_inputs.size(0),
-            int(decoder_inputs.size(1)/self.n_frames_per_step), -1)
+        
+        # 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Безопасное изменение размера с проверкой
+        batch_size = decoder_inputs.size(0)
+        time_steps = decoder_inputs.size(1)
+        mel_channels = decoder_inputs.size(2)
+        
+        # Проверяем, что временные шаги делятся на n_frames_per_step
+        if time_steps % self.n_frames_per_step != 0:
+            # Обрезаем до ближайшего кратного числа
+            new_time_steps = (time_steps // self.n_frames_per_step) * self.n_frames_per_step
+            decoder_inputs = decoder_inputs[:, :new_time_steps, :]
+            time_steps = new_time_steps
+        
+        # Безопасное изменение размера
+        target_time_steps = time_steps // self.n_frames_per_step
+        target_channels = mel_channels * self.n_frames_per_step
+        
+        try:
+            # Используем reshape вместо view для лучшей совместимости
+            decoder_inputs = decoder_inputs.reshape(
+                batch_size, target_time_steps, target_channels)
+        except RuntimeError as e:
+            print(f"⚠️ Ошибка reshape в parse_decoder_inputs: {e}")
+            print(f"   Входные размеры: {decoder_inputs.shape}")
+            print(f"   Целевые размеры: ({batch_size}, {target_time_steps}, {target_channels})")
+            
+            # Fallback: обрезаем или дополняем тензор до нужного размера
+            current_elements = decoder_inputs.numel()
+            target_elements = batch_size * target_time_steps * target_channels
+            
+            if current_elements > target_elements:
+                # Обрезаем лишние элементы
+                decoder_inputs = decoder_inputs.flatten()[:target_elements]
+            elif current_elements < target_elements:
+                # Дополняем нулями
+                padding_size = target_elements - current_elements
+                padding = torch.zeros(padding_size, device=decoder_inputs.device, dtype=decoder_inputs.dtype)
+                decoder_inputs = torch.cat([decoder_inputs.flatten(), padding])
+            else:
+                decoder_inputs = decoder_inputs.flatten()
+                
+            decoder_inputs = decoder_inputs.reshape(batch_size, target_time_steps, target_channels)
+            
         # (B, T_out, n_mel_channels) -> (T_out, B, n_mel_channels)
         decoder_inputs = decoder_inputs.transpose(0, 1)
         return decoder_inputs

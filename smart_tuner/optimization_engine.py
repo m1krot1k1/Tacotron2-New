@@ -9,9 +9,16 @@ import yaml
 import logging
 import numpy as np
 import math
-from typing import Dict, Any, Optional, List
+import sqlite3
+import time
+import random
+import os
+from typing import Dict, Any, Optional, List, Tuple
 from pathlib import Path
 from datetime import datetime
+from optuna.samplers import CmaEsSampler, RandomSampler, TPESampler
+from sqlalchemy import create_engine, pool
+import torch
 
 class OptimizationEngine:
     """
@@ -21,7 +28,7 @@ class OptimizationEngine:
     
     def __init__(self, config_path: str = "smart_tuner/config.yaml"):
         """
-        Инициализация движка оптимизации
+        Инициализация движка оптимизации с улучшенной обработкой SQLite
         
         Args:
             config_path: Путь к файлу конфигурации
@@ -44,6 +51,8 @@ class OptimizationEngine:
         optuna.logging.set_verbosity(optuna.logging.WARNING)
         
         self.logger.info("TTS-оптимизированный OptimizationEngine инициализирован")
+        
+        self.setup_sqlite_wal()
         
     def _load_config(self) -> Dict[str, Any]:
         """Загрузка конфигурации из YAML файла"""
@@ -150,82 +159,84 @@ class OptimizationEngine:
             
         return logger
         
-    def create_study(self, study_name: str = None) -> optuna.Study:
+    def setup_sqlite_wal(self):
         """
-        Создание нового исследования Optuna с TTS-специфичными настройками
-        
-        Args:
-            study_name: Имя исследования (по умолчанию генерируется автоматически)
-            
-        Returns:
-            Объект исследования Optuna
+        Настройка SQLite для работы в WAL режиме с retry механизмом
         """
-        if study_name is None:
-            study_name = f"tacotron2_tts_optimization_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        storage_path = "smart_tuner/optuna_studies.db"
+        
+        # Создаем директорию если не существует
+        os.makedirs(os.path.dirname(storage_path), exist_ok=True)
+        
+        conn = None
+        try:
+            conn = sqlite3.connect(storage_path, timeout=30)
             
-        # Настройки из конфигурации
-        optimization_config = self.config.get('optimization', {})
-        direction = optimization_config.get('direction', 'minimize')
+            # Включаем WAL режим для лучшей конкурентности
+            conn.execute('PRAGMA journal_mode=WAL;')
+            conn.execute('PRAGMA synchronous=NORMAL;')
+            conn.execute('PRAGMA cache_size=10000;')
+            conn.execute('PRAGMA temp_store=MEMORY;')
+            conn.execute('PRAGMA mmap_size=268435456;')  # 256MB
+            conn.execute('PRAGMA busy_timeout=30000;')   # 30 секунд
+            
+            conn.commit()
+            print("✅ SQLite настроен в WAL режиме")
+            
+        except sqlite3.Error as e:
+            print(f"❌ Ошибка настройки SQLite: {e}")
+        finally:
+            if conn:
+                conn.close()
+                
+    def create_study_with_retry(self, study_name: str = None, max_retries: int = 5) -> optuna.Study:
+        """
+        Создание Optuna study с retry механизмом
+        """
+        storage_url = f"sqlite:///smart_tuner/optuna_studies.db"
         
-        # Создание базы данных для хранения результатов с исправлением блокировки
-        storage_path = Path("smart_tuner/optuna_studies.db")
-        storage_url = f"sqlite:///{storage_path}?timeout=300&check_same_thread=False"
-        
-        sampler_type = optimization_config.get('sampler', 'tpe')
-        if sampler_type == 'bayesian':
-            try:
-                sampler = optuna.samplers.CmaEsSampler()
-                self.logger.info("Используется Bayesian (CMA-ES) sampler")
-            except Exception:
-                sampler = optuna.samplers.TPESampler(multivariate=True, seed=42)
-                self.logger.warning("CMA-ES недоступен, fallback на TPE")
-        else:
-            sampler = optuna.samplers.TPESampler(
-                n_startup_trials=20,
-                n_ei_candidates=48,
-                multivariate=True,
-                seed=42
-            )
-        
-        # TTS-адаптированный pruner
-        early_pruning_disabled_epochs = self.tts_config.get('early_pruning_disabled_epochs', 100)
-        pruner = optuna.pruners.MedianPruner(
-            n_startup_trials=10,      # Увеличено для TTS
-            n_warmup_steps=early_pruning_disabled_epochs,  # Не обрезать первые 100 эпох
-            interval_steps=20         # Проверять каждые 20 эпох
-        )
-        
-        # Создание исследования с retry логикой для устранения блокировки SQLite
-        max_retries = 3
         for attempt in range(max_retries):
             try:
+                # Создаем engine с connection pooling
+                engine = create_engine(
+                    storage_url,
+                    poolclass=pool.NullPool,  # Отключаем pooling
+                    connect_args={
+                        "timeout": 30,
+                        "check_same_thread": False,
+                        "isolation_level": None  # Autocommit режим
+                    }
+                )
+                
+                # Настраиваем sampler с отключенными предупреждениями
+                sampler = CmaEsSampler(
+                    warn_independent_sampling=False,
+                    n_startup_trials=5
+                )
+                
                 self.study = optuna.create_study(
                     study_name=study_name,
                     storage=storage_url,
-                    direction=direction,
-                    sampler=sampler,
-                    pruner=pruner,
-                    load_if_exists=True
+                    direction="minimize",
+                    load_if_exists=True,
+                    sampler=sampler
                 )
                 
-                self.logger.info(f"TTS исследование создано: {study_name}")
-                self.logger.info(f"Storage: {storage_url}")
-                self.logger.info(f"Direction: {direction}")
-                self.logger.info(f"Early pruning отключен для первых {early_pruning_disabled_epochs} эпох")
-                
+                print(f"✅ Optuna study создан: {study_name}")
                 return self.study
                 
             except Exception as e:
                 if "database is locked" in str(e) and attempt < max_retries - 1:
-                    import time
-                    wait_time = 2 ** attempt  # Exponential backoff
-                    self.logger.warning(f"База данных заблокирована, попытка {attempt + 1}/{max_retries}, ожидание {wait_time}с")
+                    wait_time = (2 ** attempt) + random.uniform(0, 1)
+                    print(f"⚠️ База заблокирована, ожидание {wait_time:.1f}с...")
                     time.sleep(wait_time)
                     continue
                 else:
-                    self.logger.error(f"Ошибка создания TTS исследования: {e}")
+                    print(f"❌ Ошибка создания study: {e}")
                     raise
-    
+                    
+        raise Exception("Не удалось создать study после всех попыток")
+        
     def suggest_hyperparameters(self, trial: optuna.Trial) -> Dict[str, Any]:
         """
         Предлагает TTS-специфичные гиперпараметры для trial
@@ -518,7 +529,7 @@ class OptimizationEngine:
             Результаты оптимизации
         """
         if self.study is None:
-            self.create_study()
+            self.create_study_with_retry()
         
         if n_trials is None:
             n_trials = self.config.get('optimization', {}).get('n_trials', 20)

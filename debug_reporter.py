@@ -568,20 +568,36 @@ class DebugReporter:
             entropies = []
             for i in range(attention_matrix.shape[0]):
                 attention_step = attention_matrix[i] + 1e-8
-                entropy = -np.sum(attention_step * np.log(attention_step + 1e-8))
+                # 🔥 ИСПРАВЛЕНИЕ: Проверяем на нули и нормализуем
+                attention_step = attention_step / (attention_step.sum() + 1e-8)
+                # Маскируем нули для избежания log(0)
+                mask = attention_step > 1e-8
+                if mask.any():
+                    entropy = -np.sum(attention_step[mask] * np.log(attention_step[mask]))
+                else:
+                    entropy = 0.0
                 entropies.append(entropy)
             
             max_entropy = np.log(attention_matrix.shape[1])
-            avg_entropy = np.mean(entropies)
-            return 1.0 - (avg_entropy / max_entropy)
+            avg_entropy = np.mean(entropies) if entropies else 0.0
+            return 1.0 - (avg_entropy / max_entropy) if max_entropy > 0 else 0.0
         except:
             return 0.0
     
     def _calculate_entropy(self, attention_matrix) -> float:
         """Расчет энтропии"""
         try:
+            # 🔥 ИСПРАВЛЕНИЕ: Нормализуем матрицу и избегаем log(0)
             attention_matrix = attention_matrix + 1e-8
-            entropy = -np.sum(attention_matrix * np.log(attention_matrix + 1e-8))
+            attention_matrix = attention_matrix / (attention_matrix.sum() + 1e-8)
+            
+            # Маскируем очень маленькие значения
+            mask = attention_matrix > 1e-8
+            if mask.any():
+                entropy = -np.sum(attention_matrix[mask] * np.log(attention_matrix[mask]))
+            else:
+                entropy = 0.0
+                
             max_entropy = np.log(attention_matrix.size)
             return entropy / max_entropy if max_entropy > 0 else 0.0
         except:

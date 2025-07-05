@@ -742,25 +742,27 @@ def train(
         "dataset.val_size": len(valset),
     }
 
-    # Логируем только неизменяемые параметры
-    try:
-        mlflow.log_params(model_params)
-    except Exception as e:
-        print(f"📊 Параметры уже залогированы в MLflow: {e}")
-        # Это нормально для последующих trials - параметры уже есть
-
-    # Логируем начальные значения изменяемых параметров как отдельные параметры
-    # (только если они еще не были залогированы в этом run)
-    try:
-        mlflow.log_param("hparams.batch_size_init", hparams.batch_size)
-        mlflow.log_param("hparams.learning_rate_init", hparams.learning_rate)
-    except Exception as e:
-        # Если параметры уже залогированы, игнорируем ошибку
-        print(f"📊 Начальные параметры уже залогированы: {e}")
-
-        print(
-            f"📊 Параметры модели залогированы в MLflow: {model_params['model.total_params']} параметров"
-        )
+    # Создаем nested run для каждого trial
+    if smart_tuner_trial is not None:
+        # Для Smart Tuner создаем nested run
+        trial_run_name = f"trial_{smart_tuner_trial.number}"
+        with mlflow.start_run(nested=True, run_name=trial_run_name):
+            try:
+                mlflow.log_params(model_params)
+                mlflow.log_param("hparams.batch_size_init", hparams.batch_size)
+                mlflow.log_param("hparams.learning_rate_init", hparams.learning_rate)
+                print(f"📊 Параметры trial {smart_tuner_trial.number} залогированы в MLflow")
+            except Exception as e:
+                print(f"📊 Ошибка логирования параметров trial: {e}")
+    else:
+        # Для обычного запуска
+        try:
+            mlflow.log_params(model_params)
+            mlflow.log_param("hparams.batch_size_init", hparams.batch_size)
+            mlflow.log_param("hparams.learning_rate_init", hparams.learning_rate)
+            print(f"📊 Параметры модели залогированы в MLflow: {model_params['model.total_params']} параметров")
+        except Exception as e:
+            print(f"📊 Ошибка логирования параметров: {e}")
 
     # --- Intelligent Epoch Optimizer ---
     optimizer_epochs = None
@@ -887,43 +889,45 @@ def train(
                                 loss_taco, loss_gate, loss_atten, loss_emb = criterion(y_pred, y)
                             except Exception as e:
                                 print(f"⚠️ Ошибка criterion: {e}")
-                                device = x.device
-                                loss_taco = torch.tensor(0.0, device=device)
-                                loss_gate = torch.tensor(0.0, device=device)
-                                loss_atten = torch.tensor(0.0, device=device)
-                                loss_emb = torch.tensor(0.0, device=device)
+                                # Безопасное получение device из x (tuple)
+                                device = x[0].device if isinstance(x, tuple) and len(x) > 0 else 'cuda'
+                                loss_taco = torch.tensor(0.0, device=device, requires_grad=True)
+                                loss_gate = torch.tensor(0.0, device=device, requires_grad=True)
+                                loss_atten = torch.tensor(0.0, device=device, requires_grad=True)
+                                loss_emb = torch.tensor(0.0, device=device, requires_grad=True)
                         else:
                             # Если y_pred None, создаем нулевые loss
-                            device = x.device
-                            loss_taco = torch.tensor(0.0, device=device)
-                            loss_gate = torch.tensor(0.0, device=device)
-                            loss_atten = torch.tensor(0.0, device=device)
-                            loss_emb = torch.tensor(0.0, device=device)
+                            # Безопасное получение device из x (tuple)
+                            device = x[0].device if isinstance(x, tuple) and len(x) > 0 else 'cuda'
+                            loss_taco = torch.tensor(0.0, device=device, requires_grad=True)
+                            loss_gate = torch.tensor(0.0, device=device, requires_grad=True)
+                            loss_atten = torch.tensor(0.0, device=device, requires_grad=True)
+                            loss_emb = torch.tensor(0.0, device=device, requires_grad=True)
                         
                         # Безопасное получение device
                         if y_pred is not None and len(y_pred) > 1 and y_pred[1] is not None:
                             device = y_pred[1].device  # mel_outputs всегда тензор
                         else:
-                            device = x.device
+                            device = x[0].device if isinstance(x, tuple) and len(x) > 0 else 'cuda'
                         try:
                             loss_guide = (
                                 guide_loss(y_pred)
                                 if hparams.use_guided_attn and guide_loss is not None and y_pred is not None
-                                else torch.tensor(0.0, device=device)
+                                else torch.tensor(0.0, device=device, requires_grad=True)
                             )
                         except Exception as e:
                             print(f"⚠️ Ошибка guide_loss: {e}")
-                            loss_guide = torch.tensor(0.0, device=device)
+                            loss_guide = torch.tensor(0.0, device=device, requires_grad=True)
                         
                         try:
                             loss_mmi = (
                                 mmi_loss(y_pred[1], y[0])
                                 if hparams.use_mmi and mmi_loss is not None and y_pred is not None and y_pred[1] is not None
-                                else torch.tensor(0.0, device=device)
+                                else torch.tensor(0.0, device=device, requires_grad=True)
                             )
                         except Exception as e:
                             print(f"⚠️ Ошибка mmi_loss: {e}")
-                            loss_mmi = torch.tensor(0.0, device=device)
+                            loss_mmi = torch.tensor(0.0, device=device, requires_grad=True)
                         try:
                             loss = (
                                 0.4 * loss_taco +
@@ -935,7 +939,7 @@ def train(
                             )
                         except Exception as e:
                             print(f"⚠️ Ошибка вычисления loss: {e}")
-                            loss = torch.tensor(0.0, device=device)
+                            loss = torch.tensor(0.0, device=device, requires_grad=True)
                 else:
                     try:
                         y_pred = model(x)
@@ -948,42 +952,44 @@ def train(
                             loss_taco, loss_gate, loss_atten, loss_emb = criterion(y_pred, y)
                         except Exception as e:
                             print(f"⚠️ Ошибка criterion: {e}")
-                            device = x.device
-                            loss_taco = torch.tensor(0.0, device=device)
-                            loss_gate = torch.tensor(0.0, device=device)
-                            loss_atten = torch.tensor(0.0, device=device)
-                            loss_emb = torch.tensor(0.0, device=device)
+                            # Безопасное получение device из x (tuple)
+                            device = x[0].device if isinstance(x, tuple) and len(x) > 0 else 'cuda'
+                            loss_taco = torch.tensor(0.0, device=device, requires_grad=True)
+                            loss_gate = torch.tensor(0.0, device=device, requires_grad=True)
+                            loss_atten = torch.tensor(0.0, device=device, requires_grad=True)
+                            loss_emb = torch.tensor(0.0, device=device, requires_grad=True)
                     else:
                         # Если y_pred None, создаем нулевые loss
-                        device = x.device
-                        loss_taco = torch.tensor(0.0, device=device)
-                        loss_gate = torch.tensor(0.0, device=device)
-                        loss_atten = torch.tensor(0.0, device=device)
-                        loss_emb = torch.tensor(0.0, device=device)
+                        # Безопасное получение device из x (tuple)
+                        device = x[0].device if isinstance(x, tuple) and len(x) > 0 else 'cuda'
+                        loss_taco = torch.tensor(0.0, device=device, requires_grad=True)
+                        loss_gate = torch.tensor(0.0, device=device, requires_grad=True)
+                        loss_atten = torch.tensor(0.0, device=device, requires_grad=True)
+                        loss_emb = torch.tensor(0.0, device=device, requires_grad=True)
                     # Безопасное получение device
                     if y_pred is not None and len(y_pred) > 1 and y_pred[1] is not None:
                         device = y_pred[1].device  # mel_outputs всегда тензор
                     else:
-                        device = x.device
+                        device = x[0].device if isinstance(x, tuple) and len(x) > 0 else 'cuda'
                     try:
                         loss_guide = (
                             guide_loss(y_pred)
                             if hparams.use_guided_attn and guide_loss is not None and y_pred is not None
-                            else torch.tensor(0.0, device=device)
+                            else torch.tensor(0.0, device=device, requires_grad=True)
                         )
                     except Exception as e:
                         print(f"⚠️ Ошибка guide_loss: {e}")
-                        loss_guide = torch.tensor(0.0, device=device)
+                        loss_guide = torch.tensor(0.0, device=device, requires_grad=True)
                     
                     try:
                         loss_mmi = (
                             mmi_loss(y_pred[1], y[0])
                             if hparams.use_mmi and mmi_loss is not None and y_pred is not None and y_pred[1] is not None
-                            else torch.tensor(0.0, device=device)
+                            else torch.tensor(0.0, device=device, requires_grad=True)
                         )
                     except Exception as e:
                         print(f"⚠️ Ошибка mmi_loss: {e}")
-                        loss_mmi = torch.tensor(0.0, device=device)
+                        loss_mmi = torch.tensor(0.0, device=device, requires_grad=True)
                     try:
                         loss = (
                             0.4 * loss_taco +
@@ -995,7 +1001,7 @@ def train(
                         )
                     except Exception as e:
                         print(f"⚠️ Ошибка вычисления loss: {e}")
-                        loss = torch.tensor(0.0, device=device)
+                        loss = torch.tensor(0.0, device=device, requires_grad=True)
 
                 if hparams.distributed_run:
                     reduced_loss = reduce_tensor(loss.data, n_gpus).item() if loss is not None else 0.0
@@ -1502,7 +1508,8 @@ def train(
                                                 if len(y_pred) >= 4:
                                                     alignments = y_pred[3] if len(y_pred) == 4 else y_pred[4]
                                                     if alignments is not None:
-                                                        guided_loss_result = guide_loss(alignments)
+                                                        # 🔥 ИСПРАВЛЕНИЕ: Используем правильный формат для guided loss
+                                                        guided_loss_result = guide_loss(y_pred)  # Передаем весь y_pred
                                                         # Обрабатываем разные типы возвращаемых значений
                                                         if isinstance(guided_loss_result, tuple):
                                                             guided_loss_val = guided_loss_result[0]
@@ -1519,7 +1526,10 @@ def train(
                                                 if isinstance(y_pred, (list, tuple)) and len(y_pred) > 1:
                                                     mel_outputs = y_pred[1]
                                                     if hasattr(mel_outputs, 'shape'):  # Проверяем что это тензор
-                                                        mmi_loss_val = mmi_loss(mel_outputs, y[0])
+                                                        # 🔥 ИСПРАВЛЕНИЕ: Приводим типы данных к одному формату
+                                                        mel_outputs = mel_outputs.float()  # Приводим к float32
+                                                        mel_target = y[0].float()  # Приводим к float32
+                                                        mmi_loss_val = mmi_loss(mel_outputs, mel_target)
                                                         loss_components['mmi_loss'] = mmi_loss_val.item()
                                             except Exception as e:
                                                 print(f"⚠️ Ошибка вычисления MMI loss для debug: {e}")
