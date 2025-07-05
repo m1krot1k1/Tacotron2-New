@@ -116,7 +116,7 @@ def create_hparams(hparams_string=None, verbose=False):
         # Optimization Hyperparameters #
         ################################
         use_saved_learning_rate=False,
-        learning_rate=5e-6,                 # уменьшено с 1e-5 согласно рекомендациям
+        learning_rate=1e-4,                 # 🔧 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: установлено 1e-4 согласно плану
         learning_rate_decay=0.95,           # 🔧 Более консервативное снижение
         learning_rate_decay_patience=3000,  # 🔧 Оптимальное терпение для TTS
         learning_rate_min=5e-7,             # 🔧 Минимальный learning rate

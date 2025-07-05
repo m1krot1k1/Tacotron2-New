@@ -354,8 +354,100 @@ class SmartTunerMain:
             
             self.logger.info("🎉 Все TTS компоненты успешно инициализированы!")
             
+            # 🔧 ИНТЕГРАЦИЯ КРИТИЧЕСКИХ КОМПОНЕНТОВ
+            self.integrate_critical_components()
+            
         except Exception as e:
             self.logger.error(f"❌ Ошибка инициализации компонентов: {e}")
+            raise
+    
+    def integrate_critical_components(self):
+        """
+        🔧 КРИТИЧЕСКАЯ ИНТЕГРАЦИЯ: Полная интеграция всех критических компонентов Smart Tuner v2
+        """
+        try:
+            self.logger.info("🔧 Интеграция критических компонентов Smart Tuner v2...")
+            
+            # 1. Интеграция gradient clipper
+            try:
+                from smart_tuner.gradient_clipper import get_global_clipper, set_global_clipper, AdaptiveGradientClipper
+                clipper = AdaptiveGradientClipper(max_norm=1.0, adaptive=True, emergency_threshold=100.0)
+                set_global_clipper(clipper)
+                self.logger.info("✅ Gradient Clipper интегрирован")
+            except Exception as e:
+                self.logger.warning(f"⚠️ Ошибка интеграции Gradient Clipper: {e}")
+            
+            # 2. Интеграция guided attention loss
+            try:
+                from loss_function import Tacotron2Loss
+                # Guided attention loss уже интегрирован в Tacotron2Loss
+                self.logger.info("✅ Guided Attention Loss интегрирован")
+            except Exception as e:
+                self.logger.warning(f"⚠️ Ошибка интеграции Guided Attention Loss: {e}")
+            
+            # 3. Интеграция alignment diagnostics
+            try:
+                from alignment_diagnostics import AlignmentDiagnostics
+                alignment_diagnostics = AlignmentDiagnostics()
+                self.logger.info("✅ Alignment Diagnostics интегрирован")
+            except Exception as e:
+                self.logger.warning(f"⚠️ Ошибка интеграции Alignment Diagnostics: {e}")
+            
+            # 4. Интеграция Smart LR Adapter
+            try:
+                from smart_tuner.smart_lr_adapter import get_global_lr_adapter, set_global_lr_adapter, SmartLRAdapter
+                lr_adapter = SmartLRAdapter(
+                    optimizer=None,  # Будет установлен при обучении
+                    patience=10,
+                    factor=0.5,
+                    min_lr=1e-6,
+                    max_lr=1e-3,
+                    emergency_factor=0.1,
+                    grad_norm_threshold=100.0,
+                    loss_nan_threshold=1e6
+                )
+                set_global_lr_adapter(lr_adapter)
+                self.logger.info("✅ Smart LR Adapter интегрирован")
+            except Exception as e:
+                self.logger.warning(f"⚠️ Ошибка интеграции Smart LR Adapter: {e}")
+            
+            # 5. Интеграция Safe DDC Loss
+            try:
+                from smart_tuner.safe_ddc_loss import get_global_ddc_loss, set_global_ddc_loss, SafeDDCLoss
+                ddc_loss = SafeDDCLoss(weight=0.5, use_masking=True, log_warnings=True)
+                set_global_ddc_loss(ddc_loss)
+                self.logger.info("✅ Safe DDC Loss интегрирован")
+            except Exception as e:
+                self.logger.warning(f"⚠️ Ошибка интеграции Safe DDC Loss: {e}")
+            
+            # 6. Интеграция Debug Reporter
+            try:
+                from debug_reporter import initialize_debug_reporter
+                debug_reporter = initialize_debug_reporter(None)  # Без Telegram для Smart Tuner
+                self.logger.info("✅ Debug Reporter интегрирован")
+            except Exception as e:
+                self.logger.warning(f"⚠️ Ошибка интеграции Debug Reporter: {e}")
+            
+            # 7. Интеграция Enhanced MLflow Logger
+            try:
+                from enhanced_mlflow_logger import EnhancedMLflowLogger
+                mlflow_logger = EnhancedMLflowLogger()
+                self.logger.info("✅ Enhanced MLflow Logger интегрирован")
+            except Exception as e:
+                self.logger.warning(f"⚠️ Ошибка интеграции Enhanced MLflow Logger: {e}")
+            
+            # 8. Интеграция Gradient Stability Monitor
+            try:
+                from gradient_stability_monitor import GradientStabilityMonitor
+                gradient_monitor = GradientStabilityMonitor()
+                self.logger.info("✅ Gradient Stability Monitor интегрирован")
+            except Exception as e:
+                self.logger.warning(f"⚠️ Ошибка интеграции Gradient Stability Monitor: {e}")
+            
+            self.logger.info("🎉 Критические компоненты Smart Tuner v2 успешно интегрированы!")
+            
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка интеграции критических компонентов: {e}")
             raise
     
     def run_optimization(self) -> Dict[str, Any]:

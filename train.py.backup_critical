@@ -6,11 +6,6 @@ import random
 import numpy as np
 import copy
 import sys
-import logging
-
-# Настройка логирования
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
 
 import torch
 from distributed import apply_gradient_allreduce
@@ -897,16 +892,6 @@ def train(
             print(f"⚠️ Не удалось инициализировать Integration Manager: {e}")
 
     gradient_monitor = GradientStabilityMonitor()
-    
-    # 🔧 ИНТЕГРАЦИЯ ALIGNMENT DIAGNOSTICS
-    alignment_diagnostics = None
-    if is_main_node:
-        try:
-            from alignment_diagnostics import AlignmentDiagnostics
-            alignment_diagnostics = AlignmentDiagnostics()
-            print("🎯 Alignment Diagnostics активирован")
-        except Exception as e:
-            print(f"⚠️ Не удалось инициализировать Alignment Diagnostics: {e}")
     restart_attempts = 0
     max_restart_attempts = 3
     safe_hparams_history = []
@@ -1082,12 +1067,11 @@ def train(
                             print(f"⚠️ Ошибка mmi_loss: {e}")
                             loss_mmi = torch.tensor(0.0, device=device, requires_grad=True)
                         try:
-                            guide_loss_weight = getattr(hparams, 'guide_loss_weight', 2.5)
                             loss = (
                                 0.4 * loss_taco +
                                 0.3 * loss_atten +
                                 0.3 * loss_gate +
-                                guide_loss_weight * loss_guide +
+                                loss_guide +
                                 loss_mmi +
                                 loss_emb
                             )
@@ -1141,61 +1125,6 @@ def train(
                             attention_diagonality = 0.0
                             gate_accuracy = 0.0
                     
-                    # 🔧 ИНТЕГРАЦИЯ ALIGNMENT DIAGNOSTICS
-                    if alignment_diagnostics is not None and y_pred is not None and len(y_pred) >= 4 and y_pred[3] is not None:
-                        try:
-                            # Анализируем alignment каждые 100 шагов
-                            if iteration % 100 == 0:
-                                attention_matrix = y_pred[3].detach().cpu().numpy()
-                                if attention_matrix.ndim == 3:  # [batch, time, mel_time]
-                                    # Берем среднее по batch
-                                    attention_matrix = attention_matrix.mean(axis=0)
-                                
-                                # Выполняем диагностику alignment
-                                alignment_metrics = alignment_diagnostics.analyze_alignment_matrix(
-                                    attention_matrix, 
-                                    step=iteration,
-                                    text_length=attention_matrix.shape[1],
-                                    audio_length=attention_matrix.shape[0]
-                                )
-                                
-                                # Логируем критические проблемы
-                                if alignment_metrics['overall_score'] < 0.3:
-                                    logger.warning(f"🚨 КРИТИЧЕСКОЕ качество alignment: {alignment_metrics['overall_score']:.3f}")
-                                    if debug_reporter:
-                                        debug_reporter.add_warning(f"Poor alignment quality: {alignment_metrics['overall_score']:.3f}")
-                                
-                                # Логируем в MLflow
-                                if MLFLOW_AVAILABLE:
-                                    try:
-                                        mlflow.log_metrics({
-                                            "alignment.overall_score": alignment_metrics['overall_score'],
-                                            "alignment.diagonal_score": alignment_metrics['diagnostics']['diagonal_score'],
-                                            "alignment.monotonic_score": alignment_metrics['diagnostics']['monotonic_score'],
-                                            "alignment.focus_score": alignment_metrics['diagnostics']['focus_score']
-                                        }, step=iteration)
-                                    except Exception as e:
-                                        print(f"⚠️ Ошибка логирования alignment метрик: {e}")
-                                
-                                # Отправляем Telegram уведомление при критических проблемах
-                                if telegram_monitor and alignment_metrics['overall_score'] < 0.2:
-                                    try:
-                                        critical_message = f"🚨 **КРИТИЧЕСКАЯ ПРОБЛЕМА ALIGNMENT!**\n\n"
-                                        critical_message += f"📊 **Общий score:** {alignment_metrics['overall_score']:.3f}\n"
-                                        critical_message += f"🎯 **Диагональность:** {alignment_metrics['diagnostics']['diagonal_score']:.3f}\n"
-                                        critical_message += f"📈 **Монотонность:** {alignment_metrics['diagnostics']['monotonic_score']:.3f}\n"
-                                        critical_message += f"🔍 **Фокусировка:** {alignment_metrics['diagnostics']['focus_score']:.3f}\n"
-                                        critical_message += f"\n🛠️ **Рекомендации:**\n"
-                                        for rec in alignment_metrics['recommendations'][:3]:
-                                            critical_message += f"  • {rec}\n"
-                                        
-                                        telegram_monitor._send_text_message(critical_message)
-                                    except Exception as e:
-                                        print(f"⚠️ Ошибка отправки Telegram уведомления: {e}")
-                                        
-                        except Exception as e:
-                            print(f"⚠️ Ошибка alignment diagnostics: {e}")
-                    
                     # total loss
                     if y_pred is not None:
                         try:
@@ -1241,12 +1170,11 @@ def train(
                         print(f"⚠️ Ошибка mmi_loss: {e}")
                         loss_mmi = torch.tensor(0.0, device=device, requires_grad=True)
                     try:
-                        guide_loss_weight = getattr(hparams, 'guide_loss_weight', 2.5)
                         loss = (
                             0.4 * loss_taco +
                             0.3 * loss_atten +
                             0.3 * loss_gate +
-                            guide_loss_weight * loss_guide +
+                            loss_guide +
                             loss_mmi +
                             loss_emb
                         )
@@ -1295,24 +1223,36 @@ def train(
                         print("⚠️ Предупреждение: loss is None, пропускаем backward pass")
 
                 if loss is not None:
-                    # 🔧 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ПРАВИЛЬНЫЙ GRADIENT CLIPPING
-                    # Применяем строгое gradient clipping с max_norm=1.0
-                    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                    
-                    # Критические алерты для высоких градиентов
-                    if grad_norm > 10.0:
-                        logger.warning(f"🚨 ВЫСОКАЯ норма градиентов: {grad_norm:.2f}")
-                        if debug_reporter:
-                            debug_reporter.add_warning(f"High gradient norm: {grad_norm:.2f}")
-                    
-                    if grad_norm > 100.0:
-                        logger.error(f"🚨 КРИТИЧЕСКАЯ норма градиентов: {grad_norm:.2f}")
-                        if debug_reporter:
-                            debug_reporter.add_warning(f"CRITICAL gradient norm: {grad_norm:.2f}")
-                    
-                    # Логируем gradient norm для мониторинга
-                    if debug_reporter:
-                        debug_reporter.add_metric("gradient_norm", grad_norm)
+                    # 🔧 ИНТЕГРАЦИЯ УЛУЧШЕННОГО GRADIENT CLIPPING
+                    try:
+                        from smart_tuner.gradient_clipper import get_global_clipper, AdaptiveGradientClipper
+                        
+                        # Инициализируем адаптивный clipper если еще не создан
+                        clipper = get_global_clipper()
+                        if clipper is None:
+                            clipper = AdaptiveGradientClipper(
+                                max_norm=hparams.grad_clip_thresh,
+                                adaptive=True,
+                                emergency_threshold=1000.0
+                            )
+                            from smart_tuner.gradient_clipper import set_global_clipper
+                            set_global_clipper(clipper)
+                        
+                        # Применяем интеллектуальное обрезание градиентов
+                        was_clipped, grad_norm, clip_threshold = clipper.clip_gradients(model, iteration)
+                        
+                        # Логируем если было обрезание
+                        if was_clipped and debug_reporter:
+                            debug_reporter.add_warning(
+                                f"Gradient clipping applied: {grad_norm:.2f} → {clip_threshold:.2f}"
+                            )
+                            
+                    except ImportError:
+                        # Fallback к стандартному clipping
+                        grad_norm = torch.nn.utils.clip_grad_norm_(
+                            model.parameters(), hparams.grad_clip_thresh
+                        )
+                        print("⚠️ Используется стандартный gradient clipping (Smart Tuner не найден)")
                     # 🔧 ИНТЕГРАЦИЯ SMART LEARNING RATE ADAPTER
                     try:
                         from smart_tuner.smart_lr_adapter import get_global_lr_adapter, SmartLRAdapter

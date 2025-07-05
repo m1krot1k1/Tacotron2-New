@@ -165,6 +165,84 @@ class TelegramMonitor:
         except Exception as e:
             self.logger.error(f"❌ Ошибка отправки уведомления о перезапуске: {e}")
             return False
+    
+    def send_detailed_telegram_report(self, step: int, metrics: Dict[str, Any], 
+                                    actions_taken: List[str], 
+                                    gradient_norm: float = None,
+                                    attention_diagonality: float = None) -> bool:
+        """
+        📱 Отправляет детальный отчет с конкретными действиями и метриками.
+        
+        Args:
+            step: Текущий шаг обучения
+            metrics: Словарь с метриками
+            actions_taken: Список выполненных действий
+            gradient_norm: Норма градиентов
+            attention_diagonality: Диагональность attention
+        """
+        if not self.enabled:
+            return False
+            
+        try:
+            message = f"🤖 **Smart Tuner V2 - Детальный отчет**\n\n"
+            message += f"📍 **Шаг:** {step:,}\n"
+            message += f"🕐 **Время:** {datetime.now().strftime('%H:%M:%S')}\n\n"
+            
+            # Критические метрики
+            if gradient_norm is not None:
+                status_emoji = "✅" if gradient_norm < 10.0 else "⚠️" if gradient_norm < 100.0 else "🚨"
+                message += f"{status_emoji} **Gradient Norm:** {gradient_norm:.2f}\n"
+            
+            if attention_diagonality is not None:
+                status_emoji = "✅" if attention_diagonality > 0.7 else "⚠️" if attention_diagonality > 0.3 else "🚨"
+                message += f"{status_emoji} **Attention Diagonality:** {attention_diagonality:.3f}\n"
+            
+            # Основные метрики
+            if 'loss' in metrics:
+                message += f"📉 **Loss:** {metrics['loss']:.4f}\n"
+            
+            if 'learning_rate' in metrics:
+                message += f"📈 **Learning Rate:** {metrics['learning_rate']:.2e}\n"
+            
+            # Выполненные действия
+            if actions_taken:
+                message += f"\n🛠️ **Выполненные действия:**\n"
+                for i, action in enumerate(actions_taken, 1):
+                    message += f"  {i}. {action}\n"
+            
+            # Рекомендации на основе метрик
+            recommendations = []
+            if gradient_norm and gradient_norm > 100.0:
+                recommendations.append("Снизить learning rate")
+                recommendations.append("Усилить gradient clipping")
+            
+            if attention_diagonality and attention_diagonality < 0.3:
+                recommendations.append("Увеличить вес guided attention loss")
+                recommendations.append("Проверить alignment diagnostics")
+            
+            if recommendations:
+                message += f"\n💡 **Рекомендации:**\n"
+                for rec in recommendations:
+                    message += f"  • {rec}\n"
+            
+            # Статус системы
+            message += f"\n🎯 **Статус системы:** "
+            if gradient_norm and gradient_norm < 10.0 and attention_diagonality and attention_diagonality > 0.7:
+                message += "✅ **СТАБИЛЬНА**"
+            elif gradient_norm and gradient_norm > 100.0 or (attention_diagonality and attention_diagonality < 0.1):
+                message += "🚨 **КРИТИЧЕСКАЯ**"
+            else:
+                message += "⚠️ **ТРЕБУЕТ ВНИМАНИЯ**"
+            
+            result = self._send_text_message(message)
+            
+            if result:
+                self.logger.info(f"✅ Детальный отчет отправлен на шаге {step}")
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка отправки детального отчета: {e}")
+            return False
         
     def should_send_notification(self, current_step: int) -> bool:
         """Проверяет нужность отправки уведомления."""
