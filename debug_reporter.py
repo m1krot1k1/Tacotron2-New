@@ -157,9 +157,18 @@ class DebugReporter:
             if self.telegram_monitor:
                 try:
                     self.telegram_monitor.send_critical_alert(
-                        title="🚨 КРИТИЧЕСКИЕ ПРОБЛЕМЫ ОБУЧЕНИЯ",
-                        message=f"Шаг {step}: {issues_text}",
-                        severity="critical"
+                        alert_type="Критические проблемы обучения",
+                        details={
+                            'description': f"Шаг {step}: {issues_text}",
+                            'step': step,
+                            'issues': issues
+                        },
+                        recommendations=[
+                            "Проверить данные обучения",
+                            "Снизить learning rate",
+                            "Увеличить gradient clipping",
+                            "Проверить архитектуру модели"
+                        ]
                     )
                 except Exception as e:
                     print(f"⚠️ Не удалось отправить критическое уведомление: {e}")

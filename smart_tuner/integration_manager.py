@@ -14,8 +14,19 @@
 import logging
 import time
 from typing import Dict, Any, List, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from .ddc_diagnostic import initialize_ddc_diagnostic, get_global_ddc_diagnostic
+
+@dataclass
+class AppliedRecommendation:
+    """Информация о примененной рекомендации."""
+    timestamp: float
+    recommendation: str
+    action_taken: str
+    success: bool
+    result_description: str
+    metrics_before: Dict[str, Any]
+    metrics_after: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
 class ComponentStatus:
@@ -26,6 +37,7 @@ class ComponentStatus:
     last_check: float
     error_count: int
     recommendations: List[str]
+    applied_recommendations: List[AppliedRecommendation] = field(default_factory=list)
 
 class SmartTunerIntegrationManager:
     """
@@ -45,6 +57,9 @@ class SmartTunerIntegrationManager:
         self.start_time = time.time()
         self.total_steps = 0
         self.emergency_mode = False
+        
+        # История примененных рекомендаций
+        self.applied_recommendations: List[AppliedRecommendation] = []
         
         # Инициализация компонентов
         self._initialize_components()
@@ -126,7 +141,9 @@ class SmartTunerIntegrationManager:
             'timestamp': time.time(),
             'components_status': {},
             'recommendations': [],
-            'emergency_mode': self.emergency_mode
+            'emergency_mode': self.emergency_mode,
+            'recommendation_summary': self.get_recommendation_summary(),
+            'recent_applied_recommendations': self.applied_recommendations[-3:] if self.applied_recommendations else []
         }
         
         # Проверяем каждый компонент
@@ -365,6 +382,103 @@ class SmartTunerIntegrationManager:
             self.reset_component(name)
         self.emergency_mode = False
         self.logger.info("🔄 Все компоненты Smart Tuner сброшены")
+
+    def apply_recommendation(self, component_name: str, recommendation: str, 
+                           action: str, success: bool, result: str = "",
+                           metrics_before: Dict[str, Any] = None,
+                           metrics_after: Dict[str, Any] = None) -> AppliedRecommendation:
+        """
+        Записывает применение рекомендации.
+        
+        Args:
+            component_name: Название компонента
+            recommendation: Текст рекомендации
+            action: Действие, которое было выполнено
+            success: Успешно ли было применено
+            result: Описание результата
+            metrics_before: Метрики до применения
+            metrics_after: Метрики после применения
+            
+        Returns:
+            Запись о примененной рекомендации
+        """
+        applied_rec = AppliedRecommendation(
+            timestamp=time.time(),
+            recommendation=recommendation,
+            action_taken=action,
+            success=success,
+            result_description=result,
+            metrics_before=metrics_before or {},
+            metrics_after=metrics_after or {}
+        )
+        
+        # Добавляем в общую историю
+        self.applied_recommendations.append(applied_rec)
+        
+        # Добавляем в компонент
+        if component_name in self.components:
+            self.components[component_name].applied_recommendations.append(applied_rec)
+        
+        # Логируем применение
+        status_emoji = "✅" if success else "❌"
+        self.logger.info(f"{status_emoji} РЕКОМЕНДАЦИЯ ПРИМЕНЕНА: {recommendation}")
+        self.logger.info(f"   Действие: {action}")
+        if result:
+            self.logger.info(f"   Результат: {result}")
+        
+        return applied_rec
+    
+    def get_recommendation_history(self, component_name: Optional[str] = None) -> List[AppliedRecommendation]:
+        """
+        Возвращает историю примененных рекомендаций.
+        
+        Args:
+            component_name: Если указан, возвращает только для этого компонента
+            
+        Returns:
+            Список примененных рекомендаций
+        """
+        if component_name:
+            if component_name in self.components:
+                return self.components[component_name].applied_recommendations
+            return []
+        
+        return self.applied_recommendations
+    
+    def get_recommendation_summary(self) -> Dict[str, Any]:
+        """
+        Возвращает сводку по примененным рекомендациям.
+        
+        Returns:
+            Словарь со статистикой рекомендаций
+        """
+        total_recommendations = len(self.applied_recommendations)
+        successful_recommendations = sum(1 for r in self.applied_recommendations if r.success)
+        
+        # Группируем по компонентам
+        component_stats = {}
+        for rec in self.applied_recommendations:
+            # Находим компонент для этой рекомендации
+            component_name = "unknown"
+            for comp_name, comp in self.components.items():
+                if rec in comp.applied_recommendations:
+                    component_name = comp_name
+                    break
+            
+            if component_name not in component_stats:
+                component_stats[component_name] = {"total": 0, "successful": 0}
+            
+            component_stats[component_name]["total"] += 1
+            if rec.success:
+                component_stats[component_name]["successful"] += 1
+        
+        return {
+            "total_recommendations": total_recommendations,
+            "successful_recommendations": successful_recommendations,
+            "success_rate": successful_recommendations / total_recommendations if total_recommendations > 0 else 0,
+            "component_stats": component_stats,
+            "recent_recommendations": self.applied_recommendations[-5:] if self.applied_recommendations else []
+        }
 
 
 # Глобальный экземпляр менеджера

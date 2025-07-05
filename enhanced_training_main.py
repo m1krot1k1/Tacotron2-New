@@ -34,10 +34,28 @@ from audio_quality_enhancer import AudioQualityEnhancer
 try:
     from smart_tuner.smart_tuner_integration import SmartTunerIntegration
     from smart_tuner.telegram_monitor import TelegramMonitor
+    from smart_tuner.integration_manager import SmartTunerIntegrationManager
     SMART_TUNER_AVAILABLE = True
 except ImportError:
     SMART_TUNER_AVAILABLE = False
     logging.warning("Smart Tuner не найден, используется стандартное обучение")
+
+# Импорт дополнительных компонентов из train.py
+try:
+    from debug_reporter import initialize_debug_reporter, get_debug_reporter
+    DEBUG_REPORTER_AVAILABLE = True
+except ImportError:
+    DEBUG_REPORTER_AVAILABLE = False
+    logging.warning("Debug Reporter не найден")
+
+# Импорт утилит для метрик качества
+try:
+    from utils.dynamic_padding import DynamicPaddingCollator
+    from utils.bucket_batching import BucketBatchSampler
+    UTILS_AVAILABLE = True
+except ImportError:
+    UTILS_AVAILABLE = False
+    logging.warning("Утилиты не найдены")
 
 class EnhancedTacotronTrainer:
     """
@@ -78,9 +96,36 @@ class EnhancedTacotronTrainer:
         self.telegram_monitor = None
         if SMART_TUNER_AVAILABLE:
             try:
-                self.telegram_monitor = TelegramMonitor()
-                self.logger.info("📱 Telegram Monitor инициализирован")
+                # Используем TelegramMonitorEnhanced с правильными параметрами
+                from smart_tuner.telegram_monitor_enhanced import TelegramMonitorEnhanced
+                import yaml
+                
+                # Загружаем конфиг напрямую
+                config_path = "smart_tuner/config.yaml"
+                try:
+                    with open(config_path, 'r', encoding='utf-8') as f:
+                        config = yaml.safe_load(f)
+                except Exception as e:
+                    self.logger.warning(f"Не удалось загрузить конфиг: {e}")
+                    config = {}
+                
+                telegram_config = config.get('telegram', {})
+                bot_token = telegram_config.get('bot_token')
+                chat_id = telegram_config.get('chat_id')
+                enabled = telegram_config.get('enabled', False)
+                
+                if bot_token and chat_id and enabled:
+                    self.telegram_monitor = TelegramMonitorEnhanced(
+                        bot_token=bot_token,
+                        chat_id=chat_id,
+                        enabled=enabled
+                    )
+                    self.logger.info("📱 Telegram Monitor Enhanced инициализирован")
+                else:
+                    self.telegram_monitor = None
+                    self.logger.warning("📱 Telegram Monitor отключен (неполные настройки)")
             except Exception as e:
+                self.telegram_monitor = None
                 self.logger.error(f"Ошибка инициализации Telegram Monitor: {e}")
         
         # Инициализация компонентов
@@ -88,6 +133,25 @@ class EnhancedTacotronTrainer:
         self.criterion = None
         self.optimizer = None
         self.audio_enhancer = AudioQualityEnhancer()
+        
+        # 🔧 ИНТЕГРАЦИЯ ДОПОЛНИТЕЛЬНЫХ КОМПОНЕНТОВ ИЗ TRAIN.PY
+        # Integration Manager для координации всех компонентов
+        self.integration_manager = None
+        if SMART_TUNER_AVAILABLE:
+            try:
+                self.integration_manager = SmartTunerIntegrationManager()
+                self.logger.info("🔧 Integration Manager инициализирован")
+            except Exception as e:
+                self.logger.error(f"Ошибка инициализации Integration Manager: {e}")
+        
+        # Debug Reporter для детальной диагностики
+        self.debug_reporter = None
+        if DEBUG_REPORTER_AVAILABLE:
+            try:
+                self.debug_reporter = initialize_debug_reporter(self.telegram_monitor)
+                self.logger.info("🔍 Debug Reporter инициализирован")
+            except Exception as e:
+                self.logger.error(f"Ошибка инициализации Debug Reporter: {e}")
         
         # Состояние обучения
         self.current_epoch = 0
@@ -160,6 +224,25 @@ class EnhancedTacotronTrainer:
         )
         self.logger.info("⚙️ Оптимизатор AdamW инициализирован")
         
+        # 🔧 Инициализация Smart LR Adapter
+        try:
+            from smart_tuner.smart_lr_adapter import SmartLRAdapter, set_global_lr_adapter
+            self.lr_adapter = SmartLRAdapter(
+                optimizer=self.optimizer,
+                patience=10,
+                factor=0.5,
+                min_lr=getattr(self.hparams, 'learning_rate_min', 1e-8),
+                max_lr=self.hparams.learning_rate * 2,
+                emergency_factor=0.1,
+                grad_norm_threshold=1000.0,
+                loss_nan_threshold=1e6
+            )
+            set_global_lr_adapter(self.lr_adapter)
+            self.logger.info("✅ Smart LR Adapter инициализирован")
+        except Exception as e:
+            self.lr_adapter = None
+            self.logger.warning(f"⚠️ Не удалось инициализировать Smart LR Adapter: {e}")
+        
         # Инициализация scheduler
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
             self.optimizer, 
@@ -168,6 +251,9 @@ class EnhancedTacotronTrainer:
         )
         
         self.logger.info("🚀 Все компоненты успешно инициализированы")
+        
+        # Инициализация переменных для адаптивной настройки
+        self.last_attention_diagonality = 0.0
     
     def get_current_training_phase(self) -> str:
         """Определяет текущую фазу обучения."""
@@ -222,37 +308,203 @@ class EnhancedTacotronTrainer:
         self.model.train()
         self.optimizer.zero_grad()
         
-        # Распаковка batch
-        text_inputs, text_lengths, mel_targets, gate_targets, mel_lengths = batch
+        # Распаковка batch (TextMelCollate возвращает 8 элементов)
+        text_inputs, text_lengths, mel_targets, gate_targets, mel_lengths, ctc_text, ctc_text_lengths, guide_mask = batch
         
         # Перенос на GPU
         text_inputs = text_inputs.cuda()
         mel_targets = mel_targets.cuda() 
         gate_targets = gate_targets.cuda()
         
-        # Forward pass
-        model_outputs = self.model(text_inputs, mel_targets)
-        mel_outputs, mel_outputs_postnet, gate_outputs, alignments = model_outputs
+        # Forward pass через parse_batch для правильной обработки всех элементов
+        batch_data = (text_inputs, text_lengths, mel_targets, gate_targets, mel_lengths, ctc_text, ctc_text_lengths, guide_mask)
+        x, y = self.model.parse_batch(batch_data)
+        model_outputs = self.model(x)
+        # Модель может возвращать разное количество элементов в зависимости от настроек
+        if len(model_outputs) >= 4:
+            mel_outputs, mel_outputs_postnet, gate_outputs, alignments = model_outputs[:4]
+        else:
+            # Fallback для случая, если модель вернула меньше элементов
+            mel_outputs = model_outputs[0] if len(model_outputs) > 0 else None
+            mel_outputs_postnet = model_outputs[1] if len(model_outputs) > 1 else None
+            gate_outputs = model_outputs[2] if len(model_outputs) > 2 else None
+            alignments = model_outputs[3] if len(model_outputs) > 3 else None
+        
+        # 🔍 ВЫЧИСЛЕНИЕ МЕТРИК КАЧЕСТВА ИЗ ВЫХОДОВ МОДЕЛИ
+        attention_diagonality = 0.0
+        gate_accuracy = 0.0
+        
+        # 🔧 АДАПТИВНАЯ НАСТРОЙКА GUIDED ATTENTION
+        if hasattr(self.criterion, 'guide_loss_weight'):
+            # Если диагональность низкая, увеличиваем guided attention weight
+            if self.global_step > 0 and hasattr(self, 'last_attention_diagonality'):
+                if self.last_attention_diagonality < 0.05:
+                    # Критически низкая диагональность - экстренное увеличение
+                    new_weight = min(self.criterion.guide_loss_weight * 3.0, 100.0)
+                    self.criterion.guide_loss_weight = new_weight
+                    self.logger.warning(f"🚨 КРИТИЧЕСКОЕ увеличение guided attention weight: {new_weight:.1f}")
+                elif self.last_attention_diagonality < 0.1:
+                    # Очень низкая диагональность - сильное увеличение
+                    new_weight = min(self.criterion.guide_loss_weight * 2.5, 75.0)
+                    self.criterion.guide_loss_weight = new_weight
+                    self.logger.warning(f"🚨 Сильное увеличение guided attention weight: {new_weight:.1f}")
+                elif self.last_attention_diagonality < 0.3:
+                    # Низкая диагональность - умеренное увеличение
+                    new_weight = min(self.criterion.guide_loss_weight * 1.5, 50.0)
+                    self.criterion.guide_loss_weight = new_weight
+                    self.logger.info(f"📈 Увеличение guided attention weight: {new_weight:.1f}")
+                elif self.last_attention_diagonality > 0.7:
+                    # Хорошая диагональность - постепенное снижение
+                    new_weight = max(self.criterion.guide_loss_weight * 0.9, 1.0)
+                    self.criterion.guide_loss_weight = new_weight
+                    self.logger.info(f"📉 Снижение guided attention weight: {new_weight:.1f}")
+        
+        try:
+            # Вычисляем attention_diagonality из attention матрицы
+            if alignments is not None:
+                attention_matrix = alignments.detach().cpu().numpy()
+                if attention_matrix.ndim == 3:  # [batch, time, mel_time]
+                    # Берем среднее по batch
+                    attention_matrix = attention_matrix.mean(axis=0)
+                
+                # Вычисляем диагональность как среднее по диагональным элементам
+                min_dim = min(attention_matrix.shape[0], attention_matrix.shape[1])
+                diagonal_elements = []
+                for i in range(min_dim):
+                    diagonal_elements.append(attention_matrix[i, i])
+                attention_diagonality = np.mean(diagonal_elements) if diagonal_elements else 0.0
+            
+            # Вычисляем gate_accuracy из gate outputs
+            if gate_outputs is not None:
+                # Вычисляем accuracy как процент правильных предсказаний
+                gate_pred = (gate_outputs > 0.5).float()
+                gate_targets_binary = (gate_targets > 0.5).float()
+                correct = (gate_pred == gate_targets_binary).float().mean()
+                gate_accuracy = correct.item()
+                
+        except Exception as e:
+            self.logger.warning(f"Ошибка вычисления метрик качества: {e}")
+            attention_diagonality = 0.0
+            gate_accuracy = 0.0
+        
+        # Сохраняем диагональность для следующего шага
+        self.last_attention_diagonality = attention_diagonality
         
         # Вычисление loss с современными техниками
-        loss, loss_dict = self.criterion(
+        loss_components = self.criterion(
             model_outputs, 
             (mel_targets, gate_targets),
             attention_weights=alignments,
             gate_outputs=gate_outputs
         )
         
+        # Tacotron2Loss возвращает 4 компонента: mel_loss, gate_loss, guide_loss, emb_loss
+        if len(loss_components) == 4:
+            mel_loss, gate_loss, guide_loss, emb_loss = loss_components
+            # Объединяем все loss в один общий loss
+            loss = mel_loss + gate_loss + guide_loss + emb_loss
+            # Создаем словарь с детализацией
+            loss_dict = {
+                'mel_loss': mel_loss.item(),
+                'gate_loss': gate_loss.item(),
+                'guide_loss': guide_loss.item(),
+                'emb_loss': emb_loss.item(),
+                'total_loss': loss.item()
+            }
+        else:
+            # Fallback для других loss функций
+            loss = loss_components[0] if len(loss_components) > 0 else torch.tensor(0.0)
+            loss_dict = {'total_loss': loss.item()}
+        
         # Backward pass
         loss.backward()
         
-        # Gradient clipping для стабильности
-        torch.nn.utils.clip_grad_norm_(
+        # Вычисляем grad_norm для мониторинга
+        grad_norm = torch.nn.utils.clip_grad_norm_(
             self.model.parameters(), 
             getattr(self.hparams, 'grad_clip_thresh', 1.0)
         )
         
+        # 🔧 Проверка на исчезновение градиентов
+        if grad_norm < 1e-8:
+            self.logger.warning(f"⚠️ Исчезновение градиентов: {grad_norm:.2e}")
+            # Попытка восстановления
+            try:
+                # Пересчитываем loss с большим масштабом
+                scaled_loss = loss * 10.0
+                scaled_loss.backward()
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(), 
+                    getattr(self.hparams, 'grad_clip_thresh', 1.0)
+                )
+                self.logger.info(f"🔄 Градиенты восстановлены: {grad_norm:.2e}")
+            except Exception as e:
+                self.logger.error(f"❌ Не удалось восстановить градиенты: {e}")
+        
         self.optimizer.step()
+        
+        # 🔧 Применение Smart LR Adapter
+        if self.lr_adapter:
+            try:
+                lr_changed = self.lr_adapter.step(
+                    loss=float(loss.item()),
+                    grad_norm=float(grad_norm),
+                    step=self.global_step
+                )
+                if lr_changed:
+                    current_lr = self.optimizer.param_groups[0]['lr']
+                    self.logger.info(f"🔄 Smart LR адаптация: LR изменен на {current_lr:.2e}")
+            except Exception as e:
+                self.logger.warning(f"⚠️ Ошибка в Smart LR Adapter: {e}")
+        
         self.scheduler.step()
+        
+        # 🔧 ИНТЕГРАЦИЯ С INTEGRATION MANAGER (после backward)
+        if self.integration_manager:
+            try:
+                # Выполняем шаг интеграции всех компонентов
+                integration_result = self.integration_manager.step(
+                    step=self.global_step,
+                    loss=float(loss.item()),
+                    grad_norm=float(grad_norm),
+                    model=self.model,
+                    optimizer=self.optimizer
+                )
+                
+                # Логируем результаты интеграции
+                if integration_result.get('emergency_mode'):
+                    self.logger.warning(f"🚨 Smart Tuner в экстренном режиме: {integration_result.get('recommendations', [])}")
+                    
+            except Exception as e:
+                self.logger.error(f"Ошибка в Integration Manager: {e}")
+        
+        # 🔍 DEBUG REPORTER - детальная диагностика
+        if self.debug_reporter:
+            try:
+                # Собираем данные для диагностики
+                debug_data = {
+                    'step': self.global_step,
+                    'epoch': self.current_epoch,
+                    'loss': loss.item(),
+                    'attention_diagonality': attention_diagonality,
+                    'gate_accuracy': gate_accuracy,
+                    'mel_outputs': mel_outputs_postnet.detach().cpu().numpy() if mel_outputs_postnet is not None else None,
+                    'gate_outputs': gate_outputs.detach().cpu().numpy() if gate_outputs is not None else None,
+                    'alignments': alignments.detach().cpu().numpy() if alignments is not None else None,
+                }
+                
+                self.debug_reporter.collect_step_data(
+                    step=self.global_step,
+                    metrics=debug_data,
+                    model=self.model,
+                    y_pred=model_outputs,
+                    loss_components=loss_dict,
+                    hparams=self.hparams,
+                    smart_tuner_decisions={}
+                )
+                
+            except Exception as e:
+                self.logger.error(f"Ошибка Debug Reporter: {e}")
         
         # Анализ качества через Smart Tuner
         quality_analysis = {}
@@ -268,11 +520,19 @@ class EnhancedTacotronTrainer:
                 self.logger.warning(f"Ошибка анализа качества: {e}")
         
         # 📱 Telegram уведомления каждые 1000 шагов
-        if self.telegram_monitor:
+        if self.telegram_monitor and self.global_step % 1000 == 0:
             try:
+                # Обновляем метрики с новыми данными качества
+                enhanced_metrics = loss_dict.copy()
+                enhanced_metrics.update({
+                    'attention_diagonality': attention_diagonality,
+                    'gate_accuracy': gate_accuracy,
+                    'grad_norm': float(grad_norm),
+                })
+                
                 self.telegram_monitor.send_training_update(
                     step=self.global_step,
-                    metrics=loss_dict,
+                    metrics=enhanced_metrics,
                     attention_weights=alignments,
                     gate_outputs=gate_outputs
                 )
@@ -284,7 +544,10 @@ class EnhancedTacotronTrainer:
         return {
             'loss': loss.item(),
             'loss_breakdown': loss_dict,
-            'quality_analysis': quality_analysis
+            'quality_analysis': quality_analysis,
+            'attention_diagonality': attention_diagonality,
+            'gate_accuracy': gate_accuracy,
+            'grad_norm': float(grad_norm)
         }
     
     def validate_step(self, val_loader):
@@ -295,24 +558,52 @@ class EnhancedTacotronTrainer:
         
         with torch.no_grad():
             for batch in val_loader:
-                text_inputs, text_lengths, mel_targets, gate_targets, mel_lengths = batch
+                text_inputs, text_lengths, mel_targets, gate_targets, mel_lengths, ctc_text, ctc_text_lengths, guide_mask = batch
                 
                 # Перенос на GPU
                 text_inputs = text_inputs.cuda()
                 mel_targets = mel_targets.cuda()
                 gate_targets = gate_targets.cuda()
                 
-                # Forward pass
-                model_outputs = self.model(text_inputs, mel_targets)
-                mel_outputs, mel_outputs_postnet, gate_outputs, alignments = model_outputs
+                # Forward pass через parse_batch для правильной обработки всех элементов
+                batch_data = (text_inputs, text_lengths, mel_targets, gate_targets, mel_lengths, ctc_text, ctc_text_lengths, guide_mask)
+                x, y = self.model.parse_batch(batch_data)
+                model_outputs = self.model(x)
+                # Модель может возвращать разное количество элементов в зависимости от настроек
+                if len(model_outputs) >= 4:
+                    mel_outputs, mel_outputs_postnet, gate_outputs, alignments = model_outputs[:4]
+                else:
+                    # Fallback для случая, если модель вернула меньше элементов
+                    mel_outputs = model_outputs[0] if len(model_outputs) > 0 else None
+                    mel_outputs_postnet = model_outputs[1] if len(model_outputs) > 1 else None
+                    gate_outputs = model_outputs[2] if len(model_outputs) > 2 else None
+                    alignments = model_outputs[3] if len(model_outputs) > 3 else None
                 
                 # Вычисление loss
-                loss, loss_dict = self.criterion(
+                loss_components = self.criterion(
                     model_outputs,
                     (mel_targets, gate_targets),
                     attention_weights=alignments,
                     gate_outputs=gate_outputs
                 )
+                
+                # Tacotron2Loss возвращает 4 компонента: mel_loss, gate_loss, guide_loss, emb_loss
+                if len(loss_components) == 4:
+                    mel_loss, gate_loss, guide_loss, emb_loss = loss_components
+                    # Объединяем все loss в один общий loss
+                    loss = mel_loss + gate_loss + guide_loss + emb_loss
+                    # Создаем словарь с детализацией
+                    loss_dict = {
+                        'mel_loss': mel_loss.item(),
+                        'gate_loss': gate_loss.item(),
+                        'guide_loss': guide_loss.item(),
+                        'emb_loss': emb_loss.item(),
+                        'total_loss': loss.item()
+                    }
+                else:
+                    # Fallback для других loss функций
+                    loss = loss_components[0] if len(loss_components) > 0 else torch.tensor(0.0)
+                    loss_dict = {'total_loss': loss.item()}
                 
                 val_losses.append(loss.item())
                 
@@ -624,11 +915,71 @@ class EnhancedTacotronTrainer:
         self.logger.info(f"   Среднее время эпохи: {avg_epoch_time:.1f}с")
 
 
+def prepare_dataloaders(hparams):
+    """
+    Подготавливает train и val DataLoader с поддержкой dynamic padding, bucket batching и distributed.
+    Возвращает train_loader, val_loader.
+    """
+    from data_utils import TextMelLoader, TextMelCollate
+    try:
+        from utils.dynamic_padding import DynamicPaddingCollator
+        from utils.bucket_batching import BucketBatchSampler
+    except ImportError:
+        DynamicPaddingCollator = None
+        BucketBatchSampler = None
+
+    trainset = TextMelLoader(hparams.training_files, hparams)
+    valset = TextMelLoader(hparams.validation_files, hparams)
+
+    use_bucket_batching = getattr(hparams, 'use_bucket_batching', True)
+    use_dynamic_padding = getattr(hparams, 'use_dynamic_padding', True)
+
+    if use_dynamic_padding and DynamicPaddingCollator is not None:
+        collate_fn = DynamicPaddingCollator(pad_value=0.0)
+    else:
+        collate_fn = TextMelCollate(hparams.n_frames_per_step)
+
+    if use_bucket_batching and BucketBatchSampler is not None:
+        train_sampler = BucketBatchSampler(trainset, hparams.batch_size)
+        shuffle = False
+    else:
+        if getattr(hparams, 'distributed_run', False):
+            from torch.utils.data.distributed import DistributedSampler
+            train_sampler = DistributedSampler(trainset)
+            shuffle = False
+        else:
+            train_sampler = None
+            shuffle = True
+
+    from torch.utils.data import DataLoader
+    train_loader = DataLoader(
+        trainset,
+        num_workers=1,
+        shuffle=shuffle if not use_bucket_batching else False,
+        sampler=None if use_bucket_batching else train_sampler,
+        batch_size=hparams.batch_size,
+        pin_memory=False,
+        drop_last=True,
+        collate_fn=collate_fn,
+        batch_sampler=train_sampler if use_bucket_batching else None,
+    )
+    val_loader = DataLoader(
+        valset,
+        num_workers=1,
+        shuffle=False,
+        batch_size=hparams.batch_size,
+        pin_memory=False,
+        drop_last=False,
+        collate_fn=collate_fn,
+    )
+    return train_loader, val_loader
+
+
 def main():
     """Главная функция для запуска enhanced обучения."""
     # Создание гиперпараметров
     hparams = create_hparams()
-    
+
     # Информация о датасете (может быть получена из анализа данных)
     dataset_info = {
         'total_duration_minutes': 120,  # Пример: 2 часа аудио
@@ -637,22 +988,17 @@ def main():
         'audio_quality': 'good',         # poor, fair, good, excellent
         'language': 'en'
     }
-    
+
+    # Подготовка DataLoader'ов
+    train_loader, val_loader = prepare_dataloaders(hparams)
+
     # Создание тренера
     trainer = EnhancedTacotronTrainer(hparams, dataset_info)
-    
-    # Создание data loaders (здесь должна быть ваша реализация)
-    # train_loader = create_train_dataloader(hparams)
-    # val_loader = create_val_dataloader(hparams)
-    
+
     # Запуск обучения
-    # trainer.train(train_loader, val_loader)
-    
-    print("🚀 Enhanced Tacotron2 Training System готов к работе!")
-    print("📋 Для запуска обучения:")
-    print("   1. Подготовьте датасет")
-    print("   2. Создайте data loaders")
-    print("   3. Вызовите trainer.train(train_loader, val_loader)")
+    trainer.train(train_loader, val_loader)
+
+    print("🚀 Enhanced Tacotron2 Training System завершил обучение!")
 
 
 if __name__ == "__main__":

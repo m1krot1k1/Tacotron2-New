@@ -909,6 +909,46 @@ def train(
                             print(f"⚠️ Ошибка forward pass модели: {e}")
                             y_pred = None
 
+                        # 🔍 ВЫЧИСЛЕНИЕ МЕТРИК КАЧЕСТВА ИЗ ВЫХОДОВ МОДЕЛИ
+                        attention_diagonality = 0.0
+                        gate_accuracy = 0.0
+                        
+                        if y_pred is not None and len(y_pred) >= 3:
+                            try:
+                                # Вычисляем attention_diagonality из attention матрицы
+                                if len(y_pred) >= 4 and y_pred[3] is not None:  # attention weights
+                                    attention_matrix = y_pred[3].detach().cpu().numpy()
+                                    if attention_matrix.ndim == 3:  # [batch, time, mel_time]
+                                        # Берем среднее по batch
+                                        attention_matrix = attention_matrix.mean(axis=0)
+                                    
+                                    # Вычисляем диагональность как среднее по диагональным элементам
+                                    min_dim = min(attention_matrix.shape[0], attention_matrix.shape[1])
+                                    diagonal_elements = []
+                                    for i in range(min_dim):
+                                        diagonal_elements.append(attention_matrix[i, i])
+                                    attention_diagonality = np.mean(diagonal_elements) if diagonal_elements else 0.0
+                                
+                                # Вычисляем gate_accuracy из gate outputs
+                                if len(y_pred) >= 3 and y_pred[2] is not None:  # gate outputs
+                                    gate_outputs = y_pred[2].detach()
+                                    gate_targets = y[1] if len(y) > 1 else None  # gate targets
+                                    
+                                    if gate_targets is not None:
+                                        # Вычисляем accuracy как процент правильных предсказаний
+                                        gate_pred = (gate_outputs > 0.5).float()
+                                        gate_targets_binary = (gate_targets > 0.5).float()
+                                        correct = (gate_pred == gate_targets_binary).float().mean()
+                                        gate_accuracy = correct.item()
+                                    else:
+                                        # Если нет targets, используем среднее значение gate outputs
+                                        gate_accuracy = gate_outputs.mean().item()
+                                        
+                            except Exception as e:
+                                print(f"⚠️ Ошибка вычисления метрик качества: {e}")
+                                attention_diagonality = 0.0
+                                gate_accuracy = 0.0
+
                         # total loss
                         if y_pred is not None:
                             try:
@@ -972,6 +1012,47 @@ def train(
                     except Exception as e:
                         print(f"⚠️ Ошибка forward pass модели: {e}")
                         y_pred = None
+                    
+                    # 🔍 ВЫЧИСЛЕНИЕ МЕТРИК КАЧЕСТВА ИЗ ВЫХОДОВ МОДЕЛИ (FP32)
+                    attention_diagonality = 0.0
+                    gate_accuracy = 0.0
+                    
+                    if y_pred is not None and len(y_pred) >= 3:
+                        try:
+                            # Вычисляем attention_diagonality из attention матрицы
+                            if len(y_pred) >= 4 and y_pred[3] is not None:  # attention weights
+                                attention_matrix = y_pred[3].detach().cpu().numpy()
+                                if attention_matrix.ndim == 3:  # [batch, time, mel_time]
+                                    # Берем среднее по batch
+                                    attention_matrix = attention_matrix.mean(axis=0)
+                                
+                                # Вычисляем диагональность как среднее по диагональным элементам
+                                min_dim = min(attention_matrix.shape[0], attention_matrix.shape[1])
+                                diagonal_elements = []
+                                for i in range(min_dim):
+                                    diagonal_elements.append(attention_matrix[i, i])
+                                attention_diagonality = np.mean(diagonal_elements) if diagonal_elements else 0.0
+                            
+                            # Вычисляем gate_accuracy из gate outputs
+                            if len(y_pred) >= 3 and y_pred[2] is not None:  # gate outputs
+                                gate_outputs = y_pred[2].detach()
+                                gate_targets = y[1] if len(y) > 1 else None  # gate targets
+                                
+                                if gate_targets is not None:
+                                    # Вычисляем accuracy как процент правильных предсказаний
+                                    gate_pred = (gate_outputs > 0.5).float()
+                                    gate_targets_binary = (gate_targets > 0.5).float()
+                                    correct = (gate_pred == gate_targets_binary).float().mean()
+                                    gate_accuracy = correct.item()
+                                else:
+                                    # Если нет targets, используем среднее значение gate outputs
+                                    gate_accuracy = gate_outputs.mean().item()
+                                    
+                        except Exception as e:
+                            print(f"⚠️ Ошибка вычисления метрик качества: {e}")
+                            attention_diagonality = 0.0
+                            gate_accuracy = 0.0
+                    
                     # total loss
                     if y_pred is not None:
                         try:
@@ -1366,6 +1447,9 @@ def train(
                                         else 0.0
                                     ),
                                     "gate_loss": reduced_gate_loss,
+                                    # ✅ ИСПРАВЛЕНО: Добавляем новые метрики качества
+                                    "attention_diagonality": attention_diagonality,
+                                    "gate_accuracy": gate_accuracy,
                                 }
                             )
                         except Exception as e:
@@ -1383,6 +1467,9 @@ def train(
                         writer.add_scalar("grad.norm", grad_norm, iteration)
                         writer.add_scalar("learning.rate", learning_rate, iteration)
                         writer.add_scalar("duration", duration, iteration)
+                        # ✅ ИСПРАВЛЕНО: Добавляем новые метрики качества
+                        writer.add_scalar("quality.attention_diagonality", attention_diagonality, iteration)
+                        writer.add_scalar("quality.gate_accuracy", gate_accuracy, iteration)
                     except Exception as e:
                         print(f"⚠️ Ошибка логирования в TensorBoard: {e}")
                     if hparams.use_guided_attn and guide_loss is not None:
@@ -1437,6 +1524,9 @@ def train(
                             "duration": duration,
                             "batch_size": hparams.batch_size,
                             "learning_rate": learning_rate,
+                            # ✅ ИСПРАВЛЕНО: Добавляем новые метрики качества
+                            "quality.attention_diagonality": attention_diagonality,
+                            "quality.gate_accuracy": gate_accuracy,
                         }
                         for metric_name, metric_value in training_metrics.items():
                             try:
@@ -1476,6 +1566,8 @@ def train(
                                     "batch_size": hparams.batch_size,
                                     "guide_loss_weight": hparams.guide_loss_weight if hasattr(hparams, 'guide_loss_weight') and hparams.guide_loss_weight is not None else 1.0,
                                     "gate_threshold": hparams.gate_threshold if hasattr(hparams, 'gate_threshold') and hparams.gate_threshold is not None else 0.5,
+                                    "attention_diagonality": attention_diagonality,  # ✅ ИСПРАВЛЕНО: теперь вычисляется
+                                    "gate_accuracy": gate_accuracy,  # ✅ ИСПРАВЛЕНО: теперь вычисляется
                                 }
                                 # Добавляем validation loss если он доступен
                                 if last_validation_loss is not None:
@@ -1680,6 +1772,18 @@ def train(
 
                                 # ГАРАНТИРОВАННО отправляем графики (send_plots=True)
                                 try:
+                                    # Получаем информацию о примененных рекомендациях от IntegrationManager
+                                    applied_recommendations = []
+                                    recommendation_summary = {}
+                                    if integration_manager:
+                                        applied_recommendations = integration_manager.get_recommendation_history()
+                                        recommendation_summary = integration_manager.get_recommendation_summary()
+                                    
+                                    # Обновляем smart_tuner_decisions с информацией о рекомендациях
+                                    if smart_tuner_decisions:
+                                        smart_tuner_decisions['recent_applied_recommendations'] = applied_recommendations[-3:] if applied_recommendations else []
+                                        smart_tuner_decisions['recommendation_summary'] = recommendation_summary
+                                    
                                     result = telegram_monitor.send_training_update(
                                         step=iteration,
                                         metrics=telegram_metrics,

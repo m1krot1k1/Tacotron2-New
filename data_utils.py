@@ -5,8 +5,21 @@ import torch
 import torch.utils.data
 
 import layers
-from utils import load_wav_to_torch, load_filepaths_and_text, guide_attention_fast
 from text import text_to_sequence, sequence_to_ctc_sequence
+
+try:
+    from utils import load_wav_to_torch, load_filepaths_and_text, guide_attention_fast
+except ImportError:
+    import importlib.util
+    import sys
+    import os
+    utils_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'utils.py')
+    spec = importlib.util.spec_from_file_location('utils', utils_path)
+    utils_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(utils_mod)
+    load_wav_to_torch = utils_mod.load_wav_to_torch
+    load_filepaths_and_text = utils_mod.load_filepaths_and_text
+    guide_attention_fast = utils_mod.guide_attention_fast
 
 
 class TextMelLoader(torch.utils.data.Dataset):

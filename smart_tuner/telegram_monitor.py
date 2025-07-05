@@ -254,17 +254,40 @@ class TelegramMonitor:
                     message += f"  • {param}: {old_val} → {new_val}\n"
                     message += f"    💡 Причина: {reason}\n"
             
+            # ПРИМЕНЕННЫЕ РЕКОМЕНДАЦИИ
+            applied_recommendations = smart_decisions.get('recent_applied_recommendations', [])
+            if applied_recommendations:
+                message += f"\n✅ ПРИМЕНЕННЫЕ РЕКОМЕНДАЦИИ:\n"
+                for rec in applied_recommendations[-3:]:  # Последние 3
+                    status_emoji = "✅" if rec.get('success', False) else "❌"
+                    message += f"  {status_emoji} {rec.get('recommendation', 'Неизвестно')}\n"
+                    message += f"    🛠️ Действие: {rec.get('action_taken', 'Не указано')}\n"
+                    if rec.get('result_description'):
+                        message += f"    📊 Результат: {rec.get('result_description')}\n"
+            
+            # СВОДКА РЕКОМЕНДАЦИЙ
+            recommendation_summary = smart_decisions.get('recommendation_summary', {})
+            if recommendation_summary:
+                total = recommendation_summary.get('total_recommendations', 0)
+                successful = recommendation_summary.get('successful_recommendations', 0)
+                success_rate = recommendation_summary.get('success_rate', 0)
+                if total > 0:
+                    message += f"\n📊 СВОДКА РЕКОМЕНДАЦИЙ:\n"
+                    message += f"  • Всего применено: {total}\n"
+                    message += f"  • Успешных: {successful}\n"
+                    message += f"  • Успешность: {success_rate:.1%}\n"
+            
             # Рекомендации от контроллеров
             recommendations = smart_decisions.get('recommendations', [])
             if recommendations:
-                message += f"💡 Рекомендации:\n"
+                message += f"\n💡 НОВЫЕ РЕКОМЕНДАЦИИ:\n"
                 for rec in recommendations[:3]:  # Показываем до 3 рекомендаций
                     message += f"  • {rec}\n"
             
             # Статус контроллеров
             controller_status = smart_decisions.get('controller_status', {})
             if controller_status:
-                message += f"🎛️ Статус контроллеров:\n"
+                message += f"\n🎛️ Статус контроллеров:\n"
                 for controller, status in controller_status.items():
                     status_emoji = "✅" if status.get('active', False) else "⏸️"
                     message += f"  {status_emoji} {controller}: {status.get('status', 'Неизвестно')}\n"
@@ -272,7 +295,7 @@ class TelegramMonitor:
             # Предупреждения и проблемы
             warnings = smart_decisions.get('warnings', [])
             if warnings:
-                message += f"⚠️ Предупреждения:\n"
+                message += f"\n⚠️ Предупреждения:\n"
                 for warning in warnings[:2]:  # Показываем до 2 предупреждений
                     message += f"  • {warning}\n"
         
