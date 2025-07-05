@@ -15,6 +15,8 @@ import torch
 import torch.nn.functional as F
 import logging
 from typing import Optional, Tuple, Dict, Any
+from smart_tuner.smart_truncation_ddc import SmartTruncationDDC
+from smart_tuner.memory_efficient_ddc import MemoryEfficientDDC
 
 class SafeDDCLoss:
     """
@@ -26,10 +28,11 @@ class SafeDDCLoss:
     - Неправильная обработка масок
     """
     
-    def __init__(self, weight=1.0, use_masking=True, log_warnings=True):
+    def __init__(self, weight=1.0, use_masking=True, log_warnings=True, mode='safe'):
         self.weight = weight
         self.use_masking = use_masking
         self.log_warnings = log_warnings
+        self.mode = mode  # 'safe', 'smart_truncation', 'memory_efficient'
         
         # Статистика
         self.total_calls = 0
@@ -39,6 +42,9 @@ class SafeDDCLoss:
         
         # Логирование
         self.logger = logging.getLogger(__name__)
+        
+        self.smart_trunc = SmartTruncationDDC() if mode == 'smart_truncation' else None
+        self.memory_efficient = MemoryEfficientDDC() if mode == 'memory_efficient' else None
         
     def __call__(self, pred: torch.Tensor, target: torch.Tensor, 
                  input_lengths: Optional[torch.Tensor] = None, 
@@ -60,6 +66,11 @@ class SafeDDCLoss:
         self.total_calls += 1
         
         try:
+            if self.mode == 'smart_truncation' and self.smart_trunc is not None:
+                return self.smart_trunc(pred, target)
+            if self.mode == 'memory_efficient' and self.memory_efficient is not None:
+                return self.memory_efficient(pred, target)
+            
             # Проверяем входные данные
             if pred is None or target is None:
                 self.logger.warning("❌ DDC Loss: pred или target равны None")

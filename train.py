@@ -32,6 +32,8 @@ from smart_tuner.param_scheduler import ParamScheduler
 from smart_tuner.early_stop_controller import EarlyStopController
 from gradient_stability_monitor import GradientStabilityMonitor
 from debug_reporter import initialize_debug_reporter, get_debug_reporter
+from utils.dynamic_padding import DynamicPaddingCollator
+from utils.bucket_batching import BucketBatchSampler
 
 # MLflow for experiment tracking
 try:
@@ -97,24 +99,38 @@ def prepare_dataloaders(hparams):
     # Get data, data loaders and collate function ready
     trainset = TextMelLoader(hparams.training_files, hparams)
     valset = TextMelLoader(hparams.validation_files, hparams)
-    collate_fn = TextMelCollate(hparams.n_frames_per_step)
 
-    if hparams.distributed_run:
-        train_sampler = DistributedSampler(trainset)
-        shuffle = False
+    # --- Новый collator и bucket batching ---
+    use_bucket_batching = getattr(hparams, 'use_bucket_batching', True)
+    use_dynamic_padding = getattr(hparams, 'use_dynamic_padding', True)
+
+    if use_dynamic_padding:
+        collate_fn = DynamicPaddingCollator(pad_value=0.0)
     else:
-        train_sampler = None
-        shuffle = True
+        collate_fn = TextMelCollate(hparams.n_frames_per_step)
+
+    if use_bucket_batching:
+        train_sampler = None  # BucketBatchSampler сам управляет порядком
+        shuffle = False
+        train_sampler = BucketBatchSampler(trainset, hparams.batch_size)
+    else:
+        if hparams.distributed_run:
+            train_sampler = DistributedSampler(trainset)
+            shuffle = False
+        else:
+            train_sampler = None
+            shuffle = True
 
     train_loader = DataLoader(
         trainset,
         num_workers=1,
-        shuffle=shuffle,
-        sampler=train_sampler,
+        shuffle=shuffle if not use_bucket_batching else False,
+        sampler=None if use_bucket_batching else train_sampler,
         batch_size=hparams.batch_size,
         pin_memory=False,
         drop_last=True,
         collate_fn=collate_fn,
+        batch_sampler=train_sampler if use_bucket_batching else None,
     )
     return train_loader, valset, collate_fn
 

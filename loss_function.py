@@ -4,6 +4,7 @@ import numpy as np
 import torch.nn.functional as F
 from typing import Optional, Tuple, Dict, Any
 import math
+from smart_tuner.ddc_diagnostic import get_global_ddc_diagnostic
 
 
 class SpectralMelLoss(nn.Module):
@@ -238,6 +239,17 @@ class Tacotron2Loss(nn.Module):
                 
                 # Применяем безопасное вычисление DDC loss
                 ddc_loss = ddc_loss_fn(mel_out_postnet, mel_out_postnet2.detach(), step=self.global_step)
+                
+                # 🔍 ДИАГНОСТИКА DDC LOSS
+                try:
+                    ddc_diagnostic = get_global_ddc_diagnostic()
+                    if ddc_diagnostic is not None:
+                        # Анализируем несовпадения размеров
+                        ddc_diagnostic.analyze_size_mismatch(
+                            mel_out_postnet, mel_out_postnet2.detach(), self.global_step
+                        )
+                except Exception as diag_e:
+                    print(f"⚠️ Ошибка диагностики DDC: {diag_e}")
                 
             except ImportError:
                 # Fallback к стандартной логике

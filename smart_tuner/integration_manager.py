@@ -15,6 +15,7 @@ import logging
 import time
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
+from .ddc_diagnostic import initialize_ddc_diagnostic, get_global_ddc_diagnostic
 
 @dataclass
 class ComponentStatus:
@@ -84,6 +85,20 @@ class SmartTunerIntegrationManager:
                 recommendations=[]
             )
             
+            # DDC Diagnostic
+            from .ddc_diagnostic import initialize_ddc_diagnostic
+            self.components['ddc_diagnostic'] = ComponentStatus(
+                name="DDCLossDiagnostic",
+                active=True,
+                healthy=True,
+                last_check=time.time(),
+                error_count=0,
+                recommendations=[]
+            )
+            
+            # Инициализируем глобальную диагностику
+            initialize_ddc_diagnostic()
+            
             self.logger.info("✅ Все компоненты Smart Tuner инициализированы")
             
         except ImportError as e:
@@ -152,6 +167,8 @@ class SmartTunerIntegrationManager:
             return self._check_ddc_loss(step)
         elif component_name == 'lr_adapter':
             return self._check_lr_adapter(step, loss, grad_norm, optimizer)
+        elif component_name == 'ddc_diagnostic':
+            return self._check_ddc_diagnostic(step, loss)
         else:
             return {'healthy': True, 'recommendations': []}
     
@@ -238,6 +255,50 @@ class SmartTunerIntegrationManager:
                 'healthy': False,
                 'error': str(e),
                 'recommendations': [f'Ошибка LR adapter: {e}']
+            }
+    
+    def _check_ddc_diagnostic(self, step: int, loss: float) -> Dict[str, Any]:
+        """Проверяет состояние DDC diagnostic."""
+        try:
+            diagnostic = get_global_ddc_diagnostic()
+            
+            if diagnostic is None:
+                return {
+                    'healthy': False,
+                    'recommendations': ['DDC diagnostic не инициализирован']
+                }
+            
+            # Добавляем текущее значение loss
+            diagnostic.add_loss_value(loss, step)
+            
+            # Получаем сводку
+            summary = diagnostic.get_summary()
+            
+            # Проверяем необходимость детального анализа
+            if summary['status'] == 'analyzed':
+                if summary['mismatch_rate'] > 0.5:
+                    # Высокий уровень несовпадений - запускаем детальный анализ
+                    report = diagnostic.generate_report()
+                    fixes = diagnostic.suggest_fixes(report)
+                    
+                    return {
+                        'healthy': False,
+                        'statistics': summary,
+                        'recommendations': fixes,
+                        'detailed_report': report
+                    }
+            
+            return {
+                'healthy': True,
+                'statistics': summary,
+                'recommendations': []
+            }
+            
+        except Exception as e:
+            return {
+                'healthy': False,
+                'error': str(e),
+                'recommendations': [f'Ошибка DDC diagnostic: {e}']
             }
     
     def _check_system_health(self, results: Dict[str, Any]):
