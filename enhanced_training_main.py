@@ -362,8 +362,7 @@ class EnhancedTacotronTrainer:
         gate_targets = gate_targets.cuda()
         
         # Forward pass через parse_batch для правильной обработки всех элементов
-        batch_data = (text_inputs, text_lengths, mel_targets, gate_targets, mel_lengths, ctc_text, ctc_text_lengths, guide_mask)
-        x, y = self.model.parse_batch(batch_data)
+        x, y = self.model.parse_batch(batch)
         model_outputs = self.model(x)
         # Модель может возвращать разное количество элементов в зависимости от настроек
         if len(model_outputs) >= 4:
@@ -587,19 +586,53 @@ class EnhancedTacotronTrainer:
         # === Логирование в TensorBoard ===
         if self.tensorboard_writer is not None:
             try:
+                # Основные метрики
                 self.tensorboard_writer.add_scalar("train/loss", loss.item(), self.global_step)
                 self.tensorboard_writer.add_scalar("train/attention_diagonality", attention_diagonality, self.global_step)
                 self.tensorboard_writer.add_scalar("train/gate_accuracy", gate_accuracy, self.global_step)
+                
+                # Детализированные loss компоненты
+                self.tensorboard_writer.add_scalar("train/mel_loss", loss_dict.get('mel_loss', 0), self.global_step)
+                self.tensorboard_writer.add_scalar("train/gate_loss", loss_dict.get('gate_loss', 0), self.global_step)
+                self.tensorboard_writer.add_scalar("train/guide_loss", loss_dict.get('guide_loss', 0), self.global_step)
+                self.tensorboard_writer.add_scalar("train/emb_loss", loss_dict.get('emb_loss', 0), self.global_step)
+                
+                # Градиенты и оптимизация
+                self.tensorboard_writer.add_scalar("train/grad_norm", float(grad_norm), self.global_step)
+                self.tensorboard_writer.add_scalar("train/learning_rate", self.optimizer.param_groups[0]['lr'], self.global_step)
+                
+                # Guided attention weight
+                if hasattr(self.criterion, 'guide_loss_weight'):
+                    self.tensorboard_writer.add_scalar("train/guided_attention_weight", self.criterion.guide_loss_weight, self.global_step)
+                
+                # Принудительно сохраняем
                 self.tensorboard_writer.flush()
+                
             except Exception as e:
                 self.logger.error(f"⚠️ Ошибка логирования в TensorBoard: {e}")
         
         # === Логирование в MLflow ===
         if MLFLOW_AVAILABLE:
             try:
+                # Основные метрики
                 mlflow.log_metric("train.loss", loss.item(), step=self.global_step)
                 mlflow.log_metric("train.attention_diagonality", attention_diagonality, step=self.global_step)
                 mlflow.log_metric("train.gate_accuracy", gate_accuracy, step=self.global_step)
+                
+                # Детализированные loss компоненты
+                mlflow.log_metric("train.mel_loss", loss_dict.get('mel_loss', 0), step=self.global_step)
+                mlflow.log_metric("train.gate_loss", loss_dict.get('gate_loss', 0), step=self.global_step)
+                mlflow.log_metric("train.guide_loss", loss_dict.get('guide_loss', 0), step=self.global_step)
+                mlflow.log_metric("train.emb_loss", loss_dict.get('emb_loss', 0), step=self.global_step)
+                
+                # Градиенты и оптимизация
+                mlflow.log_metric("train.grad_norm", float(grad_norm), step=self.global_step)
+                mlflow.log_metric("train.learning_rate", self.optimizer.param_groups[0]['lr'], step=self.global_step)
+                
+                # Guided attention weight
+                if hasattr(self.criterion, 'guide_loss_weight'):
+                    mlflow.log_metric("train.guided_attention_weight", self.criterion.guide_loss_weight, step=self.global_step)
+                
             except Exception as e:
                 self.logger.error(f"⚠️ Ошибка логирования в MLflow: {e}")
         
@@ -630,8 +663,7 @@ class EnhancedTacotronTrainer:
                 gate_targets = gate_targets.cuda()
                 
                 # Forward pass через parse_batch для правильной обработки всех элементов
-                batch_data = (text_inputs, text_lengths, mel_targets, gate_targets, mel_lengths, ctc_text, ctc_text_lengths, guide_mask)
-                x, y = self.model.parse_batch(batch_data)
+                x, y = self.model.parse_batch(batch)
                 model_outputs = self.model(x)
                 # Модель может возвращать разное количество элементов в зависимости от настроек
                 if len(model_outputs) >= 4:
@@ -690,17 +722,31 @@ class EnhancedTacotronTrainer:
         # === Логирование в TensorBoard ===
         if self.tensorboard_writer is not None:
             try:
+                # Основные метрики валидации
                 self.tensorboard_writer.add_scalar("val/loss", avg_val_loss, self.global_step)
                 self.tensorboard_writer.add_scalar("val/quality_score", avg_quality_score, self.global_step)
+                
+                # Дополнительные метрики валидации
+                self.tensorboard_writer.add_scalar("val/epoch", self.current_epoch, self.global_step)
+                self.tensorboard_writer.add_scalar("val/best_loss", self.best_validation_loss, self.global_step)
+                
+                # Принудительно сохраняем
                 self.tensorboard_writer.flush()
+                
             except Exception as e:
                 self.logger.error(f"⚠️ Ошибка логирования в TensorBoard (валидация): {e}")
         
         # === Логирование в MLflow ===
         if MLFLOW_AVAILABLE:
             try:
+                # Основные метрики валидации
                 mlflow.log_metric("val.loss", avg_val_loss, step=self.global_step)
                 mlflow.log_metric("val.quality_score", avg_quality_score, step=self.global_step)
+                
+                # Дополнительные метрики валидации
+                mlflow.log_metric("val.epoch", self.current_epoch, step=self.global_step)
+                mlflow.log_metric("val.best_loss", self.best_validation_loss, step=self.global_step)
+                
             except Exception as e:
                 self.logger.error(f"⚠️ Ошибка логирования в MLflow (валидация): {e}")
         
@@ -798,6 +844,31 @@ class EnhancedTacotronTrainer:
         if val_result['val_loss'] < self.best_validation_loss:
             self.best_validation_loss = val_result['val_loss']
             self.logger.info(f"🏆 Новый рекорд validation loss: {self.best_validation_loss:.4f}")
+        
+        # === Логирование метрик эпохи в TensorBoard ===
+        if self.tensorboard_writer is not None:
+            try:
+                self.tensorboard_writer.add_scalar("epoch/train_loss", epoch_metrics['train_loss'], self.current_epoch)
+                self.tensorboard_writer.add_scalar("epoch/val_loss", epoch_metrics['val_loss'], self.current_epoch)
+                self.tensorboard_writer.add_scalar("epoch/quality_score", epoch_metrics['quality_score'], self.current_epoch)
+                self.tensorboard_writer.add_scalar("epoch/quality_issues", quality_issues_count, self.current_epoch)
+                self.tensorboard_writer.add_scalar("epoch/time", epoch_metrics['epoch_time'], self.current_epoch)
+                self.tensorboard_writer.add_scalar("epoch/phase", 0 if current_phase == 'pre_alignment' else 1, self.current_epoch)
+                self.tensorboard_writer.flush()
+            except Exception as e:
+                self.logger.error(f"⚠️ Ошибка логирования эпохи в TensorBoard: {e}")
+        
+        # === Логирование метрик эпохи в MLflow ===
+        if MLFLOW_AVAILABLE:
+            try:
+                mlflow.log_metric("epoch.train_loss", epoch_metrics['train_loss'], step=self.current_epoch)
+                mlflow.log_metric("epoch.val_loss", epoch_metrics['val_loss'], step=self.current_epoch)
+                mlflow.log_metric("epoch.quality_score", epoch_metrics['quality_score'], step=self.current_epoch)
+                mlflow.log_metric("epoch.quality_issues", quality_issues_count, step=self.current_epoch)
+                mlflow.log_metric("epoch.time", epoch_metrics['epoch_time'], step=self.current_epoch)
+                mlflow.log_metric("epoch.phase", current_phase, step=self.current_epoch)
+            except Exception as e:
+                self.logger.error(f"⚠️ Ошибка логирования эпохи в MLflow: {e}")
         
         # 🎵 Генерация тестового аудио каждые 5000 шагов
         if self.telegram_monitor and self.global_step % 5000 == 0:
@@ -959,27 +1030,31 @@ class EnhancedTacotronTrainer:
         
         except Exception as e:
             self.logger.error(f"❌ Ошибка обучения: {e}")
+            # Сохраняем checkpoint при ошибке
+            if self.training_metrics_history:
+                self.save_checkpoint('error_model.pth', self.training_metrics_history[-1])
             raise
         
         finally:
             # Финальная статистика
             if self.training_metrics_history:
                 self._print_training_summary()
-            
-            # === Завершение TensorBoard ===
-            if self.tensorboard_writer is not None:
-                try:
-                    self.tensorboard_writer.close()
-                    self.logger.info("✅ TensorBoard writer закрыт")
-                except Exception as e:
-                    self.logger.error(f"⚠️ Ошибка закрытия TensorBoard: {e}")
-            # === Завершение MLflow ===
-            if MLFLOW_AVAILABLE:
-                try:
-                    mlflow.end_run()
-                    self.logger.info("✅ MLflow run завершен")
-                except Exception as e:
-                    self.logger.error(f"⚠️ Ошибка завершения MLflow run: {e}")
+        
+        # === Завершение TensorBoard (только при нормальном завершении) ===
+        if self.tensorboard_writer is not None:
+            try:
+                self.tensorboard_writer.close()
+                self.logger.info("✅ TensorBoard writer закрыт")
+            except Exception as e:
+                self.logger.error(f"⚠️ Ошибка закрытия TensorBoard: {e}")
+        
+        # === Завершение MLflow (только при нормальном завершении) ===
+        if MLFLOW_AVAILABLE:
+            try:
+                mlflow.end_run()
+                self.logger.info("✅ MLflow run завершен")
+            except Exception as e:
+                self.logger.error(f"⚠️ Ошибка завершения MLflow run: {e}")
     
     def _print_training_summary(self):
         """Выводит сводку по обучению."""
