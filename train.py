@@ -1371,14 +1371,14 @@ def train(
                                 if quality_ctrl:
                                     try:
                                         quality_summary = quality_ctrl.get_quality_summary()
-                                        if quality_summary:
+                                        if quality_summary and isinstance(quality_summary, dict):
                                             smart_tuner_decisions["quality_controller"] = {
                                                 "active": True,
                                                 "status": "Анализ качества",
                                                 "summary": quality_summary,
                                             }
                                     except Exception as e:
-                                        print(f"⚠️ Ошибка получения quality summary: {e}")
+                                        print(f"⚠️ AdvancedQualityController ошибка: {e}")
 
                                 # Информация от ParamScheduler
                                 if sched_ctrl:
@@ -1570,7 +1570,13 @@ def train(
                                 except Exception as e:
                                     print(f"⚠️ Ошибка отправки Telegram уведомления: {e}")
                                     result = False
-                                print(f"📱 Telegram уведомление {'УСПЕШНО' if result else 'НЕ'} отправлено для шага {iteration}")
+                                
+                                # 🔥 ИСПРАВЛЕНИЕ: Правильная проверка результата
+                                if result:
+                                    print(f"📱 Telegram уведомление УСПЕШНО отправлено для шага {iteration}")
+                                else:
+                                    print(f"❌ Telegram уведомление НЕ отправлено для шага {iteration}")
+                                    print(f"   Причина: Ошибка API или недоступность Telegram")
 
                         except Exception as e:
                             print(f"⚠️ Ошибка Telegram уведомления: {e}")

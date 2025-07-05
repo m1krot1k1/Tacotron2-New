@@ -202,16 +202,8 @@ class AdvancedQualityController:
             attention_quality['focus_score'] += focus
             
             # 4. Энтропия (мера неопределенности)
-            att_weights_safe = np.clip(att_matrix, 1e-10, 1.0)
-            entropy = -np.sum(att_weights_safe * np.log(att_weights_safe))
-            
-            # Нормализуем энтропию
-            max_entropy = np.log(len(att_weights_safe))
-            normalized_entropy = entropy / max_entropy if max_entropy > 0 else 0
-            
-            # Focus = 1 - normalized_entropy
-            focus = 1.0 - normalized_entropy
-            attention_quality['focus_score'] += focus
+            entropy = self._calculate_attention_entropy(att_matrix)
+            attention_quality['entropy_score'] += entropy
             
             # 5. Согласованность alignment
             consistency = self._calculate_alignment_consistency(att_matrix)

@@ -217,54 +217,54 @@ class TelegramMonitor:
         # Emoji качества
         quality_emoji = "🔥" if quality > 0.8 else "✅" if quality > 0.6 else "⚠️" if quality > 0.4 else "❌"
         
-        message = f"🧠 *Smart Tuner - Отчет Обучения*\n\n"
-        message += f"📍 **Шаг:** `{step:,}`\n"
-        message += f"🎭 **Фаза:** `{phase}`\n"
-        message += f"{quality_emoji} **Качество:** `{quality:.1%}`\n\n"
+        message = f"🧠 Smart Tuner - Отчет Обучения\n\n"
+        message += f"📍 Шаг: {step:,}\n"
+        message += f"🎭 Фаза: {phase}\n"
+        message += f"{quality_emoji} Качество: {quality:.1%}\n\n"
         
         # Метрики
         metrics = analysis['metrics']
         if 'loss' in metrics:
-            message += f"📉 **Loss:** `{metrics['loss']:.4f}`\n"
+            message += f"📉 Loss: {metrics['loss']:.4f}\n"
         
         # Анализ attention
         attention = analysis.get('attention', {})
         if attention:
             diag = attention.get('diagonality', 0)
-            message += f"🎯 **Attention Диагональность:** `{diag:.1%}`\n"
+            message += f"🎯 Attention Диагональность: {diag:.1%}\n"
             
             if diag < 0.3:
-                message += f"  ⚠️ *Критично низкая! Проблемы с alignment*\n"
+                message += f"  ⚠️ Критично низкая! Проблемы с alignment\n"
             elif diag > 0.7:
-                message += f"  ✅ *Отличная диагональность!*\n"
+                message += f"  ✅ Отличная диагональность!\n"
         
         # 🤖 РЕШЕНИЯ SMART TUNER
         smart_decisions = analysis.get('smart_tuner_decisions', {})
         if smart_decisions:
-            message += f"\n🤖 **УМНАЯ СИСТЕМА ПРИНЯЛА РЕШЕНИЯ:**\n"
+            message += f"\n🤖 УМНАЯ СИСТЕМА ПРИНЯЛА РЕШЕНИЯ:\n"
             
             # Изменения гиперпараметров
             param_changes = smart_decisions.get('parameter_changes', {})
             if param_changes:
-                message += f"⚙️ **Изменения параметров:**\n"
+                message += f"⚙️ Изменения параметров:\n"
                 for param, change_info in param_changes.items():
                     old_val = change_info.get('old_value', 'N/A')
                     new_val = change_info.get('new_value', 'N/A')
                     reason = change_info.get('reason', 'Автоматическая оптимизация')
-                    message += f"  • `{param}`: {old_val} → {new_val}\n"
+                    message += f"  • {param}: {old_val} → {new_val}\n"
                     message += f"    💡 Причина: {reason}\n"
             
             # Рекомендации от контроллеров
             recommendations = smart_decisions.get('recommendations', [])
             if recommendations:
-                message += f"💡 **Рекомендации:**\n"
+                message += f"💡 Рекомендации:\n"
                 for rec in recommendations[:3]:  # Показываем до 3 рекомендаций
                     message += f"  • {rec}\n"
             
             # Статус контроллеров
             controller_status = smart_decisions.get('controller_status', {})
             if controller_status:
-                message += f"🎛️ **Статус контроллеров:**\n"
+                message += f"🎛️ Статус контроллеров:\n"
                 for controller, status in controller_status.items():
                     status_emoji = "✅" if status.get('active', False) else "⏸️"
                     message += f"  {status_emoji} {controller}: {status.get('status', 'Неизвестно')}\n"
@@ -272,7 +272,7 @@ class TelegramMonitor:
             # Предупреждения и проблемы
             warnings = smart_decisions.get('warnings', [])
             if warnings:
-                message += f"⚠️ **Предупреждения:**\n"
+                message += f"⚠️ Предупреждения:\n"
                 for warning in warnings[:2]:  # Показываем до 2 предупреждений
                     message += f"  • {warning}\n"
         

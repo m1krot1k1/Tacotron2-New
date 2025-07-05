@@ -190,10 +190,18 @@ class MemoryManager:
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
                 
-            # Дополнительная очистка для del объектов
-            for obj in gc.get_objects():
-                if isinstance(obj, torch.Tensor) and obj.device.type == 'cuda':
-                    del obj
+            # 🔥 ИСПРАВЛЕНИЕ: Безопасная очистка CUDA тензоров
+            try:
+                for obj in gc.get_objects():
+                    try:
+                        if isinstance(obj, torch.Tensor) and hasattr(obj, 'device') and obj.device.type == 'cuda':
+                            del obj
+                    except (ReferenceError, RuntimeError):
+                        # Игнорируем ошибки с weak references
+                        continue
+            except Exception as e:
+                print(f"⚠️ Ошибка при очистке CUDA тензоров: {e}")
+                # Продолжаем выполнение
                     
             gc.collect()  # Еще один проход
             

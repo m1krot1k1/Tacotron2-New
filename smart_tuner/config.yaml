@@ -1,462 +1,357 @@
-# 🚀 ИСПРАВЛЕННАЯ КОНФИГУРАЦИЯ SMART TUNER V2
-# Устранены все критические проблемы качества на основе исследований 2024-2025
-
-# 🧠 Adaptive Advisor - Более умные действия
 adaptive_advisor:
-  enabled: true
-  evaluation_window: 30   # Уменьшено для быстрой реакции на проблемы
-  min_history_for_decision: 50  # Уменьшено для раннего вмешательства
-  min_reward_threshold: -0.03   # Более строгий порог качества
-  
-  # ИСПРАВЛЕННАЯ диагностика проблем
-  diagnostics:
-    instability:
-      grad_norm_threshold: 50.0   # Намного строже для TTS
-    overfitting:
-      threshold: 2.0      # Строже для предотвращения переобучения
-      window_size: 20     # Быстрая реакция
-    stagnation:
-      min_delta: 0.002    # Увеличено для требования прогресса
-      window_size: 50     # Оптимизировано
-    attention_failure:
-      min_alignment_score: 0.7    # Высокие требования к attention
-      alignment_window: 30
-    gate_collapse:
-      min_gate_accuracy: 0.75     # Высокие требования к gate
-      gate_window: 20
-
-  # Улучшенные действия
   default_actions:
-    instability:
-      name: stability_boost
-      params:
-        learning_rate_multiplier: 0.5  # Более агрессивное снижение
-        gradient_clipping: 2.0         # Строже для TTS
-        batch_size_adjust: 0.8
-    overfitting:
-      name: regularization_boost
-      params:
-        dropout_increase: 0.02         # Мягкое увеличение
-        weight_decay_increase: 0.05
     attention_failure:
       name: attention_recovery
       params:
-        guided_attention_boost: 2.0    # Усиление guided attention
         attention_dropout_reduction: 0.03
+        guided_attention_boost: 2.0
     gate_collapse:
       name: gate_recovery
       params:
-        gate_loss_weight: 2.0          # Усиление gate loss
+        gate_loss_weight: 2.0
         gate_threshold_adjust: -0.1
-
-# 📊 КРИТИЧЕСКИ ИСПРАВЛЕННЫЕ пороги качества TTS
-training_safety:
+    instability:
+      name: stability_boost
+      params:
+        batch_size_adjust: 0.8
+        gradient_clipping: 2.0
+        learning_rate_multiplier: 0.5
+    overfitting:
+      name: regularization_boost
+      params:
+        dropout_increase: 0.02
+        weight_decay_increase: 0.05
+  diagnostics:
+    attention_failure:
+      alignment_window: 30
+      min_alignment_score: 0.7
+    gate_collapse:
+      gate_window: 20
+      min_gate_accuracy: 0.75
+    instability:
+      grad_norm_threshold: 50.0
+    overfitting:
+      threshold: 2.0
+      window_size: 20
+    stagnation:
+      min_delta: 0.002
+      window_size: 50
   enabled: true
-  max_training_hours: 12.0   # Оптимизировано для эффективности
-  min_training_hours: 1.0    # Минимум для базового качества
-  max_validation_loss: 20.0  # Строже для качества
-  min_training_steps: 3000   # Минимум для стабильности
-  
-  # 🎯 РЕВОЛЮЦИОННЫЕ критерии качества TTS (из исследований 2025)
-  tts_quality_checks:
-    min_attention_alignment: 0.4      # снижено с 0.75 согласно новым рекомендациям
-    min_gate_accuracy: 0.6            # снижено с 0.8 согласно новым рекомендациям
-    max_validation_loss: 30.0         # увеличено с 12.0 согласно новым рекомендациям
-    mel_quality_threshold: 0.5        # Высокое качество mel
-    min_training_progress: 0.1        # Обязательный прогресс
-    
-    # Минимальные требования для quality assurance
-    min_validation_steps: 10          # Больше проверок
-    min_training_time_minutes: 30     # Минимум времени
-    required_checks_percentage: 0.95  # 95% проверок должны пройти
-    
-    # Критические проверки (все должны пройти)
-    critical_checks:
-      - attention_alignment
-      - gate_accuracy  
-      - validation_loss
-      - mel_quality
-
-# 🔧 РЕВОЛЮЦИОННЫЕ гиперпараметры (из Very Attentive Tacotron 2025)
-hyperparameter_search_space:
-  batch_size:
-    type: int
-    min: 24             # Минимум для стабильности attention
-    max: 48             # Максимум для качества
-    default: 32         # Оптимум для стабильного обучения
-    
-  epochs:
-    type: int
-    min: 500            # Минимум для качественного TTS
-    max: 2000           # Максимум для fine-tuning фазы
-    default: 1000       # Оптимальное значение для fine-tuning
-    
-  learning_rate:
-    type: float
-    min: 0.00001        # Минимум для стабильности
-    max: 0.0005         # Максимум из современных исследований
-    default: 0.0001     # Оптимальное значение для Tacotron2
-    log: true
-    
-  warmup_steps:
-    type: int
-    min: 1000           # Больше warmup для TTS
-    max: 5000           # Оптимум
-    default: 2000       # Увеличено для стабильности
-    
-  guided_attention_enabled:
-    type: categorical
-    choices: [true]     # Всегда включено для качества
-    default: true
-    
-  guide_loss_weight:
-    type: float
-    min: 1.0            # Минимум для работы guided attention
-    max: 5.0            # Максимум
-    default: 2.5        # Увеличено для лучшего alignment
-    
-  p_attention_dropout:
-    type: float
-    min: 0.0
-    max: 0.1            # КРИТИЧЕСКИ уменьшено
-    default: 0.05       # Оптимум для TTS
-    
-  gate_threshold:
-    type: float
-    min: 0.4
-    max: 0.6
-    default: 0.5
-    
-  dropout_rate:
-    type: float
-    min: 0.05           # Минимум
-    max: 0.15           # КРИТИЧЕСКИ уменьшено с 0.4
-    default: 0.08       # Оптимум для TTS качества
-    
-  postnet_dropout_rate:
-    type: float
-    min: 0.0
-    max: 0.1            # Уменьшено
-    default: 0.05       # Оптимум
-
-  use_location_relative_attention:
-    type: categorical
-    choices: [true, false]
-    default: true
-
-# 🎯 РЕВОЛЮЦИОННАЯ оптимизация (из Llasa и Muyan-TTS исследований)
-optimization:
-  direction: minimize
-  n_trials: 25        # Увеличено для лучшего поиска
-  objective_metric: composite_tts_score
-  continue_training: true
-  sampler: bayesian
-  
-  # Больше времени для качественного обучения
-  full_epochs_per_trial: 120    # Увеличено для лучшего качества
-  overfitting_penalty: 0.02     # Уменьшено
-  
-  # Строгие TTS настройки из исследований
-  tts_specific:
-    min_training_steps: 5000           # Увеличено
-    attention_convergence_threshold: 0.75  # Строже
-    gate_accuracy_threshold: 0.8       # Строже
-    early_pruning_disabled_epochs: 100 # Больше времени на learning
-    
-  # УЛУЧШЕННАЯ композитная оценка (из современных исследований)
-  composite_objective:
-    weights:
-      validation_loss: 0.4              # Основной показатель
-      attention_alignment_score: 0.25   # Важность alignment
-      gate_accuracy: 0.2               # Важность gate
-      mel_quality_score: 0.15          # Важность mel качества
-    normalize_scores: true
-    quality_bonus_threshold: 0.85      # Высокий порог для бонуса
-    progress_weight: 0.15              # Вес прогресса
-
-# 🛑 ИСПРАВЛЕННАЯ система раннего останова
-early_stopping:
-  enabled: true
-  
-  # Современные критерии останова из исследований 2025
-  patience_epochs: 300       # Больше терпения для TTS
-  min_delta: 0.0005         # Более точная оценка улучшения
-  monitor_metric: "val_loss"
-  
-  # АДАПТИВНЫЕ пороги на основе фазы обучения (из Very Attentive Tacotron)
-  adaptive_thresholds:
-    enabled: true
-    
-    # Фаза выравнивания attention (0-800 эпох)
-    alignment_phase:
-      patience: 200           # Больше терпения для alignment
-      min_improvement: 0.02   # Требование улучшения
-      attention_threshold: 0.6
-      
-    # Фаза обучения (800-3000 эпох)  
-    learning_phase:
-      patience: 250           # Еще больше терпения
-      min_improvement: 0.001  # Точная оценка
-      attention_threshold: 0.85
-      
-    # Фаза fine-tuning (3000+ эпох)
-    fine_tuning_phase:
-      patience: 400           # Максимальное терпение
-      min_improvement: 0.0005
-      attention_threshold: 0.9
-
-# 🚀 НОВАЯ система контроля качества обучения
-quality_monitoring:
-  enabled: true
-  
-  # Мониторинг каждые N эпох
-  check_interval: 10
-  
-  # Качественные метрики из исследований 2025
-  quality_metrics:
-    attention_diagonality:
-      enabled: true
-      min_threshold: 0.7      # Высокое требование
-      target_threshold: 0.9   # Цель для качества
-    
-    gate_quality:
-      enabled: true
-      min_accuracy: 0.75      # Высокие требования
-      max_premature_stop: 0.1 # Контроль преждевременного останова
-    
-    mel_spectrogram_quality:
-      enabled: true
-      min_clarity: 0.6        # Минимальная четкость
-      max_noise_level: 0.2    # Максимальный шум
-    
-    training_stability:
-      enabled: true
-      max_gradient_norm: 10.0 # Стабильные градиенты
-      loss_smoothness: 0.8    # Плавность обучения
-
-# 🔄 АДАПТИВНАЯ система guided attention (из MonoAlign исследований)
-guided_attention:
-  enabled: true
-  
-  # Улучшенные параметры из исследований
-  initial_guide_decay: 0.9995    # Медленнее decay
-  final_guide_decay: 0.99999     # Финальное значение
-  guide_decay_start: 2000        # Позже начинать decay
-  
-  # Adaptive guided attention
-  adaptive_weight:
-    enabled: true
-    initial_weight: 5.0          # Сильное начальное влияние
-    final_weight: 1.0            # Финальное влияние
-    decay_steps: 5000            # Медленный переход
-  
-  # Sigma scheduling для лучшего alignment
-  sigma_schedule:
-    enabled: true
-    initial_sigma: 0.4           # Широкое начальное окно
-    final_sigma: 0.2             # Узкое финальное окно
-    decay_rate: 0.9999           # Медленное сужение
-
-# 📈 ИНТЕЛЛЕКТУАЛЬНАЯ адаптация эпох (из исследований XTTS)
+  evaluation_window: 30
+  min_history_for_decision: 50
+  min_reward_threshold: -0.03
 adaptive_learning:
-  enabled: true
-  
-  # Интеллектуальное определение количества эпох
+  complexity_modifiers:
+    complex: 1.3
+    moderate: 1.0
+    simple: 0.8
+    very_complex: 1.6
   dataset_analysis:
     enabled: true
     factors:
-      - dataset_size
-      - voice_complexity  
-      - quality_metrics
-      - hardware_constraints
-  
-  # Эпохи на основе размера датасета
+    - dataset_size
+    - voice_complexity
+    - quality_metrics
+    - hardware_constraints
+  enabled: true
   epoch_recommendations:
-    very_small: 5000     # <30 мин аудио
-    small: 4000          # 30мин - 1час
-    medium: 3000         # 1-3 часа
-    large: 2500          # 3-10 часов
-    very_large: 2000     # >10 часов
-  
-  # Модификаторы на основе сложности
-  complexity_modifiers:
-    simple: 0.8          # Простые голоса
-    moderate: 1.0        # Обычные голоса
-    complex: 1.3         # Сложные голоса (акценты)
-    very_complex: 1.6    # Очень сложные (эмоции, стили)
-
-# 🔧 СИСТЕМА ОБНАРУЖЕНИЯ ПЕРЕОБУЧЕНИЯ (из современных исследований)
-overfitting_detection:
-  enabled: true
-  
-  # Мониторинг каждые N эпох
-  check_interval: 20
-  
-  # Пороги обнаружения
-  thresholds:
-    val_loss_increase: 0.05      # Рост validation loss
-    train_val_gap: 2.0           # Разрыв между train и val
-    attention_degradation: 0.1   # Ухудшение attention
-    gate_instability: 0.15       # Нестабильность gate
-  
-  # Действия при обнаружении
-  actions:
-    reduce_learning_rate: 0.5    # Снижение LR
-    increase_dropout: 0.02       # Увеличение dropout
-    early_stop_patience: 100     # Patience для останова
-
-# 🎯 ФАЗОВОЕ ОБУЧЕНИЕ TTS (из Very Attentive Tacotron)
-tts_phase_training:
-  enabled: true
-  
-  phases:
-    # Фаза 1: Pre-alignment (первые эпохи)
-    pre_alignment:
-      epochs: 500
-      focus: "attention_learning"
-      guided_attention_weight: 10.0   # Максимальное влияние
-      learning_rate_modifier: 1.0
-      
-    # Фаза 2: Alignment learning
-    alignment_learning:
-      epochs: 1500
-      focus: "attention_stabilization"
-      guided_attention_weight: 3.0
-      learning_rate_modifier: 0.8
-      
-    # Фаза 3: Quality optimization
-    quality_optimization:
-      epochs: 1000
-      focus: "quality_improvement"
-      guided_attention_weight: 1.0
-      learning_rate_modifier: 0.5
-      
-    # Фаза 4: Fine-tuning
-    fine_tuning:
-      epochs: 500
-      focus: "final_polishing"
-      guided_attention_weight: 0.5
-      learning_rate_modifier: 0.3
-
-# 🚀 ПРОДВИНУТЫЕ TTS МЕТРИКИ (из исследований 2025)
-tts_metrics:
-  enabled: true
-  
-  # Метрики attention качества
-  attention_metrics:
-    diagonality_score: true      # Диагональность attention
-    monotonicity_score: true     # Монотонность
-    focus_score: true            # Фокусировка
-    entropy_score: true          # Энтропия attention
-  
-  # Метрики gate качества  
-  gate_metrics:
-    accuracy: true               # Точность gate
-    precision: true              # Precision gate
-    recall: true                 # Recall gate
-    f1_score: true               # F1 gate
-  
-  # Метрики качества mel
-  mel_metrics:
-    spectral_quality: true       # Спектральное качество
-    temporal_consistency: true   # Временная согласованность
-    harmonic_clarity: true       # Гармоническая четкость
-
-# 🎵 СПЕЦИАЛИЗИРОВАННЫЕ TTS LOSS FUNCTIONS (из исследований)
-tts_loss_functions:
-  enabled: true
-  
-  # Spectral Loss для лучшего качества
-  spectral_loss:
-    enabled: true
-    weight: 0.3
-    fft_sizes: [1024, 2048, 4096]
-    
-  # Perceptual Loss для человеческого качества
-  perceptual_loss:
-    enabled: true
-    weight: 0.2
-    
-  # Style Loss для стиля голоса
-  style_loss:
-    enabled: true
-    weight: 0.1
-
-# 🔧 Системные настройки
-experiment_name: tacotron2_smart_v2
-output_dir: output
+    large: 2500
+    medium: 3000
+    small: 4000
+    very_large: 2000
+    very_small: 5000
 checkpoint_path: data/checkpoint
 dataset_path: data/dataset
+early_stopping:
+  adaptive_thresholds:
+    alignment_phase:
+      attention_threshold: 0.6
+      min_improvement: 0.02
+      patience: 200
+    enabled: true
+    fine_tuning_phase:
+      attention_threshold: 0.9
+      min_improvement: 0.0005
+      patience: 400
+    learning_phase:
+      attention_threshold: 0.85
+      min_improvement: 0.001
+      patience: 250
+  enabled: true
+  min_delta: 0.0005
+  monitor_metric: val_loss
+  patience_epochs: 300
+experiment_name: tacotron2_smart_v2
+final_training:
+  epochs: 200
+guided_attention:
+  adaptive_weight:
+    decay_steps: 5000
+    enabled: true
+    final_weight: 1.0
+    initial_weight: 5.0
+  enabled: true
+  final_guide_decay: 0.99999
+  guide_decay_start: 2000
+  initial_guide_decay: 0.9995
+  sigma_schedule:
+    decay_rate: 0.9999
+    enabled: true
+    final_sigma: 0.2
+    initial_sigma: 0.4
 hparams_path: hparams.py
-
-# 🔌 Порты сервисов
-ports:
-  mlflow: 5000
-  tensorboard: 5001
-  optimization_engine: 5002
-  streamlit: 5003
-  log_watcher: 5005
-  metrics_store: 5006
-  param_scheduler: 5007
-  early_stop_controller: 5008
-  alert_manager: 5009
-  model_registry: 5010
-
-# 📊 MLflow настройки
+hyperparameter_search_space:
+  batch_size:
+    default: 32
+    max: 48
+    min: 24
+    type: int
+  dropout_rate:
+    default: 0.08
+    max: 0.15
+    min: 0.05
+    type: float
+  epochs:
+    default: 1000
+    max: 2000
+    min: 500
+    type: int
+  gate_threshold:
+    default: 0.5
+    max: 0.6
+    min: 0.4
+    type: float
+  guide_loss_weight:
+    default: 2.5
+    max: 5.0
+    min: 1.0
+    type: float
+  guided_attention_enabled:
+    choices:
+    - true
+    default: true
+    type: categorical
+  learning_rate:
+    default: 0.0001
+    log: true
+    max: 0.0005
+    min: 1.0e-05
+    type: float
+  p_attention_dropout:
+    default: 0.05
+    max: 0.1
+    min: 0.0
+    type: float
+  postnet_dropout_rate:
+    default: 0.05
+    max: 0.1
+    min: 0.0
+    type: float
+  use_location_relative_attention:
+    choices:
+    - true
+    - false
+    default: true
+    type: categorical
+  warmup_steps:
+    default: 2000
+    max: 5000
+    min: 1000
+    type: int
 mlflow:
-  tracking_uri: mlruns
   experiment_name: tacotron2_smart_optimization
-
-# 🏆 Реестр моделей
+  tracking_uri: mlruns
 model_registry:
-  path: smart_tuner/models
   best_model_name: best_tts_model.pt
-  max_models: 3  # Уменьшено с 5
-  primary_metric: val_loss
+  max_models: 3
   minimize_metric: true
-
-# 🎯 Планировщик параметров
+  path: smart_tuner/models
+  primary_metric: val_loss
+monitoring:
+  emergency_notifications: true
+  grad_norm_alert_threshold: 5.0
+  gradient_monitoring: true
+  loss_alert_threshold: 10.0
+optimization:
+  composite_objective:
+    normalize_scores: true
+    progress_weight: 0.15
+    quality_bonus_threshold: 0.85
+    weights:
+      attention_alignment_score: 0.25
+      gate_accuracy: 0.2
+      mel_quality_score: 0.15
+      validation_loss: 0.4
+  continue_training: true
+  direction: minimize
+  full_epochs_per_trial: 120
+  n_trials: 25
+  objective_metric: composite_tts_score
+  overfitting_penalty: 0.02
+  sampler: bayesian
+  tts_specific:
+    attention_convergence_threshold: 0.75
+    early_pruning_disabled_epochs: 100
+    gate_accuracy_threshold: 0.8
+    min_training_steps: 5000
+output_dir: output
+overfitting_detection:
+  actions:
+    early_stop_patience: 100
+    increase_dropout: 0.02
+    reduce_learning_rate: 0.5
+  check_interval: 20
+  enabled: true
+  thresholds:
+    attention_degradation: 0.1
+    gate_instability: 0.15
+    train_val_gap: 2.0
+    val_loss_increase: 0.05
 parameter_scheduling:
   learning_rate:
     enabled: true
-    strategy: cosine
-    start_value: 0.001
     end_value: 0.0001
-    total_steps: 8000  # Уменьшено с 10000
-
+    start_value: 0.001
+    strategy: cosine
+    total_steps: 8000
 parameter_scheduling_config:
-  update_frequency: 20  # Увеличено с 10
-
-# 🎯 Финальное обучение
-final_training:
-  epochs: 200
-
-# 📝 Обучение
-training:
-  base_command: python train.py
-  python_executable: python
-  script_path: train.py
-  continue_from_checkpoint: true
-  full_training: true
-
-# 🔐 Ресурсы
+  update_frequency: 20
+ports:
+  alert_manager: 5009
+  early_stop_controller: 5008
+  log_watcher: 5005
+  metrics_store: 5006
+  mlflow: 5000
+  model_registry: 5010
+  optimization_engine: 5002
+  param_scheduler: 5007
+  streamlit: 5003
+  tensorboard: 5001
+quality_monitoring:
+  check_interval: 10
+  enabled: true
+  quality_metrics:
+    attention_diagonality:
+      enabled: true
+      min_threshold: 0.7
+      target_threshold: 0.9
+    gate_quality:
+      enabled: true
+      max_premature_stop: 0.1
+      min_accuracy: 0.75
+    mel_spectrogram_quality:
+      enabled: true
+      max_noise_level: 0.2
+      min_clarity: 0.6
+    training_stability:
+      enabled: true
+      loss_smoothness: 0.8
+      max_gradient_norm: 10.0
 resources:
   checkpointing:
     path: output
-
-# 📱 Telegram уведомления
+smart_tuner:
+  adaptive_learning_rate: true
+  early_stop_patience: 50
+  emergency_interventions: true
+  emergency_mode: true
+  gradient_clipping_enabled: true
+  guided_attention_multiplier: 5.0
+  learning_rate_multiplier: 0.1
+  max_grad_norm: 1.0
+  quality_threshold: 0.3
 telegram:
-  enabled: true
   bot_token: 2010534305:AAHqgXYT5RPcLoJe-wNdFaFbIJvJsN2xUHA
   chat_id: '536955174'
-  parse_mode: Markdown
   disable_web_page_preview: true
+  enabled: true
   notifications:
-    training_start: true
-    training_complete: true
-    training_restart: true        # 🔄 НОВОЕ: Уведомления о перезапусках
-    optimization_updates: true
-    error_alerts: true
     early_stop: true
+    error_alerts: true
     metrics_summary: true
-    quality_interventions: true   # 🤖 НОВОЕ: Умные вмешательства системы 
+    optimization_updates: true
+    quality_interventions: true
+    training_complete: true
+    training_restart: true
+    training_start: true
+  parse_mode: Markdown
+training:
+  base_command: python train.py
+  continue_from_checkpoint: true
+  full_training: true
+  python_executable: python
+  script_path: train.py
+training_safety:
+  enabled: true
+  max_training_hours: 12.0
+  max_validation_loss: 20.0
+  min_training_hours: 1.0
+  min_training_steps: 3000
+  tts_quality_checks:
+    critical_checks:
+    - attention_alignment
+    - gate_accuracy
+    - validation_loss
+    - mel_quality
+    max_validation_loss: 30.0
+    mel_quality_threshold: 0.5
+    min_attention_alignment: 0.4
+    min_gate_accuracy: 0.6
+    min_training_progress: 0.1
+    min_training_time_minutes: 30
+    min_validation_steps: 10
+    required_checks_percentage: 0.95
+tts_loss_functions:
+  enabled: true
+  perceptual_loss:
+    enabled: true
+    weight: 0.2
+  spectral_loss:
+    enabled: true
+    fft_sizes:
+    - 1024
+    - 2048
+    - 4096
+    weight: 0.3
+  style_loss:
+    enabled: true
+    weight: 0.1
+tts_metrics:
+  attention_metrics:
+    diagonality_score: true
+    entropy_score: true
+    focus_score: true
+    monotonicity_score: true
+  enabled: true
+  gate_metrics:
+    accuracy: true
+    f1_score: true
+    precision: true
+    recall: true
+  mel_metrics:
+    harmonic_clarity: true
+    spectral_quality: true
+    temporal_consistency: true
+tts_phase_training:
+  enabled: true
+  phases:
+    alignment_learning:
+      epochs: 1500
+      focus: attention_stabilization
+      guided_attention_weight: 3.0
+      learning_rate_modifier: 0.8
+    fine_tuning:
+      epochs: 500
+      focus: final_polishing
+      guided_attention_weight: 0.5
+      learning_rate_modifier: 0.3
+    pre_alignment:
+      epochs: 500
+      focus: attention_learning
+      guided_attention_weight: 10.0
+      learning_rate_modifier: 1.0
+    quality_optimization:
+      epochs: 1000
+      focus: quality_improvement
+      guided_attention_weight: 1.0
+      learning_rate_modifier: 0.5

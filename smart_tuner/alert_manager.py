@@ -167,7 +167,24 @@ class AlertManager:
             return True
             
         except requests.exceptions.RequestException as e:
-            self.logger.error(f"Ошибка отправки в Telegram: {e}")
+            # 🔥 ИСПРАВЛЕНИЕ: Детальная диагностика ошибок Telegram
+            error_details = f"Ошибка отправки в Telegram: {e}"
+            
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    error_json = e.response.json()
+                    if 'description' in error_json:
+                        error_details += f"\nОписание: {error_json['description']}"
+                    if 'error_code' in error_json:
+                        error_details += f"\nКод ошибки: {error_json['error_code']}"
+                except:
+                    pass
+                    
+                error_details += f"\nСтатус код: {e.response.status_code}"
+                error_details += f"\nURL: {url}"
+                error_details += f"\nChat ID: {self.chat_id}"
+            
+            self.logger.error(error_details)
             return False
     
     def _send_document(self, file_path: str, caption: str = "", parse_mode: str = 'Markdown') -> bool:
