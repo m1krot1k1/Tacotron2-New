@@ -134,8 +134,8 @@ hyperparameter_search_space:
   learning_rate:
     default: 0.0001
     log: true
-    max: 0.0005
-    min: 1.0e-05
+    max: 0.0002
+    min: 5.0e-05
     type: float
   p_attention_dropout:
     default: 0.05

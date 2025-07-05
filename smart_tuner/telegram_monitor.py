@@ -117,6 +117,54 @@ class TelegramMonitor:
         except Exception as e:
             self.logger.error(f"❌ Ошибка отправки уведомления о фазе: {e}")
             return False
+    
+    def send_critical_alert(self, alert_type: str, details: Dict[str, Any], 
+                          recommendations: List[str] = None) -> bool:
+        """
+        🚨 Отправляет критическое уведомление о серьезных проблемах.
+        
+        Args:
+            alert_type: Тип алерта
+            details: Детали проблемы
+            recommendations: Список рекомендаций
+        """
+        if not self.enabled:
+            return False
+            
+        try:
+            message = self._create_critical_alert_message(alert_type, details, recommendations)
+            result = self._send_text_message(message)
+            
+            if result:
+                self.logger.info(f"✅ Критическое уведомление отправлено: {alert_type}")
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка отправки критического уведомления: {e}")
+            return False
+    
+    def send_restart_notification(self, reason: str, step: int) -> bool:
+        """
+        🔄 Отправляет уведомление о перезапуске обучения.
+        
+        Args:
+            reason: Причина перезапуска
+            step: Шаг на котором произошел перезапуск
+        """
+        if not self.enabled:
+            return False
+            
+        try:
+            message = self._create_restart_message(reason, step)
+            result = self._send_text_message(message)
+            
+            if result:
+                self.logger.info(f"✅ Уведомление о перезапуске отправлено")
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка отправки уведомления о перезапуске: {e}")
+            return False
         
     def should_send_notification(self, current_step: int) -> bool:
         """Проверяет нужность отправки уведомления."""
@@ -843,5 +891,59 @@ class TelegramMonitor:
         
         message += f"\n🕐 {datetime.now().strftime('%H:%M:%S')}"
         message += f"\n🎯 *Система адаптирует параметры для новой фазы*"
+        
+        return message
+    
+    def _create_critical_alert_message(self, alert_type: str, details: Dict[str, Any], 
+                                     recommendations: List[str] = None) -> str:
+        """Создает критическое сообщение об алерте."""
+        
+        message = f"🚨 *КРИТИЧЕСКИЙ АЛЕРТ: {alert_type}*\n\n"
+        
+        # Детали проблемы
+        if 'description' in details:
+            message += f"📋 **Описание:** {details['description']}\n\n"
+        
+        if 'step' in details:
+            message += f"📍 **Шаг:** `{details['step']:,}`\n"
+        
+        # Метрики если есть
+        if 'metrics' in details:
+            message += f"\n📊 **Проблемные метрики:**\n"
+            for metric, value in details['metrics'].items():
+                message += f"• {metric}: `{value}`\n"
+        
+        # Список проблем
+        if 'issues' in details:
+            message += f"\n🔥 **Обнаруженные проблемы:**\n"
+            for issue in details['issues']:
+                message += f"• {issue}\n"
+        
+        # Рекомендации
+        if recommendations:
+            message += f"\n💡 **Рекомендации:**\n"
+            for rec in recommendations:
+                message += f"• {rec}\n"
+        
+        message += f"\n🛡️ **Автоматические действия активированы!**"
+        message += f"\n🕐 {datetime.now().strftime('%H:%M:%S')}"
+        
+        return message
+    
+    def _create_restart_message(self, reason: str, step: int) -> str:
+        """Создает сообщение о перезапуске."""
+        
+        message = f"🔄 *АВТОМАТИЧЕСКИЙ ПЕРЕЗАПУСК ОБУЧЕНИЯ*\n\n"
+        message += f"🚨 **Причина:** {reason}\n"
+        message += f"📍 **Шаг:** `{step:,}`\n"
+        message += f"🕐 **Время:** {datetime.now().strftime('%H:%M:%S')}\n\n"
+        
+        message += f"🛡️ **Система восстановления активирована:**\n"
+        message += f"• 🔥 Снижение learning rate\n"
+        message += f"• 🎯 Усиление guided attention\n"
+        message += f"• 📦 Оптимизация batch size\n"
+        message += f"• ✂️ Строгое клипирование градиентов\n\n"
+        
+        message += f"⏰ **Перезапуск через несколько секунд...**"
         
         return message 

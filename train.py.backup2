@@ -142,28 +142,17 @@ def prepare_dataloaders(hparams):
             shuffle = True
         print("✅ Используем стандартный DataLoader")
 
-    # 🔥 ИСПРАВЛЕНИЕ: Разделяем логику создания DataLoader в зависимости от использования batch_sampler
-    if use_bucket_batching and BucketBatchSampler is not None:
-        # Для bucket batching используем только batch_sampler
-        train_loader = DataLoader(
-            trainset,
-            num_workers=1,
-            batch_sampler=train_sampler,
-            pin_memory=False,
-            collate_fn=collate_fn,
-        )
-    else:
-        # Для стандартного DataLoader используем batch_size, shuffle, sampler
-        train_loader = DataLoader(
-            trainset,
-            num_workers=1,
-            shuffle=shuffle,
-            sampler=train_sampler,
-            batch_size=hparams.batch_size,
-            pin_memory=False,
-            drop_last=True,
-            collate_fn=collate_fn,
-        )
+    train_loader = DataLoader(
+        trainset,
+        num_workers=1,
+        shuffle=shuffle if not use_bucket_batching else False,
+        sampler=None if use_bucket_batching else train_sampler,
+        batch_size=hparams.batch_size,
+        pin_memory=False,
+        drop_last=True,
+        collate_fn=collate_fn,
+        batch_sampler=train_sampler if use_bucket_batching else None,
+    )
     return train_loader, valset, collate_fn
 
 
@@ -721,6 +710,7 @@ def train(
         try:
             from torch.utils.tensorboard import SummaryWriter
             import shutil
+            import os
             
             # 🔥 ИСПРАВЛЕНИЕ: Очищаем старые логи TensorBoard
             if os.path.exists(log_directory):
@@ -1621,28 +1611,28 @@ def train(
                     # 🔥 ИСПРАВЛЕНИЕ: Безопасное логирование в MLflow
                     if MLFLOW_AVAILABLE:
                         try:
-                                training_metrics = {
-                                    "training.loss": reduced_loss,
-                                    "training.taco_loss": reduced_taco_loss,
-                                    "training.atten_loss": reduced_atten_loss,
-                                    "training.mi_loss": reduced_mi_loss,
-                                    "training.guide_loss": reduced_guide_loss if reduced_guide_loss is not None else 0.0,
-                                    "training.gate_loss": reduced_gate_loss,
-                                    "training.emb_loss": reduced_emb_loss,
-                                    "grad.norm": grad_norm,
-                                    "learning.rate": learning_rate,
-                                    "duration": duration,
-                                    "batch_size": hparams.batch_size,
-                                    "learning_rate": learning_rate,
-                                    # ✅ ИСПРАВЛЕНО: Добавляем новые метрики качества
-                                    "quality.attention_diagonality": attention_diagonality,
-                                "quality.gate_accuracy": gate_accuracy,
-                            }
-                                for metric_name, metric_value in training_metrics.items():
-                                    try:
-                                        mlflow.log_metric(metric_name, metric_value, step=iteration)
-                                    except Exception as e:
-                                        print(f"⚠️ Ошибка логирования в MLflow для {metric_name}: {e}")
+                            training_metrics = {
+                            "training.loss": reduced_loss,
+                            "training.taco_loss": reduced_taco_loss,
+                            "training.atten_loss": reduced_atten_loss,
+                            "training.mi_loss": reduced_mi_loss,
+                            "training.guide_loss": reduced_guide_loss if reduced_guide_loss is not None else 0.0,
+                            "training.gate_loss": reduced_gate_loss,
+                            "training.emb_loss": reduced_emb_loss,
+                            "grad.norm": grad_norm,
+                            "learning.rate": learning_rate,
+                            "duration": duration,
+                            "batch_size": hparams.batch_size,
+                            "learning_rate": learning_rate,
+                            # ✅ ИСПРАВЛЕНО: Добавляем новые метрики качества
+                            "quality.attention_diagonality": attention_diagonality,
+                            "quality.gate_accuracy": gate_accuracy,
+                        }
+                        for metric_name, metric_value in training_metrics.items():
+                            try:
+                                mlflow.log_metric(metric_name, metric_value, step=iteration)
+                            except Exception as e:
+                                print(f"⚠️ Ошибка логирования в MLflow для {metric_name}: {e}")
                         except Exception as e:
                             print(f"⚠️ Общая ошибка логирования в MLflow: {e}")
                     else:

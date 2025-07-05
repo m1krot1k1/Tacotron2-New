@@ -855,22 +855,27 @@ class AdvancedQualityController:
         
         latest_quality = self.quality_history[-1]
         
+        # Безопасное получение значений с проверкой существования ключей
+        attention_quality = latest_quality.get('attention_quality', {})
+        gate_quality = latest_quality.get('gate_quality', {})
+        mel_quality = latest_quality.get('mel_quality', {})
+        
         summary = {
-            'current_phase': latest_quality['phase'],
-            'overall_quality_score': latest_quality['overall_quality_score'],
-            'quality_trend': latest_quality['quality_trend'],
-            'active_issues': len(latest_quality['quality_issues']),
+            'current_phase': latest_quality.get('phase', 'unknown'),
+            'overall_quality_score': latest_quality.get('overall_quality_score', 0.0),
+            'quality_trend': latest_quality.get('quality_trend', 'stable'),
+            'active_issues': len(latest_quality.get('quality_issues', [])),
             'interventions_applied': len(self.quality_interventions),
             'training_epochs_analyzed': len(self.quality_history),
             'quality_breakdown': {
-                'attention_diagonality': latest_quality['attention_quality'].get('diagonality_score', 0),
-                'gate_accuracy': latest_quality['gate_quality'].get('accuracy', 0),
-                'mel_quality': latest_quality['mel_quality'].get('spectral_quality', 0)
+                'attention_diagonality': attention_quality.get('diagonality_score', 0.0),
+                'gate_accuracy': gate_quality.get('accuracy', 0.0),
+                'mel_quality': mel_quality.get('spectral_quality', 0.0)
             },
-            'recommendations': latest_quality['recommended_interventions'][:3]  # Топ-3 рекомендации
+            'recommendations': latest_quality.get('recommended_interventions', [])[:3]  # Топ-3 рекомендации
         }
         
-        return summary 
+        return summary
     
     def get_status(self) -> Dict[str, Any]:
         """Возвращает текущий статус контроллера."""
