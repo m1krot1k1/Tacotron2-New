@@ -793,6 +793,16 @@ def train(
         except Exception as e:
             print(f"⚠️ IntelligentEpochOptimizer ошибка: {e}")
 
+    # 🔧 ИНТЕГРАЦИЯ SMART TUNER INTEGRATION MANAGER
+    integration_manager = None
+    if is_main_node:
+        try:
+            from smart_tuner.integration_manager import initialize_smart_tuner
+            integration_manager = initialize_smart_tuner()
+            print("🎯 Smart Tuner Integration Manager активирован")
+        except Exception as e:
+            print(f"⚠️ Не удалось инициализировать Integration Manager: {e}")
+
     gradient_monitor = GradientStabilityMonitor()
     restart_attempts = 0
     max_restart_attempts = 3
@@ -1044,26 +1054,89 @@ def train(
                         print("⚠️ Предупреждение: loss is None, пропускаем backward pass")
 
                 if loss is not None:
-                    grad_norm = torch.nn.utils.clip_grad_norm_(
-                        model.parameters(), hparams.grad_clip_thresh
-                    )
-                    # --- EMA нормы градиента и авто-коррекция LR ---
-                    grad_norm_ema = ema_beta * grad_norm_ema + (1 - ema_beta) * float(grad_norm)
-                    if (iteration % lr_adjust_interval) == 0 and iteration > 0:
-                        current_lr = optimizer.param_groups[0]["lr"]
-                        new_lr = current_lr
-                        if grad_norm_ema > 10.0:
-                            new_lr = max(hparams.learning_rate_min, current_lr * 0.5)
-                        elif grad_norm_ema < 0.1:
-                            new_lr = min(hparams.learning_rate * 2, current_lr * 1.1)
-                        if abs(new_lr - current_lr) > 1e-12:
-                            for g in optimizer.param_groups:
-                                g["lr"] = new_lr
-                            if debug_reporter:
-                                debug_reporter.add_warning(
-                                    f"LR auto-adjust: grad_norm_ema={grad_norm_ema:.3f}, lr {current_lr:.2e} → {new_lr:.2e}"
-                                )
-                            print(f"🔄 LR auto-adjust: {current_lr:.6e} → {new_lr:.6e} (grad_norm_ema={grad_norm_ema:.3f})")
+                    # 🔧 ИНТЕГРАЦИЯ УЛУЧШЕННОГО GRADIENT CLIPPING
+                    try:
+                        from smart_tuner.gradient_clipper import get_global_clipper, AdaptiveGradientClipper
+                        
+                        # Инициализируем адаптивный clipper если еще не создан
+                        clipper = get_global_clipper()
+                        if clipper is None:
+                            clipper = AdaptiveGradientClipper(
+                                max_norm=hparams.grad_clip_thresh,
+                                adaptive=True,
+                                emergency_threshold=1000.0
+                            )
+                            from smart_tuner.gradient_clipper import set_global_clipper
+                            set_global_clipper(clipper)
+                        
+                        # Применяем интеллектуальное обрезание градиентов
+                        was_clipped, grad_norm, clip_threshold = clipper.clip_gradients(model, iteration)
+                        
+                        # Логируем если было обрезание
+                        if was_clipped and debug_reporter:
+                            debug_reporter.add_warning(
+                                f"Gradient clipping applied: {grad_norm:.2f} → {clip_threshold:.2f}"
+                            )
+                            
+                    except ImportError:
+                        # Fallback к стандартному clipping
+                        grad_norm = torch.nn.utils.clip_grad_norm_(
+                            model.parameters(), hparams.grad_clip_thresh
+                        )
+                        print("⚠️ Используется стандартный gradient clipping (Smart Tuner не найден)")
+                    # 🔧 ИНТЕГРАЦИЯ SMART LEARNING RATE ADAPTER
+                    try:
+                        from smart_tuner.smart_lr_adapter import get_global_lr_adapter, SmartLRAdapter
+                        from smart_tuner.safe_ddc_loss import get_global_ddc_loss, SafeDDCLoss
+                        
+                        # Инициализируем Smart LR Adapter если еще не создан
+                        lr_adapter = get_global_lr_adapter()
+                        if lr_adapter is None:
+                            lr_adapter = SmartLRAdapter(
+                                optimizer=optimizer,
+                                patience=10,
+                                factor=0.5,
+                                min_lr=hparams.learning_rate_min,
+                                max_lr=hparams.learning_rate * 2,
+                                emergency_factor=0.1,
+                                grad_norm_threshold=1000.0,
+                                loss_nan_threshold=1e6
+                            )
+                            from smart_tuner.smart_lr_adapter import set_global_lr_adapter
+                            set_global_lr_adapter(lr_adapter)
+                        
+                        # Применяем интеллектуальную адаптацию LR
+                        lr_changed = lr_adapter.step(float(reduced_loss), grad_norm, iteration)
+                        
+                        # Логируем изменения LR
+                        if lr_changed and debug_reporter:
+                            current_lr = optimizer.param_groups[0]["lr"]
+                            debug_reporter.add_warning(
+                                f"Smart LR adaptation: grad_norm={grad_norm:.3f}, lr={current_lr:.2e}"
+                            )
+                        
+                        # Обновляем grad_norm_ema для совместимости
+                        grad_norm_ema = ema_beta * grad_norm_ema + (1 - ema_beta) * float(grad_norm)
+                        
+                    except ImportError:
+                        # Fallback к стандартной логике
+                        grad_norm_ema = ema_beta * grad_norm_ema + (1 - ema_beta) * float(grad_norm)
+                        if (iteration % lr_adjust_interval) == 0 and iteration > 0:
+                            current_lr = optimizer.param_groups[0]["lr"]
+                            new_lr = current_lr
+                            if grad_norm_ema > 10.0:
+                                new_lr = max(hparams.learning_rate_min, current_lr * 0.5)
+                            elif grad_norm_ema < 0.1:
+                                new_lr = min(hparams.learning_rate * 2, current_lr * 1.1)
+                            if abs(new_lr - current_lr) > 1e-12:
+                                for g in optimizer.param_groups:
+                                    g["lr"] = new_lr
+                                if debug_reporter:
+                                    debug_reporter.add_warning(
+                                        f"LR auto-adjust: grad_norm_ema={grad_norm_ema:.3f}, lr {current_lr:.2e} → {new_lr:.2e}"
+                                    )
+                                print(f"🔄 LR auto-adjust: {current_lr:.6e} → {new_lr:.6e} (grad_norm_ema={grad_norm_ema:.3f})")
+                        print("⚠️ Используется стандартная адаптация LR (Smart Tuner не найден)")
                     # --- Быстрая проверка NaN/Inf каждые 10 шагов ---
                     if (iteration % 10) == 0 and (torch.isnan(loss) or torch.isinf(loss)):
                         print("🚨 [Auto-Recover] NaN/Inf обнаружен в loss – уменьшаем LR и пропускаем шаг")
@@ -1303,6 +1376,35 @@ def train(
                             )
                         except Exception as e:
                             print(f"⚠️ Ошибка получения guide_loss weight: {e}")
+
+                    # 🔧 ИНТЕГРАЦИЯ SMART TUNER - ВЫЗОВ INTEGRATION MANAGER
+                    if integration_manager:
+                        try:
+                            # Выполняем шаг интеграции всех компонентов
+                            integration_result = integration_manager.step(
+                                step=iteration,
+                                loss=float(reduced_loss),
+                                grad_norm=float(grad_norm),
+                                model=model,
+                                optimizer=optimizer
+                            )
+                            
+                            # Логируем результаты интеграции
+                            if integration_result.get('emergency_mode'):
+                                print(f"🚨 Smart Tuner в экстренном режиме: {integration_result.get('recommendations', [])}")
+                            
+                            # Добавляем метрики интеграции в MLflow
+                            if MLFLOW_AVAILABLE:
+                                try:
+                                    mlflow.log_metric("smart_tuner.system_health", 
+                                                     integration_result.get('system_health', 1.0), step=iteration)
+                                    mlflow.log_metric("smart_tuner.emergency_mode", 
+                                                     int(integration_result.get('emergency_mode', False)), step=iteration)
+                                except Exception as e:
+                                    print(f"⚠️ Ошибка логирования метрик Smart Tuner: {e}")
+                                    
+                        except Exception as e:
+                            print(f"⚠️ Ошибка в Integration Manager: {e}")
 
                     # Логирование в MLflow
                     if MLFLOW_AVAILABLE:

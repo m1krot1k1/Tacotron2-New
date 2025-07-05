@@ -1,0 +1,326 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Интеграционный менеджер Smart Tuner для Tacotron2-New
+Координирует все улучшения и обеспечивает их правильную работу
+
+Особенности:
+- Централизованное управление всеми компонентами
+- Автоматическая диагностика и восстановление
+- Интеграция с системой мониторинга
+- Статистика и рекомендации
+"""
+
+import logging
+import time
+from typing import Dict, Any, List, Optional
+from dataclasses import dataclass
+
+@dataclass
+class ComponentStatus:
+    """Статус компонента Smart Tuner."""
+    name: str
+    active: bool
+    healthy: bool
+    last_check: float
+    error_count: int
+    recommendations: List[str]
+
+class SmartTunerIntegrationManager:
+    """
+    Центральный менеджер интеграции всех улучшений Smart Tuner.
+    
+    Компоненты:
+    - AdaptiveGradientClipper
+    - SafeDDCLoss
+    - SmartLRAdapter
+    - AdvancedQualityController
+    - TelegramMonitor
+    """
+    
+    def __init__(self):
+        self.logger = logging.getLogger(__name__)
+        self.components = {}
+        self.start_time = time.time()
+        self.total_steps = 0
+        self.emergency_mode = False
+        
+        # Инициализация компонентов
+        self._initialize_components()
+    
+    def _initialize_components(self):
+        """Инициализирует все компоненты Smart Tuner."""
+        try:
+            # Gradient Clipper
+            from .gradient_clipper import AdaptiveGradientClipper
+            self.components['gradient_clipper'] = ComponentStatus(
+                name="AdaptiveGradientClipper",
+                active=True,
+                healthy=True,
+                last_check=time.time(),
+                error_count=0,
+                recommendations=[]
+            )
+            
+            # DDC Loss
+            from .safe_ddc_loss import SafeDDCLoss
+            self.components['ddc_loss'] = ComponentStatus(
+                name="SafeDDCLoss",
+                active=True,
+                healthy=True,
+                last_check=time.time(),
+                error_count=0,
+                recommendations=[]
+            )
+            
+            # LR Adapter
+            from .smart_lr_adapter import SmartLRAdapter
+            self.components['lr_adapter'] = ComponentStatus(
+                name="SmartLRAdapter",
+                active=True,
+                healthy=True,
+                last_check=time.time(),
+                error_count=0,
+                recommendations=[]
+            )
+            
+            self.logger.info("✅ Все компоненты Smart Tuner инициализированы")
+            
+        except ImportError as e:
+            self.logger.error(f"❌ Ошибка инициализации компонентов: {e}")
+            self.emergency_mode = True
+    
+    def step(self, step: int, loss: float, grad_norm: float = None, 
+             model=None, optimizer=None) -> Dict[str, Any]:
+        """
+        Выполняет шаг интеграции всех компонентов.
+        
+        Args:
+            step: Текущий шаг обучения
+            loss: Текущий loss
+            grad_norm: Норма градиентов
+            model: Модель PyTorch
+            optimizer: Оптимизатор PyTorch
+            
+        Returns:
+            Словарь с результатами работы всех компонентов
+        """
+        self.total_steps += 1
+        results = {
+            'step': step,
+            'timestamp': time.time(),
+            'components_status': {},
+            'recommendations': [],
+            'emergency_mode': self.emergency_mode
+        }
+        
+        # Проверяем каждый компонент
+        for component_name, status in self.components.items():
+            try:
+                component_result = self._check_component(component_name, step, loss, grad_norm, model, optimizer)
+                results['components_status'][component_name] = component_result
+                
+                # Обновляем статус компонента
+                status.last_check = time.time()
+                status.healthy = component_result.get('healthy', True)
+                status.recommendations = component_result.get('recommendations', [])
+                
+                # Добавляем рекомендации
+                results['recommendations'].extend(component_result.get('recommendations', []))
+                
+            except Exception as e:
+                self.logger.error(f"❌ Ошибка в компоненте {component_name}: {e}")
+                status.error_count += 1
+                status.healthy = False
+                results['components_status'][component_name] = {
+                    'healthy': False,
+                    'error': str(e),
+                    'recommendations': [f"Ошибка в {component_name}: {e}"]
+                }
+        
+        # Проверяем общее состояние системы
+        self._check_system_health(results)
+        
+        return results
+    
+    def _check_component(self, component_name: str, step: int, loss: float, 
+                        grad_norm: float = None, model=None, optimizer=None) -> Dict[str, Any]:
+        """Проверяет состояние конкретного компонента."""
+        if component_name == 'gradient_clipper':
+            return self._check_gradient_clipper(step, grad_norm, model)
+        elif component_name == 'ddc_loss':
+            return self._check_ddc_loss(step)
+        elif component_name == 'lr_adapter':
+            return self._check_lr_adapter(step, loss, grad_norm, optimizer)
+        else:
+            return {'healthy': True, 'recommendations': []}
+    
+    def _check_gradient_clipper(self, step: int, grad_norm: float, model) -> Dict[str, Any]:
+        """Проверяет состояние gradient clipper."""
+        try:
+            from .gradient_clipper import get_global_clipper
+            clipper = get_global_clipper()
+            
+            if clipper is None:
+                return {
+                    'healthy': False,
+                    'recommendations': ['Gradient clipper не инициализирован']
+                }
+            
+            stats = clipper.get_statistics()
+            recommendations = clipper.get_recommendations()
+            
+            return {
+                'healthy': stats['emergency_clips'] == 0,
+                'statistics': stats,
+                'recommendations': recommendations
+            }
+            
+        except Exception as e:
+            return {
+                'healthy': False,
+                'error': str(e),
+                'recommendations': [f'Ошибка gradient clipper: {e}']
+            }
+    
+    def _check_ddc_loss(self, step: int) -> Dict[str, Any]:
+        """Проверяет состояние DDC loss."""
+        try:
+            from .safe_ddc_loss import get_global_ddc_loss
+            ddc_loss = get_global_ddc_loss()
+            
+            if ddc_loss is None:
+                return {
+                    'healthy': False,
+                    'recommendations': ['DDC loss не инициализирован']
+                }
+            
+            stats = ddc_loss.get_statistics()
+            recommendations = ddc_loss.get_recommendations()
+            
+            return {
+                'healthy': stats['error_rate'] < 0.1,
+                'statistics': stats,
+                'recommendations': recommendations
+            }
+            
+        except Exception as e:
+            return {
+                'healthy': False,
+                'error': str(e),
+                'recommendations': [f'Ошибка DDC loss: {e}']
+            }
+    
+    def _check_lr_adapter(self, step: int, loss: float, grad_norm: float, 
+                         optimizer) -> Dict[str, Any]:
+        """Проверяет состояние LR adapter."""
+        try:
+            from .smart_lr_adapter import get_global_lr_adapter
+            lr_adapter = get_global_lr_adapter()
+            
+            if lr_adapter is None:
+                return {
+                    'healthy': False,
+                    'recommendations': ['LR adapter не инициализирован']
+                }
+            
+            stats = lr_adapter.get_statistics()
+            recommendations = lr_adapter.get_recommendations()
+            
+            return {
+                'healthy': not stats['emergency_mode'],
+                'statistics': stats,
+                'recommendations': recommendations
+            }
+            
+        except Exception as e:
+            return {
+                'healthy': False,
+                'error': str(e),
+                'recommendations': [f'Ошибка LR adapter: {e}']
+            }
+    
+    def _check_system_health(self, results: Dict[str, Any]):
+        """Проверяет общее состояние системы."""
+        unhealthy_components = [
+            name for name, status in results['components_status'].items()
+            if not status.get('healthy', True)
+        ]
+        
+        if len(unhealthy_components) > 0:
+            self.emergency_mode = True
+            self.logger.warning(f"🚨 Режим экстренной работы активирован. Проблемные компоненты: {unhealthy_components}")
+        else:
+            self.emergency_mode = False
+    
+    def get_system_statistics(self) -> Dict[str, Any]:
+        """Возвращает общую статистику системы."""
+        uptime = time.time() - self.start_time
+        
+        # Собираем статистику всех компонентов
+        component_stats = {}
+        for name, status in self.components.items():
+            component_stats[name] = {
+                'active': status.active,
+                'healthy': status.healthy,
+                'error_count': status.error_count,
+                'uptime': uptime - status.last_check
+            }
+        
+        return {
+            'uptime': uptime,
+            'total_steps': self.total_steps,
+            'emergency_mode': self.emergency_mode,
+            'components': component_stats,
+            'system_health': len([c for c in self.components.values() if c.healthy]) / len(self.components)
+        }
+    
+    def get_recommendations(self) -> List[str]:
+        """Возвращает общие рекомендации для системы."""
+        recommendations = []
+        
+        # Проверяем общее состояние
+        if self.emergency_mode:
+            recommendations.append("🚨 Система в экстренном режиме - проверить все компоненты")
+        
+        # Проверяем каждый компонент
+        for name, status in self.components.items():
+            if not status.healthy:
+                recommendations.append(f"⚠️ Компонент {name} нездоров - {status.error_count} ошибок")
+            recommendations.extend(status.recommendations)
+        
+        return recommendations
+    
+    def reset_component(self, component_name: str):
+        """Сбрасывает состояние компонента."""
+        if component_name in self.components:
+            self.components[component_name].error_count = 0
+            self.components[component_name].healthy = True
+            self.logger.info(f"🔄 Компонент {component_name} сброшен")
+    
+    def reset_all(self):
+        """Сбрасывает состояние всех компонентов."""
+        for name in self.components:
+            self.reset_component(name)
+        self.emergency_mode = False
+        self.logger.info("🔄 Все компоненты Smart Tuner сброшены")
+
+
+# Глобальный экземпляр менеджера
+_global_manager = None
+
+def get_global_manager() -> Optional[SmartTunerIntegrationManager]:
+    """Возвращает глобальный экземпляр менеджера."""
+    return _global_manager
+
+def set_global_manager(manager: SmartTunerIntegrationManager):
+    """Устанавливает глобальный экземпляр менеджера."""
+    global _global_manager
+    _global_manager = manager
+
+def initialize_smart_tuner():
+    """Инициализирует Smart Tuner систему."""
+    global _global_manager
+    if _global_manager is None:
+        _global_manager = SmartTunerIntegrationManager()
+    return _global_manager 
