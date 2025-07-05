@@ -45,8 +45,8 @@ class Attention(nn.Module):
                                             attention_location_kernel_size,
                                             attention_dim)
         self.score_mask_value = -float("inf")
-        self.use_location_relative = getattr(hparams, 'use_location_relative_attention', False) if hasattr(hparams, 'use_location_relative_attention') else False
-        self.relative_sigma = getattr(hparams, 'location_relative_sigma', 4.0) if hasattr(hparams, 'location_relative_sigma') else 4.0
+        self.use_location_relative = False  # Отключено для стабильности
+        self.relative_sigma = 4.0
 
     def get_alignment_energies(self, query, processed_memory,
                                attention_weights_cat):
