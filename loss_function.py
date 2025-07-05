@@ -125,6 +125,10 @@ class Tacotron2Loss(nn.Module):
         self.style_loss = StyleLoss()
         self.monotonic_alignment_loss = MonotonicAlignmentLoss()
         
+        # DDC
+        self.use_ddc = getattr(hparams, 'use_ddc', False)
+        self.ddc_consistency_weight = getattr(hparams, 'ddc_consistency_weight', 0.5)
+        
     def forward(self, model_output, targets, attention_weights=None, gate_outputs=None):
         """
         Продвинутый forward pass с множественными loss функциями.
@@ -209,6 +213,18 @@ class Tacotron2Loss(nn.Module):
         
         # Адаптивный guided attention loss
         adaptive_guide_loss = self._get_adaptive_guide_weight() * guide_loss
+        
+        # Double Decoder Consistency Loss
+        ddc_loss = 0.0
+        if self.use_ddc and len(model_output) >= 8:
+            # Вторичный декодер outputs: mel_out2, mel_post2, gate2, align2
+            mel_out2 = model_output[4]
+            mel_out_postnet2 = model_output[5]
+            # MSE между postnet выходами
+            ddc_loss = F.mse_loss(mel_out_postnet, mel_out_postnet2.detach())
+
+        # Добавляем DDC к composite mel loss
+        combined_mel_loss = combined_mel_loss + self.ddc_consistency_weight * ddc_loss
         
         # Возвращаем 4 компонента в ожидаемом формате train.py
         return combined_mel_loss, gate_loss, adaptive_guide_loss, combined_emb_loss

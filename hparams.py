@@ -75,7 +75,7 @@ def create_hparams(hparams_string=None, verbose=False):
         gate_min_threshold=0.3,            # Минимальный порог gate
         gate_max_threshold=0.8,            # Максимальный порог gate
         
-        p_attention_dropout=0.005,          # 🔥 РЕВОЛЮЦИОННО СНИЖЕНО! Attention dropout убивает качество
+        p_attention_dropout=0.001,          # уменьшено с 0.005 для оптимизации attention dropout
         p_decoder_dropout=0.01,             # 🔥 МИНИМИЗИРОВАНО для стабильности decoder
         
         # 🔧 НОВЫЕ параметры для curriculum learning
@@ -116,12 +116,12 @@ def create_hparams(hparams_string=None, verbose=False):
         # Optimization Hyperparameters #
         ################################
         use_saved_learning_rate=False,
-        learning_rate=1e-5,                 # 🔥 КРИТИЧЕСКОЕ УЛУЧШЕНИЕ: снижено с 5e-4 до 1e-5 по Very Attentive Tacotron
+        learning_rate=5e-6,                 # уменьшено с 1e-5 согласно рекомендациям
         learning_rate_decay=0.95,           # 🔧 Более консервативное снижение
         learning_rate_decay_patience=3000,  # 🔧 Оптимальное терпение для TTS
         learning_rate_min=5e-7,             # 🔧 Минимальный learning rate
         weight_decay=1e-7,                  # 🔧 Еще меньше regularization
-        grad_clip_thresh=0.5,               # 🔧 Меньший gradient clipping для стабильности
+        grad_clip_thresh=0.3,               # снижено с 0.5 для большей стабильности градиентов
         batch_size=32,                      # 🔥 КРИТИЧЕСКОЕ: увеличено до 32 для стабильности attention
         mask_padding=True,
 
@@ -140,8 +140,8 @@ def create_hparams(hparams_string=None, verbose=False):
         
         # 🔥 РЕВОЛЮЦИОННЫЙ Динамический вес для Guide Loss 
         use_dynamic_guide_loss=True,
-        guide_loss_initial_weight=15.0,     # 🔥 МАКСИМАЛЬНО УВЕЛИЧЕНО! Критично для начального alignment
-        guide_loss_decay_start=2000,        # 🔥 Раньше начинаем снижать после стабилизации
+        guide_loss_initial_weight=20.0,     # увеличено с 15.0 для усиленного guided attention
+        guide_loss_decay_start=1000,        # уменьшено с 2000 для более раннего снижения
         guide_loss_decay_steps=25000,       # 🔥 Быстрее снижаем для предотвращения переобучения
         
         global_mean_npy='ruslan_global_mean.npy',
@@ -241,6 +241,15 @@ def create_hparams(hparams_string=None, verbose=False):
         # Guided Attention
         use_guided_attn=True,
         guided_attn_weight=1.0,             # Вес guided attention loss
+
+        # Double Decoder Consistency (DDC)
+        use_ddc=True,
+        ddc_reduction_factor=2,
+        ddc_consistency_weight=0.5,
+
+        # Location-Relative Attention
+        use_location_relative_attention=True,
+        location_relative_sigma=4.0,
     )
 
     if hparams_string:

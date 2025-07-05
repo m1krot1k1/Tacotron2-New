@@ -717,6 +717,11 @@ def train(
     last_validation_loss = None
     last_audio_step = 0
 
+    # === EMA и авто-LR переменные ===
+    grad_norm_ema = 0.0  # экспоненциальное скользящее среднее нормы градиента
+    ema_beta = 0.95      # коэффициент EMA
+    lr_adjust_interval = 10  # интервал корректировки LR в шагах
+
     # ================ MAIN TRAINNIG LOOP ===================
     print(
         f"🚀 Начинаем обучение: epochs={hparams.epochs}, batch_size={hparams.batch_size}, dataset_size={len(train_loader)}"
@@ -738,7 +743,11 @@ def train(
     }
 
     # Логируем только неизменяемые параметры
-    mlflow.log_params(model_params)
+    try:
+        mlflow.log_params(model_params)
+    except Exception as e:
+        print(f"📊 Параметры уже залогированы в MLflow: {e}")
+        # Это нормально для последующих trials - параметры уже есть
 
     # Логируем начальные значения изменяемых параметров как отдельные параметры
     # (только если они еще не были залогированы в этом run)
@@ -794,20 +803,20 @@ def train(
         """
         new_hparams = copy.deepcopy(hparams)
         
-        # 🔥 РАДИКАЛЬНОЕ снижение learning rate (каждая попытка в 5 раз меньше)
-        new_hparams.learning_rate = max(new_hparams.learning_rate * (0.2 ** (attempt + 1)), 1e-7)
+        # 🔥 ЭКСТРЕМАЛЬНОЕ снижение learning rate (каждая попытка в 10 раз меньше)
+        new_hparams.learning_rate = max(new_hparams.learning_rate * (0.1 ** (attempt + 1)), 1e-8)
         
         # 📦 Агрессивное уменьшение batch size для стабильности
-        new_hparams.batch_size = max(2, int(new_hparams.batch_size * (0.5 ** (attempt + 1))))
+        new_hparams.batch_size = max(1, int(new_hparams.batch_size * (0.5 ** (attempt + 1))))
         
         # 🎯 КРИТИЧЕСКОЕ увеличение guided attention для восстановления alignment
         if hasattr(new_hparams, 'guide_loss_initial_weight'):
-            new_hparams.guide_loss_initial_weight = min(100.0, max(5.0, new_hparams.guide_loss_initial_weight * (2.0 ** (attempt + 1))))
+            new_hparams.guide_loss_initial_weight = min(1000.0, max(10.0, new_hparams.guide_loss_initial_weight * (3.0 ** (attempt + 1))))
         else:
-            new_hparams.guide_loss_initial_weight = 5.0 * (2.0 ** (attempt + 1))
+            new_hparams.guide_loss_initial_weight = 10.0 * (3.0 ** (attempt + 1))
         
-        # ✂️ Максимально строгое клипирование градиентов
-        new_hparams.grad_clip_thresh = max(0.01, new_hparams.grad_clip_thresh * (0.3 ** (attempt + 1)))
+        # ✂️ ЭКСТРЕМАЛЬНО строгое клипирование градиентов
+        new_hparams.grad_clip_thresh = max(0.001, new_hparams.grad_clip_thresh * (0.1 ** (attempt + 1)))
         
         # 🚫 Отключаем все "продвинутые" функции для максимальной стабильности
         if hasattr(new_hparams, 'use_mmi'):
@@ -832,7 +841,12 @@ def train(
         
         # 🚪 Консервативный gate threshold
         if hasattr(new_hparams, 'gate_threshold'):
-            new_hparams.gate_threshold = 0.4  # Более строгий порог
+            new_hparams.gate_threshold = 0.5  # Сбалансированный порог
+        
+        # 🔄 Принудительная реинициализация модели при критических попытках
+        if attempt >= 2:
+            new_hparams.force_model_reinit = True
+            new_hparams.xavier_init = True  # Принудительная Xavier инициализация
         
         # 📊 Детальное логирование для диагностики
         print(f"\n🛡️ [КРИТИЧЕСКОЕ ВОССТАНОВЛЕНИЕ] Попытка {attempt+1}:")
@@ -912,12 +926,12 @@ def train(
                             loss_mmi = torch.tensor(0.0, device=device)
                         try:
                             loss = (
-                                loss_taco
-                                + loss_gate
-                                + loss_atten
-                                + loss_guide
-                                + loss_mmi
-                                + loss_emb
+                                0.4 * loss_taco +
+                                0.3 * loss_atten +
+                                0.3 * loss_gate +
+                                loss_guide +
+                                loss_mmi +
+                                loss_emb
                             )
                         except Exception as e:
                             print(f"⚠️ Ошибка вычисления loss: {e}")
@@ -972,12 +986,12 @@ def train(
                         loss_mmi = torch.tensor(0.0, device=device)
                     try:
                         loss = (
-                            loss_taco
-                            + loss_gate
-                            + loss_atten
-                            + loss_guide
-                            + loss_mmi
-                            + loss_emb
+                            0.4 * loss_taco +
+                            0.3 * loss_atten +
+                            0.3 * loss_gate +
+                            loss_guide +
+                            loss_mmi +
+                            loss_emb
                         )
                     except Exception as e:
                         print(f"⚠️ Ошибка вычисления loss: {e}")
@@ -1010,7 +1024,16 @@ def train(
                         print("⚠️ Предупреждение: loss is None, пропускаем backward pass")
                 else:
                     if loss is not None:
-                        loss.backward()
+                        if not hparams.fp16_run:
+                            # --- Dynamic Loss Scaling (FP32 режим) ---
+                            scaled_loss = loss * dyn_loss_scale
+                            scaled_loss.backward()
+                            # Unscale градиенты
+                            for param in model.parameters():
+                                if param.grad is not None:
+                                    param.grad.data.div_(dyn_loss_scale)
+                        else:
+                            loss.backward()
                     else:
                         print("⚠️ Предупреждение: loss is None, пропускаем backward pass")
 
@@ -1018,6 +1041,34 @@ def train(
                     grad_norm = torch.nn.utils.clip_grad_norm_(
                         model.parameters(), hparams.grad_clip_thresh
                     )
+                    # --- EMA нормы градиента и авто-коррекция LR ---
+                    grad_norm_ema = ema_beta * grad_norm_ema + (1 - ema_beta) * float(grad_norm)
+                    if (iteration % lr_adjust_interval) == 0 and iteration > 0:
+                        current_lr = optimizer.param_groups[0]["lr"]
+                        new_lr = current_lr
+                        if grad_norm_ema > 10.0:
+                            new_lr = max(hparams.learning_rate_min, current_lr * 0.5)
+                        elif grad_norm_ema < 0.1:
+                            new_lr = min(hparams.learning_rate * 2, current_lr * 1.1)
+                        if abs(new_lr - current_lr) > 1e-12:
+                            for g in optimizer.param_groups:
+                                g["lr"] = new_lr
+                            if debug_reporter:
+                                debug_reporter.add_warning(
+                                    f"LR auto-adjust: grad_norm_ema={grad_norm_ema:.3f}, lr {current_lr:.2e} → {new_lr:.2e}"
+                                )
+                            print(f"🔄 LR auto-adjust: {current_lr:.6e} → {new_lr:.6e} (grad_norm_ema={grad_norm_ema:.3f})")
+                    # --- Быстрая проверка NaN/Inf каждые 10 шагов ---
+                    if (iteration % 10) == 0 and (torch.isnan(loss) or torch.isinf(loss)):
+                        print("🚨 [Auto-Recover] NaN/Inf обнаружен в loss – уменьшаем LR и пропускаем шаг")
+                        for g in optimizer.param_groups:
+                            g["lr"] = max(hparams.learning_rate_min, g["lr"] * 0.5)
+                        # Уменьшаем масштаб динамического loss scaling
+                        dyn_loss_scale = max(1.0, dyn_loss_scale / loss_scale_factor)
+                        optimizer.zero_grad(set_to_none=True)
+                        if debug_reporter:
+                            debug_reporter.add_warning("NaN/Inf в loss: auto LR halved и шаг пропущен")
+                        continue  # переход к следующей итерации
                 else:
                     grad_norm = 0.0
 
@@ -1050,6 +1101,31 @@ def train(
                         print("❌ Достигнут лимит попыток перезапуска. Остановка обучения.")
                         return
                     hparams = get_safe_hparams(hparams, restart_attempts)
+                    
+                    # 🔄 Критическая реинициализация модели при необходимости
+                    if hasattr(hparams, 'force_model_reinit') and hparams.force_model_reinit:
+                        print("🔄 КРИТИЧЕСКАЯ РЕИНИЦИАЛИЗАЦИЯ МОДЕЛИ...")
+                        try:
+                            model = load_model(hparams)
+                            # Принудительная Xavier инициализация
+                            if hasattr(hparams, 'xavier_init') and hparams.xavier_init:
+                                for name, param in model.named_parameters():
+                                    if len(param.shape) > 1:
+                                        torch.nn.init.xavier_uniform_(param)
+                                    else:
+                                        torch.nn.init.zeros_(param)
+                                print("✅ Xavier инициализация применена")
+                            
+                            # Обновляем optimizer с новой моделью
+                            optimizer = torch.optim.Adam(model.parameters(), lr=hparams.learning_rate)
+                            print("✅ Модель и оптимизатор переинициализированы")
+                        except Exception as e:
+                            print(f"⚠️ Ошибка реинициализации модели: {e}")
+                            # Продолжаем с существующей моделью
+                    
+                    # Обновляем learning rate в оптимизаторе
+                    for g in optimizer.param_groups:
+                        g["lr"] = hparams.learning_rate
                     # Сохраняем чекпоинт для отладки
                     save_checkpoint(model, optimizer, hparams.learning_rate, i + epoch * len(train_loader), os.path.join(output_directory, f"restart_checkpoint_{restart_attempts}.pt"))
                     print(f"[Smart Restart] Перезапуск обучения с новыми параметрами (попытка {restart_attempts})...\n")
@@ -1155,7 +1231,6 @@ def train(
                                 print(f"⚠️ Ошибка отправки уведомления о перезапуске: {e}")
                         
                         # Даем время на обработку уведомления
-                        import time
                         time.sleep(3)
                         break
 
@@ -1427,16 +1502,25 @@ def train(
                                                 if len(y_pred) >= 4:
                                                     alignments = y_pred[3] if len(y_pred) == 4 else y_pred[4]
                                                     if alignments is not None:
-                                                        guided_loss = guide_loss(alignments)
-                                                        loss_components['guided_loss'] = guided_loss.item()
+                                                        guided_loss_result = guide_loss(alignments)
+                                                        # Обрабатываем разные типы возвращаемых значений
+                                                        if isinstance(guided_loss_result, tuple):
+                                                            guided_loss_val = guided_loss_result[0]
+                                                        else:
+                                                            guided_loss_val = guided_loss_result
+                                                        loss_components['guided_loss'] = guided_loss_val.item()
                                             except Exception as e:
                                                 print(f"⚠️ Ошибка вычисления guided loss для debug: {e}")
                                         
                                         # Добавляем MMI loss если есть
                                         if mmi_loss is not None and y_pred is not None:
                                             try:
-                                                mmi_loss_val = mmi_loss(y_pred, y)
-                                                loss_components['mmi_loss'] = mmi_loss_val.item()
+                                                # Безопасная обработка y_pred для MMI
+                                                if isinstance(y_pred, (list, tuple)) and len(y_pred) > 1:
+                                                    mel_outputs = y_pred[1]
+                                                    if hasattr(mel_outputs, 'shape'):  # Проверяем что это тензор
+                                                        mmi_loss_val = mmi_loss(mel_outputs, y[0])
+                                                        loss_components['mmi_loss'] = mmi_loss_val.item()
                                             except Exception as e:
                                                 print(f"⚠️ Ошибка вычисления MMI loss для debug: {e}")
                                         
@@ -1471,9 +1555,7 @@ def train(
                                     result = telegram_monitor.send_training_update(
                                         step=iteration,
                                         metrics=telegram_metrics,
-                                        smart_tuner_decisions=smart_tuner_decisions,
-                                        send_plots=True,
-                                        send_detailed=True
+                                        smart_tuner_decisions=smart_tuner_decisions
                                     )
                                 except Exception as e:
                                     print(f"⚠️ Ошибка отправки Telegram уведомления: {e}")

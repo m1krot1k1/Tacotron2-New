@@ -89,13 +89,21 @@ class OptimizationEngine:
         storage_path = Path("smart_tuner/optuna_studies.db")
         storage_url = f"sqlite:///{storage_path}"
         
-        # TTS-специфичный sampler для лучшей сходимости
-        sampler = optuna.samplers.TPESampler(
-            n_startup_trials=20,  # Увеличено для TTS
-            n_ei_candidates=48,   # Увеличено для лучшего поиска
-            multivariate=True,    # Поддержка связанных параметров TTS
-            seed=42
-        )
+        sampler_type = optimization_config.get('sampler', 'tpe')
+        if sampler_type == 'bayesian':
+            try:
+                sampler = optuna.samplers.CmaEsSampler()
+                self.logger.info("Используется Bayesian (CMA-ES) sampler")
+            except Exception:
+                sampler = optuna.samplers.TPESampler(multivariate=True, seed=42)
+                self.logger.warning("CMA-ES недоступен, fallback на TPE")
+        else:
+            sampler = optuna.samplers.TPESampler(
+                n_startup_trials=20,
+                n_ei_candidates=48,
+                multivariate=True,
+                seed=42
+            )
         
         # TTS-адаптированный pruner
         early_pruning_disabled_epochs = self.tts_config.get('early_pruning_disabled_epochs', 100)

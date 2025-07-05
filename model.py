@@ -10,6 +10,7 @@ import numpy as np
 import random
 from text.symbols import ctc_symbols
 from gst import GST, TPSEGST
+import copy
 
 
 class LocationLayer(nn.Module):
@@ -44,6 +45,8 @@ class Attention(nn.Module):
                                             attention_location_kernel_size,
                                             attention_dim)
         self.score_mask_value = -float("inf")
+        self.use_location_relative = getattr(hparams, 'use_location_relative_attention', False) if hasattr(hparams, 'use_location_relative_attention') else False
+        self.relative_sigma = getattr(hparams, 'location_relative_sigma', 4.0) if hasattr(hparams, 'location_relative_sigma') else 4.0
 
     def get_alignment_energies(self, query, processed_memory,
                                attention_weights_cat):
@@ -63,6 +66,20 @@ class Attention(nn.Module):
         processed_attention_weights = self.location_layer(attention_weights_cat)
         energies = self.v(torch.tanh(
             processed_query + processed_attention_weights + processed_memory))
+
+        if self.use_location_relative:
+            # Добавляем Location-Relative компонент
+            bsz, max_time = processed_memory.size(0), processed_memory.size(1)
+            positions = torch.arange(max_time, device=query.device).float()
+            # Ожидаемая позиция центрируется на кумулятивном attention
+            if attention_weights_cat is not None and attention_weights_cat.size(1) >= 2:
+                cum_weights = attention_weights_cat[:,1]  # (B, T)
+                expected_pos = (cum_weights * positions).sum(dim=1, keepdim=True) / cum_weights.sum(dim=1, keepdim=True).clamp(min=1e-6)
+            else:
+                expected_pos = torch.zeros(bsz, 1, device=query.device)
+            distances = positions.unsqueeze(0) - expected_pos  # (B, T)
+            relative_term = - (distances ** 2) / (2 * (self.relative_sigma ** 2))
+            energies = energies + relative_term
 
         energies = energies.squeeze(-1)
         return energies
@@ -365,6 +382,8 @@ class Decoder(nn.Module):
         self.attention_dropout = nn.Dropout(self.dropout_rate)
         self.decoder_dropout = nn.Dropout(self.dropout_rate)
 
+        self.hparams = hparams
+
     def get_go_frame(self, memory):
         """ Gets all zeros frames to use as first decoder input
         PARAMS
@@ -539,12 +558,22 @@ class Decoder(nn.Module):
 
         mel_outputs, gate_outputs, alignments, decoder_outputs = [], [], [], []
         
-        # 🔥 CURRICULUM LEARNING: адаптивный teacher forcing ratio
+        # --- Scheduled Sampling / Curriculum Learning ---
         current_teacher_forcing = self.p_teacher_forcing
         if self.curriculum_teacher_forcing and hasattr(self, 'training_step'):
-            # Постепенно снижаем teacher forcing для лучшей генерализации
-            decay_factor = max(0.95, 0.999 ** (self.training_step / 1000))
-            current_teacher_forcing = max(0.7, self.p_teacher_forcing * decay_factor)
+            step = getattr(self, 'training_step', 0)
+            start_ratio = getattr(self.hparams, 'teacher_forcing_start_ratio', 1.0)
+            end_ratio = getattr(self.hparams, 'teacher_forcing_end_ratio', 0.5)
+            decay_start = getattr(self.hparams, 'teacher_forcing_decay_start', 10000)
+            decay_steps = getattr(self.hparams, 'teacher_forcing_decay_steps', 50000)
+            if step < decay_start:
+                current_teacher_forcing = start_ratio
+            elif step < decay_start + decay_steps:
+                progress = (step - decay_start) / decay_steps
+                current_teacher_forcing = start_ratio - (start_ratio - end_ratio) * progress
+            else:
+                current_teacher_forcing = end_ratio
+            current_teacher_forcing = max(0.0, min(1.0, current_teacher_forcing))
         
         while len(mel_outputs) < decoder_inputs.size(0) - 1:
             if current_teacher_forcing >= random.random() or len(mel_outputs) == 0:
@@ -709,6 +738,13 @@ class Tacotron2(nn.Module):
             self.gst = GST(hparams)
             self.tpse_gst = TPSEGST(hparams)
 
+        # === Double Decoder Consistency ===
+        self.use_ddc = getattr(hparams, 'use_ddc', False)
+        if self.use_ddc:
+            sec_hparams = copy.deepcopy(hparams)
+            sec_hparams.n_frames_per_step = getattr(hparams, 'ddc_reduction_factor', 2)
+            self.decoder_secondary = Decoder(sec_hparams)
+
     def parse_batch(self, batch):
         text_padded, input_lengths, mel_padded, gate_padded, \
             output_lengths, ctc_text, ctc_text_lengths, guide_mask  = batch
@@ -769,14 +805,18 @@ class Tacotron2(nn.Module):
         mel_outputs_postnet = self.postnet(mel_outputs)
         mel_outputs_postnet = mel_outputs + mel_outputs_postnet
 
-        if not minimize:
-            return self.parse_output(
-                [decoder_outputs, mel_outputs, mel_outputs_postnet, gate_outputs, alignments, tpse_gst_outputs, gst_outputs],
-                output_lengths)
-        else:
-            return self.parse_output(
-                [decoder_outputs, mel_outputs, mel_outputs_postnet, gate_outputs, alignments, tpse_gst_outputs, gst_outputs],
-                output_lengths)[2]
+        extra_outputs = []
+        if self.use_ddc:
+            # Запускаем вторичный декодер с другим reduction factor
+            decoder_outputs_sec = self.decoder_secondary(encoder_outputs, mels, memory_lengths=text_lengths)
+            mel_outputs2, gate_outputs2, alignments2, _ = decoder_outputs_sec  # возвращает tuple как у primary
+            mel_outputs_postnet2 = self.postnet(mel_outputs2) + mel_outputs2
+            extra_outputs = [mel_outputs2, mel_outputs_postnet2, gate_outputs2, alignments2]
+
+        # Собираем выход
+        outputs = [mel_outputs, mel_outputs_postnet, gate_outputs, alignments]
+        outputs.extend(extra_outputs)
+        return tuple(outputs)
 
     def inference(self, inputs, seed=None, reference_mel=None, token_idx=None, scale=1.0):
         embedded_inputs = self.embedding(inputs).transpose(1, 2)

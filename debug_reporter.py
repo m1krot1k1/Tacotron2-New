@@ -29,7 +29,7 @@ class DebugReporter:
         self.debug_data = []
         self.start_time = time.time()
         self.last_report_step = 0
-        self.report_interval = 1000  # Каждые 1000 шагов
+        self.report_interval = 250  # уменьшено с 1000 для более частого мониторинга
         
         # История для анализа трендов
         self.loss_history = []

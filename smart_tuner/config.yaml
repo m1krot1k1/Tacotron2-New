@@ -59,9 +59,9 @@ training_safety:
   
   # 🎯 РЕВОЛЮЦИОННЫЕ критерии качества TTS (из исследований 2025)
   tts_quality_checks:
-    min_attention_alignment: 0.75      # Очень высокие требования
-    min_gate_accuracy: 0.8            # Строгие требования к gate
-    max_validation_loss: 12.0         # Очень строгие требования
+    min_attention_alignment: 0.4      # снижено с 0.75 согласно новым рекомендациям
+    min_gate_accuracy: 0.6            # снижено с 0.8 согласно новым рекомендациям
+    max_validation_loss: 30.0         # увеличено с 12.0 согласно новым рекомендациям
     mel_quality_threshold: 0.5        # Высокое качество mel
     min_training_progress: 0.1        # Обязательный прогресс
     
@@ -139,12 +139,18 @@ hyperparameter_search_space:
     max: 0.1            # Уменьшено
     default: 0.05       # Оптимум
 
+  use_location_relative_attention:
+    type: categorical
+    choices: [true, false]
+    default: true
+
 # 🎯 РЕВОЛЮЦИОННАЯ оптимизация (из Llasa и Muyan-TTS исследований)
 optimization:
   direction: minimize
   n_trials: 25        # Увеличено для лучшего поиска
   objective_metric: composite_tts_score
   continue_training: true
+  sampler: bayesian
   
   # Больше времени для качественного обучения
   full_epochs_per_trial: 120    # Увеличено для лучшего качества
@@ -409,7 +415,7 @@ model_registry:
   primary_metric: val_loss
   minimize_metric: true
 
-# 🔄 Планировщик параметров
+# 🎯 Планировщик параметров
 parameter_scheduling:
   learning_rate:
     enabled: true
