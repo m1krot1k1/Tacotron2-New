@@ -1,9 +1,0 @@
-Проблема,Локация,Критичность,Статус_исправления,Влияние_на_обучение
-AttributeError: 'tuple' object has no attribute 'device',train.py:897,Критическая,Требует исправления,Полная остановка
-ModuleNotFoundError: No module named 'cmaes',optimization_engine.py:591-595,Критическая,Требует установки,Полная остановка
-MLflow parameter overwrite error,smart_tuner_main.py:logging,Высокая,Требует рефакторинга,Перезапуск trials
-SQLite database locked error,optimization_engine.py:76-82,Критическая,Требует конфигурации,Блокировка БД
-Tensor shape mismatch в forward pass,tacotron2/model.py:forward,Критическая,Требует отладки,Полная остановка
-CmaEsSampler независимое семплирование,optuna CmaEsSampler,Средняя,Требует конфигурации,Снижение производительности
-Утечки памяти в долгих trial,smart_tuner_main.py:268,Высокая,Требует оптимизации,Деградация памяти
-Неправильная обработка DataLoader collate_fn,data_utils.py:DataLoader,Критическая,Требует исправления,Полная остановка

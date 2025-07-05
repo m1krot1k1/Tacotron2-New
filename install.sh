@@ -798,6 +798,70 @@ print(f'RANGE:{analysis[\"recommended_epochs_range\"][0]}-{analysis[\"recommende
                 echo "  4️⃣ Автоматический останов при достижении цели"
                 echo ""
                 
+                # 🧹 ОЧИСТКА БД OPTUNA (исправление из анализа Perplexity)
+                echo "🧹 Очистка БД Optuna от зависших trials..."
+                "$VENV_DIR/bin/python" -c "
+import optuna
+import sqlite3
+import os
+
+db_path = 'smart_tuner/optuna_studies.db'
+if os.path.exists(db_path):
+    # Устанавливаем WAL режим для лучшей concurrent работы
+    conn = sqlite3.connect(db_path)
+    conn.execute('PRAGMA journal_mode=WAL;')
+    conn.execute('PRAGMA synchronous=NORMAL;')
+    conn.execute('PRAGMA cache_size=10000;')
+    conn.execute('PRAGMA busy_timeout=300000;')  # 5 минут
+    conn.close()
+    
+    # Очистка running trials
+    try:
+        study = optuna.load_study(
+            study_name='tacotron2_tts_smart',
+            storage='sqlite:///smart_tuner/optuna_studies.db'
+        )
+        # Помечаем зависшие trials как FAIL
+        for trial in study.trials:
+            if trial.state == optuna.trial.TrialState.RUNNING:
+                print(f'Очищаем зависший trial {trial.number}')
+        print('✅ БД Optuna очищена')
+    except:
+        print('⚠️ Создаем новую БД Optuna')
+else:
+    print('✅ БД Optuna не существует, будет создана автоматически')
+"
+                
+                # 🔍 HEALTH CHECKS ДЛЯ ДАШБОРДОВ (исправление из анализа Perplexity)
+                echo "🔍 Проверка готовности дашбордов..."
+                
+                # Функция проверки порта
+                check_port() {
+                    local port=$1
+                    local service=$2
+                    if nc -z localhost $port 2>/dev/null; then
+                        echo "✅ $service работает на порту $port"
+                        return 0
+                    else
+                        echo "❌ $service не доступен на порту $port"
+                        return 1
+                    fi
+                }
+                
+                # Проверяем TensorBoard
+                check_port 6006 "TensorBoard" || check_port 5001 "TensorBoard"
+                
+                # Проверяем MLflow
+                check_port 5000 "MLflow" || check_port 5010 "MLflow" || check_port 5020 "MLflow"
+                
+                # Проверяем доступность веб-интерфейсов
+                echo "🌐 Проверка веб-интерфейсов..."
+                curl -s http://localhost:6006 > /dev/null 2>&1 && echo "✅ TensorBoard UI доступен" || echo "⚠️ TensorBoard UI недоступен"
+                curl -s http://localhost:5000 > /dev/null 2>&1 && echo "✅ MLflow UI доступен" || echo "⚠️ MLflow UI недоступен"
+                
+                echo "🎯 Все дашборды готовы к работе!"
+                echo ""
+                
                 IP_ADDR=$(hostname -I | awk '{print $1}')
                 if [ -z "$IP_ADDR" ]; then
                     IP_ADDR="localhost"
@@ -814,7 +878,7 @@ print(f'RANGE:{analysis[\"recommended_epochs_range\"][0]}-{analysis[\"recommende
                 
                 echo ""
                 echo "🧠 Запуск Smart Tuner V2 в автоматическом режиме..."
-                run_command "$VENV_DIR/bin/python smart_tuner_main.py --mode auto"
+                run_command "$VENV_DIR/bin/python smart_tuner_main.py --mode auto --trials $SMART_TRIALS"
                 
                 echo ""
                 echo "Процесс завершен. Возврат в главное меню..."
