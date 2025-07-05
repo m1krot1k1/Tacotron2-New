@@ -204,17 +204,11 @@ transcribe_data() {
 
 # Функция для запуска процесса обучения
 train_model() {
-    echo -e "${BLUE}--- Шаг 3: Запуск умного обучения ---${NC}"
+    echo -e "${BLUE}--- Шаг 3: Запуск умного обучения (Optuna HPO) ---${NC}"
     
     # Проверка, существует ли виртуальное окружение
     if [ ! -f "$VENV_DIR/bin/python" ]; then
         echo -e "${RED}Python в виртуальном окружении не найден. Запустите сначала установку (пункт 1).${NC}"
-        return
-    fi
-    
-    # Проверка, существует ли Smart Tuner
-    if [ ! -f "smart_tuner_main.py" ]; then
-        echo -e "${RED}Smart Tuner (smart_tuner_main.py) не найден. Убедитесь, что все компоненты на месте.${NC}"
         return
     fi
 
@@ -225,103 +219,51 @@ train_model() {
         return
     fi
 
-    echo -e "${GREEN}🤖 Запуск Smart Tuner V2 в режиме полноценного обучения...${NC}"
+    echo -e "${GREEN}🤖 Запуск обучения с автоматической оптимизацией гиперпараметров (Optuna HPO)...${NC}"
     echo "Система автоматически:"
-    echo "  ✅ Продолжит обучение с последнего чекпоинта"
-    echo "  ✅ Будет использовать лучшие известные параметры"
-    echo "  ✅ Остановит обучение при переобучении или стагнации"
-    echo "  ✅ Сохранит лучшую модель и все логи в MLflow"
-    echo "  ✅ Отправит уведомления в Telegram (если настроено)"
+    echo "  ✅ Запустит Optuna HPO (20 trials)"
+    echo "  ✅ Найдет лучшие гиперпараметры для вашей задачи"
+    echo "  ✅ Сохранит все результаты в output/ и logs/"
+    echo "  ✅ Включит MLflow, TensorBoard и Optuna Dashboard"
     echo -e "${YELLOW}Для остановки нажмите Ctrl+C в этом терминале.${NC}"
     echo
 
-    # Настройка Telegram уведомлений (опционально)
-    # Проверяем, не настроен ли Telegram в config.yaml
-    if ! grep -q 'enabled: true' smart_tuner/config.yaml; then
-        echo -e "${YELLOW}🔔 Настройка Telegram уведомлений (опционально):${NC}"
-        echo "Для получения уведомлений о прогрессе обучения введите данные бота:"
-        echo -n "Telegram Bot Token (Enter для пропуска): "
-        read -r BOT_TOKEN
-        
-        if [ -n "$BOT_TOKEN" ]; then
-            echo -n "Telegram Chat ID: "
-            read -r CHAT_ID
-            
-            if [ -n "$CHAT_ID" ];
-            then
-                echo -e "${GREEN}✅ Настройка Telegram уведомлений...${NC}"
-                # Обновляем конфигурацию
-                sed -i 's/enabled: false/enabled: true/' smart_tuner/config.yaml
-                sed -i "s/bot_token: .*/bot_token: \"$BOT_TOKEN\"/" smart_tuner/config.yaml
-                sed -i "s/chat_id: .*/chat_id: \"$CHAT_ID\"/" smart_tuner/config.yaml
-                echo "✓ Telegram уведомления включены"
-            fi
-        else
-            echo "⏭️ Telegram уведомления пропущены"
-        fi
-    else
-        echo "✅ Telegram уведомления уже настроены."
-    fi
-
-    # --- Подготовка и запуск ---
+    # --- Подготовка и запуск мониторинга ---
     echo -e "\n${YELLOW}🗑️  Полная очистка и подготовка к новому запуску...${NC}"
-    
-    # 1. Останавливаем все старые процессы
     pkill -f "tensorboard" &>/dev/null
     pkill -f "mlflow" &>/dev/null
     pkill -f "smart_tuner/web_interfaces.py" &>/dev/null
     sleep 1
     echo "✓ Старые процессы мониторинга остановлены"
-
-    # 2. Удаляем старые логи и артефакты
     rm -rf output/ mlruns/ smart_tuner/models/ tensorboard.log mlflow.log smart_tuner_main.log smart_tuner/optuna_studies.db
     mkdir -p output/ mlruns/ smart_tuner/models/
     echo "✓ Старые логи и артефакты удалены, директории пересозданы"
 
-    # 3. Запускаем систему мониторинга
-    echo -e "\n${GREEN}📊 Запуск системы мониторинга...${NC}"
+    # Запуск мониторинга
     IP_ADDR=$(hostname -I | awk '{print $1}')
     if [ -z "$IP_ADDR" ]; then
         IP_ADDR="localhost"
     fi
-
     nohup "$VENV_DIR/bin/python" -m tensorboard.main --logdir "output/" --host 0.0.0.0 --port 5001 --reload_interval 5 > tensorboard.log 2>&1 &
     echo "✓ TensorBoard запущен на порту 5001"
-
     nohup "$VENV_DIR/bin/mlflow" ui --host 0.0.0.0 --port 5000 --backend-store-uri "file://$(pwd)/mlruns" > mlflow.log 2>&1 &
     echo "✓ MLflow UI запущен на порту 5000"
-    
-    # Создание и запуск Optuna Dashboard
-    echo "✓ Создание базы данных Optuna..."
     mkdir -p smart_tuner
     if [ ! -f "smart_tuner/optuna_studies.db" ]; then
-        "$VENV_DIR/bin/python" -c "
-import optuna
-study_name = 'tacotron2_optimization'
-storage = 'sqlite:///smart_tuner/optuna_studies.db'
-study = optuna.create_study(
-    study_name=study_name,
-    storage=storage,
-    direction='minimize',
-    load_if_exists=True
-)
-print('База данных Optuna создана')
-"
+        "$VENV_DIR/bin/python" -c "import optuna; study_name = 'tacotron2_optimization'; storage = 'sqlite:///smart_tuner/optuna_studies.db'; optuna.create_study(study_name=study_name, storage=storage, direction='minimize', load_if_exists=True); print('База данных Optuna создана')"
     fi
-    
     nohup "$VENV_DIR/bin/optuna-dashboard" sqlite:///smart_tuner/optuna_studies.db --host 0.0.0.0 --port 5002 > optuna.log 2>&1 &
     echo "✓ Optuna Dashboard запущен на порту 5002"
     sleep 3
-
     echo -e "\n${BLUE}📈 Мониторинг будет доступен по адресам (через ~1-2 минуты):${NC}"
     echo -e "  MLflow:           ${GREEN}http://${IP_ADDR}:5000${NC}"
     echo -e "  TensorBoard:      ${GREEN}http://${IP_ADDR}:5001${NC}"
     echo -e "  Optuna Dashboard: ${GREEN}http://${IP_ADDR}:5002${NC}"
     echo
 
-    # 4. Запускаем основной процесс Smart Tuner
-    echo -e "${GREEN}🚀 Запуск Smart Tuner...${NC}"
-    "$VENV_DIR/bin/python" smart_tuner_main.py --train
+    # --- Запуск обучения с HPO ---
+    echo -e "${GREEN}🚀 Запуск обучения с Optuna HPO...${NC}"
+    "$VENV_DIR/bin/python" train.py --optimize-hyperparams --n-trials 20 -o output -l logs
 
     if [ $? -eq 0 ]; then
         echo -e "\n${GREEN}🎉 Обучение успешно завершено!${NC}"

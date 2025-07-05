@@ -50,12 +50,29 @@ except ImportError:
 
 # Импорт утилит для метрик качества
 try:
-    from utils.dynamic_padding import DynamicPaddingCollator
-    from utils.bucket_batching import BucketBatchSampler
+    from training_utils.dynamic_padding import DynamicPaddingCollator
+    from training_utils.bucket_batching import BucketBatchSampler
     UTILS_AVAILABLE = True
 except ImportError:
     UTILS_AVAILABLE = False
     logging.warning("Утилиты не найдены")
+
+# === MLflow: безопасная инициализация ===
+try:
+    import mlflow
+    import mlflow.pytorch
+    MLFLOW_AVAILABLE = True
+except ImportError:
+    MLFLOW_AVAILABLE = False
+    logging.warning("MLflow не найден, метрики не будут логироваться")
+
+# === TensorBoard: безопасная инициализация ===
+try:
+    from torch.utils.tensorboard import SummaryWriter
+    TENSORBOARD_AVAILABLE = True
+except ImportError:
+    TENSORBOARD_AVAILABLE = False
+    logging.warning("TensorBoard не найден, метрики не будут логироваться")
 
 class EnhancedTacotronTrainer:
     """
@@ -168,6 +185,24 @@ class EnhancedTacotronTrainer:
         }
         
         self.logger.info("✅ Enhanced Tacotron Trainer инициализирован")
+        
+        self.tensorboard_writer = None
+        self.tensorboard_logdir = 'logs'  # Можно сделать параметром
+        if TENSORBOARD_AVAILABLE:
+            try:
+                # === Очистка старых логов TensorBoard ===
+                if os.path.exists(self.tensorboard_logdir):
+                    for file in os.listdir(self.tensorboard_logdir):
+                        if file.startswith('events.out.tfevents'):
+                            os.remove(os.path.join(self.tensorboard_logdir, file))
+                            self.logger.info(f"🗑️ Удален старый лог TensorBoard: {file}")
+                self.tensorboard_writer = SummaryWriter(self.tensorboard_logdir)
+                self.logger.info(f"✅ TensorBoard writer инициализирован: {self.tensorboard_logdir}")
+            except Exception as e:
+                self.tensorboard_writer = None
+                self.logger.error(f"⚠️ Ошибка инициализации TensorBoard: {e}")
+        else:
+            self.logger.warning("TensorBoard недоступен, метрики не будут логироваться")
     
     def _setup_logger(self) -> logging.Logger:
         """Настраивает логирование для тренера."""
@@ -254,6 +289,16 @@ class EnhancedTacotronTrainer:
         
         # Инициализация переменных для адаптивной настройки
         self.last_attention_diagonality = 0.0
+        
+        # === MLflow: инициализация эксперимента ===
+        if MLFLOW_AVAILABLE:
+            try:
+                experiment_name = f"tacotron2_training_{int(time.time())}"
+                mlflow.set_experiment(experiment_name)
+                mlflow.start_run(run_name=f"training_run_{int(time.time())}")
+                self.logger.info(f"✅ MLflow эксперимент инициализирован: {experiment_name}")
+            except Exception as e:
+                self.logger.error(f"⚠️ Ошибка инициализации MLflow: {e}")
     
     def get_current_training_phase(self) -> str:
         """Определяет текущую фазу обучения."""
@@ -539,6 +584,25 @@ class EnhancedTacotronTrainer:
             except Exception as e:
                 self.logger.warning(f"Ошибка Telegram уведомления: {e}")
         
+        # === Логирование в TensorBoard ===
+        if self.tensorboard_writer is not None:
+            try:
+                self.tensorboard_writer.add_scalar("train/loss", loss.item(), self.global_step)
+                self.tensorboard_writer.add_scalar("train/attention_diagonality", attention_diagonality, self.global_step)
+                self.tensorboard_writer.add_scalar("train/gate_accuracy", gate_accuracy, self.global_step)
+                self.tensorboard_writer.flush()
+            except Exception as e:
+                self.logger.error(f"⚠️ Ошибка логирования в TensorBoard: {e}")
+        
+        # === Логирование в MLflow ===
+        if MLFLOW_AVAILABLE:
+            try:
+                mlflow.log_metric("train.loss", loss.item(), step=self.global_step)
+                mlflow.log_metric("train.attention_diagonality", attention_diagonality, step=self.global_step)
+                mlflow.log_metric("train.gate_accuracy", gate_accuracy, step=self.global_step)
+            except Exception as e:
+                self.logger.error(f"⚠️ Ошибка логирования в MLflow: {e}")
+        
         self.global_step += 1
         
         return {
@@ -622,6 +686,23 @@ class EnhancedTacotronTrainer:
         
         avg_val_loss = np.mean(val_losses)
         avg_quality_score = np.mean(quality_metrics) if quality_metrics else 0.5
+        
+        # === Логирование в TensorBoard ===
+        if self.tensorboard_writer is not None:
+            try:
+                self.tensorboard_writer.add_scalar("val/loss", avg_val_loss, self.global_step)
+                self.tensorboard_writer.add_scalar("val/quality_score", avg_quality_score, self.global_step)
+                self.tensorboard_writer.flush()
+            except Exception as e:
+                self.logger.error(f"⚠️ Ошибка логирования в TensorBoard (валидация): {e}")
+        
+        # === Логирование в MLflow ===
+        if MLFLOW_AVAILABLE:
+            try:
+                mlflow.log_metric("val.loss", avg_val_loss, step=self.global_step)
+                mlflow.log_metric("val.quality_score", avg_quality_score, step=self.global_step)
+            except Exception as e:
+                self.logger.error(f"⚠️ Ошибка логирования в MLflow (валидация): {e}")
         
         return {
             'val_loss': avg_val_loss,
@@ -884,6 +965,21 @@ class EnhancedTacotronTrainer:
             # Финальная статистика
             if self.training_metrics_history:
                 self._print_training_summary()
+            
+            # === Завершение TensorBoard ===
+            if self.tensorboard_writer is not None:
+                try:
+                    self.tensorboard_writer.close()
+                    self.logger.info("✅ TensorBoard writer закрыт")
+                except Exception as e:
+                    self.logger.error(f"⚠️ Ошибка закрытия TensorBoard: {e}")
+            # === Завершение MLflow ===
+            if MLFLOW_AVAILABLE:
+                try:
+                    mlflow.end_run()
+                    self.logger.info("✅ MLflow run завершен")
+                except Exception as e:
+                    self.logger.error(f"⚠️ Ошибка завершения MLflow run: {e}")
     
     def _print_training_summary(self):
         """Выводит сводку по обучению."""
@@ -922,8 +1018,8 @@ def prepare_dataloaders(hparams):
     """
     from data_utils import TextMelLoader, TextMelCollate
     try:
-        from utils.dynamic_padding import DynamicPaddingCollator
-        from utils.bucket_batching import BucketBatchSampler
+        from training_utils.dynamic_padding import DynamicPaddingCollator
+        from training_utils.bucket_batching import BucketBatchSampler
     except ImportError:
         DynamicPaddingCollator = None
         BucketBatchSampler = None
@@ -935,7 +1031,7 @@ def prepare_dataloaders(hparams):
     use_dynamic_padding = getattr(hparams, 'use_dynamic_padding', True)
 
     if use_dynamic_padding and DynamicPaddingCollator is not None:
-        collate_fn = DynamicPaddingCollator(pad_value=0.0)
+        collate_fn = DynamicPaddingCollator(pad_value=0.0, n_frames_per_step=hparams.n_frames_per_step)
     else:
         collate_fn = TextMelCollate(hparams.n_frames_per_step)
 
@@ -952,17 +1048,25 @@ def prepare_dataloaders(hparams):
             shuffle = True
 
     from torch.utils.data import DataLoader
-    train_loader = DataLoader(
-        trainset,
-        num_workers=1,
-        shuffle=shuffle if not use_bucket_batching else False,
-        sampler=None if use_bucket_batching else train_sampler,
-        batch_size=hparams.batch_size,
-        pin_memory=False,
-        drop_last=True,
-        collate_fn=collate_fn,
-        batch_sampler=train_sampler if use_bucket_batching else None,
-    )
+    if use_bucket_batching and BucketBatchSampler is not None:
+        train_loader = DataLoader(
+            trainset,
+            num_workers=1,
+            pin_memory=False,
+            collate_fn=collate_fn,
+            batch_sampler=train_sampler,
+        )
+    else:
+        train_loader = DataLoader(
+            trainset,
+            num_workers=1,
+            shuffle=shuffle,
+            sampler=train_sampler,
+            batch_size=hparams.batch_size,
+            pin_memory=False,
+            drop_last=True,
+            collate_fn=collate_fn,
+        )
     val_loader = DataLoader(
         valset,
         num_workers=1,

@@ -5,6 +5,7 @@ import math
 import random
 import numpy as np
 import copy
+import sys
 
 import torch
 from distributed import apply_gradient_allreduce
@@ -32,8 +33,25 @@ from smart_tuner.param_scheduler import ParamScheduler
 from smart_tuner.early_stop_controller import EarlyStopController
 from gradient_stability_monitor import GradientStabilityMonitor
 from debug_reporter import initialize_debug_reporter, get_debug_reporter
-from utils.dynamic_padding import DynamicPaddingCollator
-from utils.bucket_batching import BucketBatchSampler
+
+# 🔥 ИСПРАВЛЕНИЕ: Безопасные импорты для utils
+try:
+    from utils.dynamic_padding import DynamicPaddingCollator
+    DYNAMIC_PADDING_AVAILABLE = True
+    print("✅ DynamicPaddingCollator загружен")
+except ImportError:
+    DynamicPaddingCollator = None
+    DYNAMIC_PADDING_AVAILABLE = False
+    print("⚠️ DynamicPaddingCollator недоступен, используем стандартный TextMelCollate")
+
+try:
+    from utils.bucket_batching import BucketBatchSampler
+    BUCKET_BATCHING_AVAILABLE = True
+    print("✅ BucketBatchSampler загружен")
+except ImportError:
+    BucketBatchSampler = None
+    BUCKET_BATCHING_AVAILABLE = False
+    print("⚠️ BucketBatchSampler недоступен, используем стандартный DataLoader")
 
 # MLflow for experiment tracking
 try:
@@ -100,19 +118,21 @@ def prepare_dataloaders(hparams):
     trainset = TextMelLoader(hparams.training_files, hparams)
     valset = TextMelLoader(hparams.validation_files, hparams)
 
-    # --- Новый collator и bucket batching ---
-    use_bucket_batching = getattr(hparams, 'use_bucket_batching', True)
-    use_dynamic_padding = getattr(hparams, 'use_dynamic_padding', True)
+    # --- 🔥 ИСПРАВЛЕНИЕ: Безопасная логика для collator и bucket batching ---
+    use_bucket_batching = getattr(hparams, 'use_bucket_batching', True) and BUCKET_BATCHING_AVAILABLE
+    use_dynamic_padding = getattr(hparams, 'use_dynamic_padding', True) and DYNAMIC_PADDING_AVAILABLE
 
-    if use_dynamic_padding:
-        collate_fn = DynamicPaddingCollator(pad_value=0.0)
+    if use_dynamic_padding and DynamicPaddingCollator is not None:
+        collate_fn = DynamicPaddingCollator(pad_value=0.0, n_frames_per_step=hparams.n_frames_per_step)
+        print("✅ Используем DynamicPaddingCollator")
     else:
         collate_fn = TextMelCollate(hparams.n_frames_per_step)
+        print("✅ Используем стандартный TextMelCollate")
 
-    if use_bucket_batching:
-        train_sampler = None  # BucketBatchSampler сам управляет порядком
-        shuffle = False
+    if use_bucket_batching and BucketBatchSampler is not None:
         train_sampler = BucketBatchSampler(trainset, hparams.batch_size)
+        shuffle = False
+        print("✅ Используем BucketBatchSampler")
     else:
         if hparams.distributed_run:
             train_sampler = DistributedSampler(trainset)
@@ -120,6 +140,7 @@ def prepare_dataloaders(hparams):
         else:
             train_sampler = None
             shuffle = True
+        print("✅ Используем стандартный DataLoader")
 
     train_loader = DataLoader(
         trainset,
@@ -599,6 +620,19 @@ def train(
     rank (int): rank of current gpu
     hparams (object): comma separated list of "name=value" pairs.
     """
+    # 🔥 ИСПРАВЛЕНИЕ: Инициализация MLflow в начале
+    if MLFLOW_AVAILABLE:
+        try:
+            # Создаем уникальное имя эксперимента
+            experiment_name = f"tacotron2_training_{int(time.time())}"
+            mlflow.set_experiment(experiment_name)
+            
+            # Начинаем run
+            mlflow.start_run(run_name=f"training_run_{int(time.time())}")
+            print(f"✅ MLflow эксперимент инициализирован: {experiment_name}")
+        except Exception as e:
+            print(f"⚠️ Ошибка инициализации MLflow: {e}")
+    
     if hparams.distributed_run:
         init_distributed(hparams, n_gpus, rank, group_name)
 
@@ -673,9 +707,27 @@ def train(
 
     if is_main_node and writer is None:
         # Для обратной совместимости, если train.py запускается напрямую
-        from torch.utils.tensorboard import SummaryWriter
-
-        writer = SummaryWriter(log_directory)
+        try:
+            from torch.utils.tensorboard import SummaryWriter
+            import shutil
+            import os
+            
+            # 🔥 ИСПРАВЛЕНИЕ: Очищаем старые логи TensorBoard
+            if os.path.exists(log_directory):
+                try:
+                    # Удаляем старые event файлы
+                    for file in os.listdir(log_directory):
+                        if file.startswith('events.out.tfevents'):
+                            os.remove(os.path.join(log_directory, file))
+                            print(f"🗑️ Удален старый лог: {file}")
+                except Exception as e:
+                    print(f"⚠️ Ошибка очистки старых логов: {e}")
+            
+            writer = SummaryWriter(log_directory)
+            print(f"✅ TensorBoard writer инициализирован: {log_directory}")
+        except Exception as e:
+            print(f"⚠️ Ошибка инициализации TensorBoard: {e}")
+            writer = None
 
     # Инициализация loss функций
     mmi_loss = None
@@ -737,48 +789,58 @@ def train(
     grad_norm_ema = 0.0  # экспоненциальное скользящее среднее нормы градиента
     ema_beta = 0.95      # коэффициент EMA
     lr_adjust_interval = 10  # интервал корректировки LR в шагах
+    
+    # 🔥 ИСПРАВЛЕНИЕ: Инициализация переменных для dynamic loss scaling
+    dyn_loss_scale = getattr(hparams, 'dynamic_loss_scale', 1.0)
+    loss_scale_factor = getattr(hparams, 'loss_scale_factor', 2.0)
 
     # ================ MAIN TRAINNIG LOOP ===================
     print(
         f"🚀 Начинаем обучение: epochs={hparams.epochs}, batch_size={hparams.batch_size}, dataset_size={len(train_loader)}"
     )
 
-    # Логирование параметров модели в MLflow
-    model_params = {
-        "model.total_params": sum(p.numel() for p in model.parameters()),
-        "model.trainable_params": sum(
-            p.numel() for p in model.parameters() if p.requires_grad
-        ),
-        "hparams.epochs": hparams.epochs,
-        "hparams.grad_clip_thresh": hparams.grad_clip_thresh,
-        "hparams.fp16_run": hparams.fp16_run,
-        "hparams.use_mmi": hparams.use_mmi,
-        "hparams.use_guided_attn": hparams.use_guided_attn,
-        "dataset.train_size": len(train_loader),
-        "dataset.val_size": len(valset),
-    }
-
-    # Создаем nested run для каждого trial
-    if smart_tuner_trial is not None:
-        # Для Smart Tuner создаем nested run
-        trial_run_name = f"trial_{smart_tuner_trial.number}"
-        with mlflow.start_run(nested=True, run_name=trial_run_name):
-            try:
-                mlflow.log_params(model_params)
-                mlflow.log_param("hparams.batch_size_init", hparams.batch_size)
-                mlflow.log_param("hparams.learning_rate_init", hparams.learning_rate)
-                print(f"📊 Параметры trial {smart_tuner_trial.number} залогированы в MLflow")
-            except Exception as e:
-                print(f"📊 Ошибка логирования параметров trial: {e}")
-    else:
-        # Для обычного запуска
+    # 🔥 ИСПРАВЛЕНИЕ: Безопасное логирование параметров модели в MLflow
+    if MLFLOW_AVAILABLE:
         try:
-            mlflow.log_params(model_params)
-            mlflow.log_param("hparams.batch_size_init", hparams.batch_size)
-            mlflow.log_param("hparams.learning_rate_init", hparams.learning_rate)
-            print(f"📊 Параметры модели залогированы в MLflow: {model_params['model.total_params']} параметров")
+            model_params = {
+                "model.total_params": sum(p.numel() for p in model.parameters()),
+                "model.trainable_params": sum(
+                    p.numel() for p in model.parameters() if p.requires_grad
+                ),
+                "hparams.epochs": hparams.epochs,
+                "hparams.grad_clip_thresh": hparams.grad_clip_thresh,
+                "hparams.fp16_run": hparams.fp16_run,
+                "hparams.use_mmi": hparams.use_mmi,
+                "hparams.use_guided_attn": hparams.use_guided_attn,
+                "dataset.train_size": len(train_loader),
+                "dataset.val_size": len(valset),
+            }
+
+            # Создаем nested run для каждого trial
+            if smart_tuner_trial is not None:
+                # Для Smart Tuner создаем nested run
+                trial_run_name = f"trial_{smart_tuner_trial.number}"
+                with mlflow.start_run(nested=True, run_name=trial_run_name):
+                    try:
+                        mlflow.log_params(model_params)
+                        mlflow.log_param("hparams.batch_size_init", hparams.batch_size)
+                        mlflow.log_param("hparams.learning_rate_init", hparams.learning_rate)
+                        print(f"📊 Параметры trial {smart_tuner_trial.number} залогированы в MLflow")
+                    except Exception as e:
+                        print(f"📊 Ошибка логирования параметров trial: {e}")
+            else:
+                # Для обычного запуска
+                try:
+                    mlflow.log_params(model_params)
+                    mlflow.log_param("hparams.batch_size_init", hparams.batch_size)
+                    mlflow.log_param("hparams.learning_rate_init", hparams.learning_rate)
+                    print(f"📊 Параметры модели залогированы в MLflow: {model_params['model.total_params']} параметров")
+                except Exception as e:
+                    print(f"📊 Ошибка логирования параметров: {e}")
         except Exception as e:
-            print(f"📊 Ошибка логирования параметров: {e}")
+            print(f"📊 Ошибка инициализации MLflow логирования: {e}")
+    else:
+        print("⚠️ MLflow недоступен, пропускаем логирование параметров")
 
     # --- Intelligent Epoch Optimizer ---
     optimizer_epochs = None
@@ -1408,6 +1470,36 @@ def train(
                         
                         # Даем время на обработку уведомления
                         time.sleep(3)
+                        
+                        # 🔧 DISTRIBUTED EMERGENCY RESTART
+                        if hparams.distributed_run:
+                            print("🔄 [Distributed] Инициирую безопасный перезапуск distributed процесса...")
+                            try:
+                                # Сохраняем состояние перед перезапуском
+                                if is_main_node:
+                                    save_checkpoint(model, optimizer, hparams.learning_rate, iteration, 
+                                                  os.path.join(output_directory, f"distributed_restart_checkpoint_{restart_attempts}.pt"))
+                                
+                                # Безопасно завершаем distributed процесс
+                                dist.destroy_process_group()
+                                print("✅ Distributed process group уничтожен")
+                                
+                                # Перезапускаем distributed инициализацию
+                                init_distributed(hparams, n_gpus, rank, group_name)
+                                print("✅ Distributed process group переинициализирован")
+                                
+                                # Пересоздаем модель и оптимизатор
+                                model = load_model(hparams)
+                                if hparams.distributed_run:
+                                    model = apply_gradient_allreduce(model)
+                                optimizer = torch.optim.Adam(model.parameters(), lr=hparams.learning_rate, weight_decay=hparams.weight_decay)
+                                
+                                print("✅ Модель и оптимизатор пересозданы для distributed режима")
+                                
+                            except Exception as e:
+                                print(f"❌ Ошибка distributed перезапуска: {e}")
+                                print("🔄 Продолжаем с обычным перезапуском...")
+                        
                         break
 
                 if is_main_node:
@@ -1455,24 +1547,31 @@ def train(
                         except Exception as e:
                             print(f"⚠️ EarlyStopController add_metrics ошибка: {e}")
 
-                    # Логирование в TensorBoard
-                    try:
-                        writer.add_scalar("training.loss", reduced_loss, iteration)
-                        writer.add_scalar("training.taco_loss", reduced_taco_loss, iteration)
-                        writer.add_scalar("training.atten_loss", reduced_atten_loss, iteration)
-                        writer.add_scalar("training.mi_loss", reduced_mi_loss, iteration)
-                        writer.add_scalar("training.guide_loss", reduced_guide_loss if reduced_guide_loss is not None else 0.0, iteration)
-                        writer.add_scalar("training.gate_loss", reduced_gate_loss, iteration)
-                        writer.add_scalar("training.emb_loss", reduced_emb_loss, iteration)
-                        writer.add_scalar("grad.norm", grad_norm, iteration)
-                        writer.add_scalar("learning.rate", learning_rate, iteration)
-                        writer.add_scalar("duration", duration, iteration)
-                        # ✅ ИСПРАВЛЕНО: Добавляем новые метрики качества
-                        writer.add_scalar("quality.attention_diagonality", attention_diagonality, iteration)
-                        writer.add_scalar("quality.gate_accuracy", gate_accuracy, iteration)
-                    except Exception as e:
-                        print(f"⚠️ Ошибка логирования в TensorBoard: {e}")
-                    if hparams.use_guided_attn and guide_loss is not None:
+                    # 🔥 ИСПРАВЛЕНИЕ: Безопасное логирование в TensorBoard
+                    if writer is not None:
+                        try:
+                            writer.add_scalar("training.loss", reduced_loss, iteration)
+                            writer.add_scalar("training.taco_loss", reduced_taco_loss, iteration)
+                            writer.add_scalar("training.atten_loss", reduced_atten_loss, iteration)
+                            writer.add_scalar("training.mi_loss", reduced_mi_loss, iteration)
+                            writer.add_scalar("training.guide_loss", reduced_guide_loss if reduced_guide_loss is not None else 0.0, iteration)
+                            writer.add_scalar("training.gate_loss", reduced_gate_loss, iteration)
+                            writer.add_scalar("training.emb_loss", reduced_emb_loss, iteration)
+                            writer.add_scalar("grad.norm", grad_norm, iteration)
+                            writer.add_scalar("learning.rate", learning_rate, iteration)
+                            writer.add_scalar("duration", duration, iteration)
+                            # ✅ ИСПРАВЛЕНО: Добавляем новые метрики качества
+                            writer.add_scalar("quality.attention_diagonality", attention_diagonality, iteration)
+                            writer.add_scalar("quality.gate_accuracy", gate_accuracy, iteration)
+                            
+                            # Принудительно сохраняем данные
+                            writer.flush()
+                        except Exception as e:
+                            print(f"⚠️ Ошибка логирования в TensorBoard: {e}")
+                    else:
+                        print("⚠️ TensorBoard writer недоступен, пропускаем логирование")
+                        
+                    if hparams.use_guided_attn and guide_loss is not None and writer is not None:
                         try:
                             writer.add_scalar(
                                 "training.guide_loss_weight", guide_loss.get_weight(), iteration
@@ -1509,30 +1608,35 @@ def train(
                         except Exception as e:
                             print(f"⚠️ Ошибка в Integration Manager: {e}")
 
-                    # Логирование в MLflow
+                    # 🔥 ИСПРАВЛЕНИЕ: Безопасное логирование в MLflow
                     if MLFLOW_AVAILABLE:
-                        training_metrics = {
-                            "training.loss": reduced_loss,
-                            "training.taco_loss": reduced_taco_loss,
-                            "training.atten_loss": reduced_atten_loss,
-                            "training.mi_loss": reduced_mi_loss,
-                            "training.guide_loss": reduced_guide_loss if reduced_guide_loss is not None else 0.0,
-                            "training.gate_loss": reduced_gate_loss,
-                            "training.emb_loss": reduced_emb_loss,
-                            "grad.norm": grad_norm,
-                            "learning.rate": learning_rate,
-                            "duration": duration,
-                            "batch_size": hparams.batch_size,
-                            "learning_rate": learning_rate,
-                            # ✅ ИСПРАВЛЕНО: Добавляем новые метрики качества
-                            "quality.attention_diagonality": attention_diagonality,
-                            "quality.gate_accuracy": gate_accuracy,
-                        }
-                        for metric_name, metric_value in training_metrics.items():
-                            try:
-                                mlflow.log_metric(metric_name, metric_value, step=iteration)
-                            except Exception as e:
-                                print(f"⚠️ Ошибка логирования в MLflow для {metric_name}: {e}")
+                        try:
+                            training_metrics = {
+                                "training.loss": reduced_loss,
+                                "training.taco_loss": reduced_taco_loss,
+                                "training.atten_loss": reduced_atten_loss,
+                                "training.mi_loss": reduced_mi_loss,
+                                "training.guide_loss": reduced_guide_loss if reduced_guide_loss is not None else 0.0,
+                                "training.gate_loss": reduced_gate_loss,
+                                "training.emb_loss": reduced_emb_loss,
+                                "grad.norm": grad_norm,
+                                "learning.rate": learning_rate,
+                                "duration": duration,
+                                "batch_size": hparams.batch_size,
+                                "learning_rate": learning_rate,
+                                # ✅ ИСПРАВЛЕНО: Добавляем новые метрики качества
+                                "quality.attention_diagonality": attention_diagonality,
+                                "quality.gate_accuracy": gate_accuracy,
+                            }
+                            for metric_name, metric_value in training_metrics.items():
+                                try:
+                                    mlflow.log_metric(metric_name, metric_value, step=iteration)
+                                except Exception as e:
+                                    print(f"⚠️ Ошибка логирования в MLflow для {metric_name}: {e}")
+                        except Exception as e:
+                            print(f"⚠️ Общая ошибка логирования в MLflow: {e}")
+                    else:
+                        print("⚠️ MLflow недоступен, пропускаем логирование метрик")
 
                     # 🎯 Автоматическая проверка и адаптация guided attention
                     if guide_loss is not None and hasattr(guide_loss, 'check_diagonality_and_adapt') and y_pred is not None:
@@ -2053,6 +2157,15 @@ def train(
 
         if writer:
             writer.close()
+            
+        # 🔥 ИСПРАВЛЕНИЕ: Завершаем MLflow run
+        if MLFLOW_AVAILABLE:
+            try:
+                mlflow.end_run()
+                print("✅ MLflow run завершен")
+            except Exception as e:
+                print(f"⚠️ Ошибка завершения MLflow run: {e}")
+                
         return final_metrics
 
     return None
@@ -2111,8 +2224,59 @@ if __name__ == "__main__":
     parser.add_argument(
         "--hparams", type=str, required=False, help="comma separated name=value pairs"
     )
+    
+    # 🎯 НОВЫЕ АРГУМЕНТЫ ДЛЯ OPTUNA HPO
+    parser.add_argument(
+        "--optimize-hyperparams",
+        action="store_true",
+        help="Запустить автоматическую оптимизацию гиперпараметров с Optuna"
+    )
+    parser.add_argument(
+        "--n-trials",
+        type=int,
+        default=10,
+        help="Количество trials для оптимизации гиперпараметров"
+    )
+    parser.add_argument(
+        "--optimization-timeout",
+        type=int,
+        default=None,
+        help="Таймаут оптимизации в секундах"
+    )
 
     args = parser.parse_args()
+    
+    # 🎯 ЗАПУСК OPTUNA HPO
+    if args.optimize_hyperparams:
+        print("🎯 Запуск автоматической оптимизации гиперпараметров с Optuna...")
+        try:
+            from smart_tuner.optuna_integration import OptunaTrainerIntegration
+            
+            integration = OptunaTrainerIntegration()
+            results = integration.run_optimization(
+                output_directory=args.output_directory or "output/optimization",
+                log_directory=args.log_directory or "logs/optimization",
+                n_trials=args.n_trials,
+                n_gpus=args.n_gpus,
+                timeout=args.optimization_timeout
+            )
+            
+            print(f"🎉 Оптимизация завершена!")
+            print(f"📊 Лучший trial: {results['best_trial_number']}")
+            print(f"🎯 Лучшее значение: {results['best_value']:.4f}")
+            
+            # Сохраняем результаты
+            results_path = os.path.join(args.output_directory or "output/optimization", "optimization_results.yaml")
+            integration.save_optimization_results(results, results_path)
+            print(f"📁 Результаты сохранены: {results_path}")
+            
+            sys.exit(0)
+            
+        except Exception as e:
+            print(f"❌ Ошибка оптимизации гиперпараметров: {e}")
+            print("🔄 Продолжаем с обычным обучением...")
+    
+    # Обычное обучение
     hparams = create_hparams(args.hparams)
     hparams.no_dga = True
 
