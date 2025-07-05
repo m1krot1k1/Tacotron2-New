@@ -263,6 +263,9 @@ class SmartTunerMain:
                     import traceback
                     self.logger.error(f"Полный traceback: {traceback.format_exc()}")
                     return float('inf')  # Возвращаем худший возможный результат
+                finally:
+                    # Принудительная очистка памяти после каждого trial
+                    self._cleanup_trial_memory()
             
             # Запускаем TTS оптимизацию
             results = self.optimization_engine.optimize(
@@ -372,6 +375,28 @@ class SmartTunerMain:
             self.logger.warning(f"⚠️ Проблемы качества: {passed_checks}/{total_checks} проверок пройдено, требуется минимум {min_required_checks} + все критические проверки")
         
         return quality_passed
+    
+    def _cleanup_trial_memory(self):
+        """
+        Принудительная очистка памяти после завершения trial
+        Устраняет утечки памяти при длительном обучении
+        """
+        try:
+            import gc
+            import torch
+            
+            # Очистка Python garbage collector
+            gc.collect()
+            
+            # Очистка кеша CUDA если доступно
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+                
+            self.logger.debug("🧹 Память после trial очищена")
+            
+        except Exception as e:
+            self.logger.warning(f"⚠️ Ошибка очистки памяти: {e}")
     
     def run_single_training(self, hyperparams: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """

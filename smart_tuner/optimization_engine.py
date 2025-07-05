@@ -28,6 +28,10 @@ class OptimizationEngine:
         """
         self.config_path = config_path
         self.config = self._load_config()
+        
+        # Валидация конфигурации
+        self._validate_config()
+        
         self.study = None
         self.logger = self._setup_logger()
         
@@ -47,11 +51,89 @@ class OptimizationEngine:
             with open(self.config_path, 'r', encoding='utf-8') as f:
                 return yaml.safe_load(f)
         except FileNotFoundError:
-            self.logger.error(f"Файл конфигурации {self.config_path} не найден")
+            print(f"Файл конфигурации {self.config_path} не найден")
             raise
         except yaml.YAMLError as e:
-            self.logger.error(f"Ошибка парсинга YAML: {e}")
+            print(f"Ошибка парсинга YAML: {e}")
             raise
+    
+    def _validate_config(self):
+        """
+        Валидация конфигурации с проверкой критических параметров TTS.
+        Реализует рекомендации из технического задания.
+        """
+        errors = []
+        warnings = []
+        
+        # 1. Проверка основных секций
+        required_sections = ['optimization', 'hyperparameter_search_space', 'training_safety']
+        for section in required_sections:
+            if section not in self.config:
+                errors.append(f"Отсутствует обязательная секция: {section}")
+        
+        # 2. Проверка гиперпараметров
+        if 'hyperparameter_search_space' in self.config:
+            search_space = self.config['hyperparameter_search_space']
+            
+            # Проверка learning_rate
+            if 'learning_rate' in search_space:
+                lr_config = search_space['learning_rate']
+                if lr_config.get('max', 0) > 0.001:
+                    warnings.append("learning_rate.max > 0.001 может привести к нестабильности TTS")
+                if lr_config.get('min', 0) < 1e-6:
+                    warnings.append("learning_rate.min < 1e-6 может быть слишком мал для TTS")
+            
+            # Проверка batch_size
+            if 'batch_size' in search_space:
+                batch_config = search_space['batch_size']
+                if batch_config.get('min', 0) < 16:
+                    warnings.append("batch_size.min < 16 может привести к проблемам с attention alignment")
+                if batch_config.get('max', 0) > 64:
+                    warnings.append("batch_size.max > 64 может вызвать проблемы с памятью")
+            
+            # Проверка dropout параметров
+            dropout_params = ['p_attention_dropout', 'dropout_rate', 'postnet_dropout_rate']
+            for param in dropout_params:
+                if param in search_space:
+                    dropout_config = search_space[param]
+                    if dropout_config.get('max', 0) > 0.4:
+                        warnings.append(f"{param}.max > 0.4 может ухудшить качество attention")
+        
+        # 3. Проверка настроек безопасности обучения
+        if 'training_safety' in self.config:
+            safety_config = self.config['training_safety']
+            
+            if 'tts_quality_checks' in safety_config:
+                quality_checks = safety_config['tts_quality_checks']
+                
+                # Проверка порогов качества
+                if quality_checks.get('min_attention_alignment', 0) > 0.8:
+                    warnings.append("min_attention_alignment > 0.8 может быть слишком строгим для начального обучения")
+                
+                if quality_checks.get('max_validation_loss', 100) < 5.0:
+                    warnings.append("max_validation_loss < 5.0 может быть слишком строгим для TTS")
+        
+        # 4. Проверка настроек оптимизации
+        if 'optimization' in self.config:
+            opt_config = self.config['optimization']
+            
+            if opt_config.get('n_trials', 0) < 5:
+                warnings.append("n_trials < 5 может быть недостаточно для качественной оптимизации")
+            
+            if opt_config.get('n_trials', 0) > 100:
+                warnings.append("n_trials > 100 может занять очень много времени")
+        
+        # Вывод результатов валидации
+        if errors:
+            error_msg = "Критические ошибки конфигурации:\n" + "\n".join(f"- {e}" for e in errors)
+            print(error_msg)
+            raise ValueError(error_msg)
+        
+        if warnings:
+            warning_msg = "Предупреждения конфигурации:\n" + "\n".join(f"- {w}" for w in warnings)
+            print(warning_msg)
+        
+        print("✅ Конфигурация валидирована успешно")
             
     def _setup_logger(self) -> logging.Logger:
         """Настройка логгера"""
@@ -85,9 +167,9 @@ class OptimizationEngine:
         optimization_config = self.config.get('optimization', {})
         direction = optimization_config.get('direction', 'minimize')
         
-        # Создание базы данных для хранения результатов
+        # Создание базы данных для хранения результатов с исправлением блокировки
         storage_path = Path("smart_tuner/optuna_studies.db")
-        storage_url = f"sqlite:///{storage_path}"
+        storage_url = f"sqlite:///{storage_path}?timeout=300&check_same_thread=False"
         
         sampler_type = optimization_config.get('sampler', 'tpe')
         if sampler_type == 'bayesian':
@@ -113,26 +195,36 @@ class OptimizationEngine:
             interval_steps=20         # Проверять каждые 20 эпох
         )
         
-        try:
-            self.study = optuna.create_study(
-                study_name=study_name,
-                storage=storage_url,
-                direction=direction,
-                sampler=sampler,
-                pruner=pruner,
-                load_if_exists=True
-            )
-            
-            self.logger.info(f"TTS исследование создано: {study_name}")
-            self.logger.info(f"Storage: {storage_url}")
-            self.logger.info(f"Direction: {direction}")
-            self.logger.info(f"Early pruning отключен для первых {early_pruning_disabled_epochs} эпох")
-            
-            return self.study
-            
-        except Exception as e:
-            self.logger.error(f"Ошибка создания TTS исследования: {e}")
-            raise
+        # Создание исследования с retry логикой для устранения блокировки SQLite
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                self.study = optuna.create_study(
+                    study_name=study_name,
+                    storage=storage_url,
+                    direction=direction,
+                    sampler=sampler,
+                    pruner=pruner,
+                    load_if_exists=True
+                )
+                
+                self.logger.info(f"TTS исследование создано: {study_name}")
+                self.logger.info(f"Storage: {storage_url}")
+                self.logger.info(f"Direction: {direction}")
+                self.logger.info(f"Early pruning отключен для первых {early_pruning_disabled_epochs} эпох")
+                
+                return self.study
+                
+            except Exception as e:
+                if "database is locked" in str(e) and attempt < max_retries - 1:
+                    import time
+                    wait_time = 2 ** attempt  # Exponential backoff
+                    self.logger.warning(f"База данных заблокирована, попытка {attempt + 1}/{max_retries}, ожидание {wait_time}с")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    self.logger.error(f"Ошибка создания TTS исследования: {e}")
+                    raise
     
     def suggest_hyperparameters(self, trial: optuna.Trial) -> Dict[str, Any]:
         """

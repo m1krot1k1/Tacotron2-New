@@ -474,24 +474,50 @@ start_tensorboard() {
         # Запускаем TensorBoard из виртуального окружения на всех интерфейсах
         nohup "$VENV_DIR/bin/python" -m tensorboard.main --logdir=output --host=0.0.0.0 --port=5001 --reload_interval=5 > tensorboard.log 2>&1 &
         
-        sleep 3
-        if pgrep -f "tensorboard" > /dev/null; then
-            echo "✅ TensorBoard запущен на http://${IP_ADDR}:5001"
-        else
-            echo "❌ Ошибка запуска TensorBoard. Проверьте tensorboard.log"
-        fi
+        # Ожидание готовности TensorBoard
+        echo "Ожидание готовности TensorBoard..."
+        for i in {1..30}; do
+            if curl -s http://localhost:5001 >/dev/null 2>&1; then
+                echo "✅ TensorBoard запущен и готов на http://${IP_ADDR}:5001"
+                break
+            elif [ $i -eq 30 ]; then
+                echo "⚠️ TensorBoard запущен, но не отвечает на http://${IP_ADDR}:5001"
+                echo "Проверьте tensorboard.log для диагностики"
+                break
+            else
+                sleep 1
+            fi
+        done
     else
         echo "ℹ️ TensorBoard уже запущен."
     fi
 }
 
-# 5. Запуск MLflow UI
+# Функция проверки доступности портов
+check_port_availability() {
+    local port=$1
+    if lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; then
+        return 1  # Порт занят
+    fi
+    return 0  # Порт свободен
+}
+
+# 5. Запуск MLflow UI с проверкой портов
 start_mlflow() {
     header "Запуск MLflow UI"
     if ! pgrep -f "mlflow ui" > /dev/null; then
         echo "Запускаем MLflow UI в фоновом режиме..."
-        nohup mlflow ui --host 0.0.0.0 --port 5000 > mlflow.log 2>&1 &
-        echo "✅ MLflow UI запущен на http://localhost:5000"
+        
+        # Проверяем доступность портов
+        for port in 5000 5010 5020; do
+            if check_port_availability $port; then
+                nohup mlflow ui --host 0.0.0.0 --port $port > mlflow.log 2>&1 &
+                echo "✅ MLflow UI запущен на http://localhost:$port"
+                break
+            else
+                echo "⚠️ Порт $port занят, пробуем следующий..."
+            fi
+        done
     else
         echo "ℹ️ MLflow UI уже запущен."
     fi
@@ -504,19 +530,37 @@ start_optuna() {
         echo "Создание базы данных Optuna..."
         mkdir -p smart_tuner
         
-        # Создаем базу данных если она не существует
+        # Создаем базу данных с правильными настройками для предотвращения блокировки
         if [ ! -f "smart_tuner/optuna_studies.db" ]; then
             "$VENV_DIR/bin/python" -c "
 import optuna
+import sqlite3
+import os
+
+# Удаляем старую базу если есть
+db_path = 'smart_tuner/optuna_studies.db'
+if os.path.exists(db_path):
+    os.remove(db_path)
+    print('Старая база данных удалена')
+
+# Создаем новую базу с WAL режимом для лучшей concurrent производительности
+conn = sqlite3.connect(db_path)
+conn.execute('PRAGMA journal_mode=WAL;')
+conn.execute('PRAGMA synchronous=NORMAL;')
+conn.execute('PRAGMA cache_size=10000;')
+conn.execute('PRAGMA busy_timeout=300000;')  # 5 минут timeout
+conn.close()
+
+# Создаем исследование
 study_name = 'tacotron2_optimization'
-storage = 'sqlite:///smart_tuner/optuna_studies.db'
+storage = f'sqlite:///{db_path}?timeout=300&check_same_thread=False'
 study = optuna.create_study(
     study_name=study_name,
     storage=storage,
     direction='minimize',
     load_if_exists=True
 )
-print(f'База данных Optuna создана: {storage}')
+print(f'База данных Optuna создана с улучшенными настройками: {storage}')
 "
         fi
         

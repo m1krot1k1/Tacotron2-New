@@ -83,6 +83,10 @@ class DebugReporter:
             if len(self.debug_data) > 5000:
                 self.debug_data = self.debug_data[-3000:]  # Оставляем последние 3000
             
+            # Проверяем критические проблемы каждые 10 шагов
+            if step % 10 == 0:
+                self._check_critical_issues(step, metrics, loss_components)
+            
             # Проверяем, нужно ли отправить отчет
             if step - self.last_report_step >= self.report_interval:
                 self.send_debug_report(step)
@@ -90,6 +94,140 @@ class DebugReporter:
                 
         except Exception as e:
             print(f"⚠️ Ошибка сбора debug данных: {e}")
+    
+    def _check_critical_issues(self, step: int, metrics: Dict, loss_components: Dict):
+        """
+        Проверка критических проблем каждые 10 шагов с автоматическим перезапуском.
+        Реализует рекомендации из технического задания.
+        """
+        try:
+            critical_issues = []
+            
+            # 1. Проверка NaN в loss компонентах
+            if loss_components:
+                for name, value in loss_components.items():
+                    if isinstance(value, (int, float)):
+                        if np.isnan(value):
+                            critical_issues.append(f"NaN в {name}")
+                        elif np.isinf(value):
+                            critical_issues.append(f"Inf в {name}")
+            
+            # 2. Проверка NaN в основных метриках
+            nan_metrics = []
+            for key, value in metrics.items():
+                if isinstance(value, (int, float)) and np.isnan(value):
+                    nan_metrics.append(key)
+            
+            if nan_metrics:
+                critical_issues.append(f"NaN в метриках: {', '.join(nan_metrics)}")
+            
+            # 3. Проверка экстремальных значений
+            total_loss = metrics.get('loss', 0)
+            if isinstance(total_loss, (int, float)):
+                if total_loss > 1000:
+                    critical_issues.append(f"Экстремально высокий loss: {total_loss:.2f}")
+                elif total_loss < 0:
+                    critical_issues.append(f"Отрицательный loss: {total_loss:.2f}")
+            
+            # 4. Проверка градиентов
+            grad_norm = metrics.get('grad_norm', 0)
+            if isinstance(grad_norm, (int, float)):
+                if grad_norm > 1000:
+                    critical_issues.append(f"Взрыв градиентов: {grad_norm:.2f}")
+                elif grad_norm < 1e-8:
+                    critical_issues.append(f"Исчезновение градиентов: {grad_norm:.2e}")
+            
+            # 5. Если есть критические проблемы, отправляем уведомление
+            if critical_issues:
+                self._handle_critical_issues(step, critical_issues)
+                
+        except Exception as e:
+            print(f"⚠️ Ошибка проверки критических проблем: {e}")
+    
+    def _handle_critical_issues(self, step: int, issues: List[str]):
+        """
+        Обработка критических проблем с автоматическими действиями.
+        """
+        try:
+            # Логируем проблемы
+            issues_text = "; ".join(issues)
+            print(f"🚨 КРИТИЧЕСКИЕ ПРОБЛЕМЫ на шаге {step}: {issues_text}")
+            
+            # Отправляем экстренное уведомление в Telegram
+            if self.telegram_monitor:
+                try:
+                    self.telegram_monitor.send_critical_alert(
+                        title="🚨 КРИТИЧЕСКИЕ ПРОБЛЕМЫ ОБУЧЕНИЯ",
+                        message=f"Шаг {step}: {issues_text}",
+                        severity="critical"
+                    )
+                except Exception as e:
+                    print(f"⚠️ Не удалось отправить критическое уведомление: {e}")
+            
+            # Сохраняем в историю проблем
+            self.warning_history.append({
+                'step': step,
+                'timestamp': time.time(),
+                'issues': issues,
+                'severity': 'critical'
+            })
+            
+            # Проверяем, нужен ли автоматический перезапуск
+            if self._should_trigger_restart(issues):
+                self._trigger_emergency_restart(step, issues)
+                
+        except Exception as e:
+            print(f"⚠️ Ошибка обработки критических проблем: {e}")
+    
+    def _should_trigger_restart(self, issues: List[str]) -> bool:
+        """
+        Определяет, нужен ли автоматический перезапуск на основе критических проблем.
+        """
+        # Автоматический перезапуск при NaN или Inf
+        for issue in issues:
+            if "NaN" in issue or "Inf" in issue:
+                return True
+            if "Взрыв градиентов" in issue:
+                return True
+        return False
+    
+    def _trigger_emergency_restart(self, step: int, issues: List[str]):
+        """
+        Запускает процедуру экстренного перезапуска.
+        """
+        try:
+            print(f"🔄 ЭКСТРЕННЫЙ ПЕРЕЗАПУСК на шаге {step}")
+            
+            # Записываем информацию о перезапуске
+            restart_info = {
+                'step': step,
+                'timestamp': time.time(),
+                'reason': 'critical_issues',
+                'issues': issues
+            }
+            
+            self.restart_history.append(restart_info)
+            
+            # Отправляем уведомление о перезапуске
+            if self.telegram_monitor:
+                try:
+                    self.telegram_monitor.send_restart_notification(
+                        reason=f"Критические проблемы: {'; '.join(issues)}",
+                        step=step
+                    )
+                except Exception as e:
+                    print(f"⚠️ Не удалось отправить уведомление о перезапуске: {e}")
+            
+            # Сохраняем информацию о перезапуске в файл
+            import json
+            restart_file = f"emergency_restart_step_{step}.json"
+            with open(restart_file, 'w') as f:
+                json.dump(restart_info, f, indent=2)
+            
+            print(f"💾 Информация о перезапуске сохранена в {restart_file}")
+            
+        except Exception as e:
+            print(f"⚠️ Ошибка запуска экстренного перезапуска: {e}")
     
     def _analyze_loss(self, loss_components: Dict, metrics: Dict) -> Dict:
         """🔥 Анализ loss компонентов"""

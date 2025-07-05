@@ -615,22 +615,29 @@ class EarlyStopController:
 
     def should_stop_early(self, metrics: Dict[str, float]) -> Tuple[bool, str]:
         """
-        TTS-специфичная проверка раннего останова с мультикритериальной оценкой.
+        TTS-специфичная проверка раннего останова с адаптивными порогами на основе фазы обучения.
         """
         early_stop_config = self.config.get('early_stopping', {})
         if not early_stop_config.get('enabled', True):
             return False, "Early stopping отключен"
-            
+        
+        # Используем адаптивные пороги на основе фазы обучения
+        adaptive_thresholds = self._get_adaptive_thresholds()
+        
         multi_criteria = early_stop_config.get('multi_criteria', {})
         if not multi_criteria.get('enabled', False):
-            # Стандартная проверка
-            return self._standard_early_stop_check(metrics)
+            # Стандартная проверка с адаптивными порогами
+            return self._standard_early_stop_check(metrics, adaptive_thresholds)
             
-        # Мультикритериальная TTS проверка
+        # Мультикритериальная TTS проверка с адаптивными порогами
         criteria = multi_criteria.get('criteria', {})
         stop_reasons = []
         
         for criterion_name, criterion_config in criteria.items():
+            # Применяем адаптивные пороги
+            if criterion_name in adaptive_thresholds:
+                criterion_config = {**criterion_config, **adaptive_thresholds[criterion_name]}
+            
             metric_name = criterion_name.replace('_', '.')
             if metric_name in metrics:
                 should_stop, reason = self._check_single_criterion(
@@ -647,19 +654,90 @@ class EarlyStopController:
             
         return False, "TTS обучение продолжается"
 
-    def _standard_early_stop_check(self, metrics: Dict[str, float]) -> Tuple[bool, str]:
-        """Стандартная проверка раннего останова."""
+    def _get_adaptive_thresholds(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Получает адаптивные пороги на основе текущей фазы обучения TTS.
+        Реализует рекомендации из технического задания.
+        """
+        current_step = len(self.metrics_history)
+        total_steps = self.config.get('optimization', {}).get('full_epochs_per_trial', 1000)
+        progress = current_step / total_steps if total_steps > 0 else 0
+        
+        # Определяем фазу обучения
+        if progress < 0.3:  # Фаза alignment (0-30%)
+            return {
+                'validation_loss': {
+                    'patience': 200,
+                    'min_delta': 0.02,
+                    'attention_threshold': 0.4  # Снижено для начальной фазы
+                },
+                'attention_alignment_score': {
+                    'patience': 150,
+                    'min_delta': 0.01,
+                    'mode': 'max'
+                },
+                'gate_accuracy': {
+                    'patience': 180,
+                    'min_delta': 0.005,
+                    'mode': 'max'
+                }
+            }
+        elif progress < 0.7:  # Фаза learning (30-70%)
+            return {
+                'validation_loss': {
+                    'patience': 150,
+                    'min_delta': 0.001,
+                    'attention_threshold': 0.7
+                },
+                'attention_alignment_score': {
+                    'patience': 120,
+                    'min_delta': 0.005,
+                    'mode': 'max'
+                },
+                'gate_accuracy': {
+                    'patience': 130,
+                    'min_delta': 0.002,
+                    'mode': 'max'
+                }
+            }
+        else:  # Фаза fine-tuning (70-100%)
+            return {
+                'validation_loss': {
+                    'patience': 100,
+                    'min_delta': 0.0005,
+                    'attention_threshold': 0.85
+                },
+                'attention_alignment_score': {
+                    'patience': 80,
+                    'min_delta': 0.002,
+                    'mode': 'max'
+                },
+                'gate_accuracy': {
+                    'patience': 90,
+                    'min_delta': 0.001,
+                    'mode': 'max'
+                }
+            }
+
+    def _standard_early_stop_check(self, metrics: Dict[str, float], adaptive_thresholds: Dict[str, Dict[str, Any]] = None) -> Tuple[bool, str]:
+        """Стандартная проверка раннего останова с адаптивными порогами."""
         early_stop_config = self.config.get('early_stopping', {})
         
         monitor_metric = early_stop_config.get('monitor', 'validation.loss')
         if monitor_metric not in metrics:
             return False, f"Метрика {monitor_metric} не найдена"
-            
-        patience = early_stop_config.get('patience', 150)
-        min_delta = early_stop_config.get('min_delta', 0.0005)
+        
+        # Используем адаптивные пороги если доступны
+        if adaptive_thresholds and 'validation_loss' in adaptive_thresholds:
+            thresholds = adaptive_thresholds['validation_loss']
+            patience = thresholds.get('patience', early_stop_config.get('patience', 150))
+            min_delta = thresholds.get('min_delta', early_stop_config.get('min_delta', 0.0005))
+        else:
+            patience = early_stop_config.get('patience', 150)
+            min_delta = early_stop_config.get('min_delta', 0.0005)
         
         if len(self.metrics_history) < patience:
-            return False, "Недостаточно истории для проверки"
+            return False, f"Недостаточно истории для проверки (фаза: {self.current_phase})"
             
         recent_values = [m.get(monitor_metric, float('inf')) for m in self.metrics_history[-patience:]]
         if len(recent_values) < patience:
@@ -669,9 +747,9 @@ class EarlyStopController:
         current_value = recent_values[-1]
         
         if current_value - best_value > min_delta:
-            return True, f"Ранний останов: {monitor_metric} не улучшается {patience} эпох"
+            return True, f"Адаптивный ранний останов ({self.current_phase}): {monitor_metric} не улучшается {patience} эпох"
             
-        return False, "Метрика улучшается"
+        return False, f"Метрика улучшается (фаза: {self.current_phase})"
 
     def _check_single_criterion(self, current_value: float, criterion_name: str, config: Dict) -> Tuple[bool, str]:
         """Проверка одного критерия раннего останова."""
