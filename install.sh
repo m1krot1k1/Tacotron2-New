@@ -688,7 +688,7 @@ main_menu() {
                             dataset_path="data/dataset"
                         fi
                         echo -e "${BLUE}🚀 Запуск Ultimate Enhanced Training...${NC}"
-                        "$VENV_DIR/bin/python" ultimate_tacotron_trainer.py --mode ultimate --dataset-path "$dataset_path" --epochs 3500
+                        "$VENV_DIR/bin/python" ultimate_tacotron_trainer.py --mode ultimate --dataset-path "$dataset_path" --epochs 35000
                         ;;
                     2)
                         echo -e "${GREEN}🤖 Запуск AUTO-OPTIMIZED MODE - автоматическая оптимизация!${NC}"
