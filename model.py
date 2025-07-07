@@ -297,11 +297,7 @@ class Decoder(nn.Module):
         super(Decoder, self).__init__()
         self.n_mel_channels = hparams.n_mel_channels
         self.n_frames_per_step = hparams.n_frames_per_step
-        # Сохраняем исходное значение для совместимости
-        self.base_encoder_embedding_dim = hparams.encoder_embedding_dim
         self.encoder_embedding_dim = hparams.encoder_embedding_dim
-        if hparams.use_gst:
-            self.encoder_embedding_dim = hparams.encoder_embedding_dim + hparams.token_embedding_size
         self.attention_rnn_dim = hparams.attention_rnn_dim
         self.decoder_rnn_dim = hparams.decoder_rnn_dim
         self.prenet_dim = hparams.prenet_dim
@@ -762,6 +758,10 @@ class Tacotron2(nn.Module):
         self.drop_frame_rate = hparams.drop_frame_rate
         self.use_mmi = hparams.use_mmi
         self.use_gst = hparams.use_gst
+        self.debug = False
+        self.p_teacher_forcing = hparams.p_teacher_forcing
+        self.teacher_force = True
+        self.eval_teacher_force = False
 
         if self.drop_frame_rate > 0.:
             # global mean is not used at inference.
@@ -773,10 +773,13 @@ class Tacotron2(nn.Module):
         else:
             self.mi = None
 
-        self.gst = None
-        if self.use_gst:
-            self.gst = GST(hparams)
-            self.tpse_gst = TPSEGST(hparams)
+        self.gst = GST(hparams) if hparams.use_gst else None
+        if self.gst is not None:
+            self.gst_proj = LinearNorm(hparams.token_embedding_size, hparams.encoder_embedding_dim)
+
+        self.use_tps_gst = getattr(hparams, 'use_tps_gst', False)
+        if self.use_tps_gst:
+            self.tps_gst = TPSEGST(hparams)
 
         # === Double Decoder Consistency ===
         self.use_ddc = getattr(hparams, 'use_ddc', False)
@@ -827,17 +830,23 @@ class Tacotron2(nn.Module):
             mels = dropout_frame(mels, self.global_mean, output_lengths, self.drop_frame_rate)
 
         embedded_inputs = self.embedding(text_inputs).transpose(1, 2)
-        emb_text = self.encoder(embedded_inputs, text_lengths)
-        encoder_outputs = emb_text
+        encoder_outputs = self.encoder(embedded_inputs, text_lengths)
 
-        tpse_gst_outputs = None
-        gst_outputs = None  # Инициализируем переменную
-        emb_gst = None  # Инициализируем emb_gst
         if self.gst is not None:
-            gst_outputs = self.gst(mels, output_lengths)
-            emb_gst = gst_outputs.repeat(1, emb_text.size(1), 1)
-            tpse_gst_outputs = self.tpse_gst(encoder_outputs)
-            encoder_outputs = torch.cat((emb_text, emb_gst), dim=2)
+            gst_embedding = self.gst(mels, output_lengths)
+            
+            if self.use_tps_gst:
+                # Experimental, might not work
+                tps_gst_embedding = self.tps_gst(encoder_outputs)
+            else:
+                tps_gst_embedding = None
+
+            if tps_gst_embedding is not None:
+                projected_gst = self.gst_proj(tps_gst_embedding)
+                encoder_outputs = encoder_outputs + projected_gst.expand_as(encoder_outputs)
+            else:
+                projected_gst = self.gst_proj(gst_embedding)
+                encoder_outputs = encoder_outputs + projected_gst.expand_as(encoder_outputs)
 
         mel_outputs, gate_outputs, alignments, decoder_outputs = self.decoder(
             encoder_outputs, mels, memory_lengths=text_lengths)

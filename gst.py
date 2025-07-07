@@ -185,5 +185,13 @@ class TPSEGST(torch.nn.Module):
         y = y.contiguous().view(batch_size, -1)  # [batch, hidden_size]
         y = y.unsqueeze(1)  # [batch, 1, hidden_size]
         y = torch.tanh(self.linear(y))
+        
+        # 🔥 ДОПОЛНИТЕЛЬНАЯ СТАБИЛИЗАЦИЯ: Клампинг для предотвращения экстремальных значений
+        y = torch.clamp(y, min=-2.0, max=2.0)  # Ограничиваем диапазон
+        
+        # 🔥 МЯГКАЯ НОРМАЛИЗАЦИЯ для дополнительной стабильности
+        y_norm = torch.norm(y, p=2, dim=-1, keepdim=True)
+        y_norm_safe = torch.clamp(y_norm, min=1e-8, max=5.0)  # Предотвращаем слишком большие нормы
+        y = y / y_norm_safe * torch.clamp(y_norm_safe, max=1.0)  # Нормализуем с ограничением
 
         return y
