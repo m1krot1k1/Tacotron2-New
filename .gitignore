@@ -51,4 +51,7 @@ smart_tuner/optuna_studies.db
 # Checkpoint files (слишком большие для GitHub)
 test_output/
 output/
-events.*
+events.*checkpoint_backup/
+checkpoint_compressed/
+*.pt
+*.pth
