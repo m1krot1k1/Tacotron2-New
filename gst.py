@@ -168,13 +168,22 @@ class TPSEGST(torch.nn.Module):
         # Detaching from main graph to not send gradient to the GST layer
         if x is None:
             return None
+        
+        # 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Сохраняем batch dimension
+        batch_size = x.size(0)
         x = x.contiguous().detach()
         x = x.transpose(1, 2)
         x = self.inp(x)
         x = x.transpose(1, 2)
         self.gru.flatten_parameters()
         _, y = self.gru(x)
-        y = y.transpose(1,0).reshape(-1, self.dim).unsqueeze(1)
+        
+        # 🔥 ИСПРАВЛЕНИЕ: Правильная обработка размерностей с сохранением batch dimension
+        # y имеет размерность [num_layers*num_directions, batch, hidden_size]
+        # Для bidirectional GRU: [2, batch, hidden_size//2]
+        y = y.transpose(0, 1)  # [batch, num_layers*num_directions, hidden_size//2]
+        y = y.contiguous().view(batch_size, -1)  # [batch, hidden_size]
+        y = y.unsqueeze(1)  # [batch, 1, hidden_size]
         y = torch.tanh(self.linear(y))
 
         return y
