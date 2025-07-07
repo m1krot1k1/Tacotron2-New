@@ -249,9 +249,26 @@ train_model() {
     pkill -f "optuna-dashboard" &>/dev/null
     sleep 1
     echo "✓ Старые процессы мониторинга остановлены"
-    rm -rf output/ mlruns/ smart_tuner/models/ tensorboard.log mlflow.log ultimate_training.log smart_tuner/optuna_studies.db
+    
+    # 🗑️ УНИВЕРСАЛЬНАЯ ОЧИСТКА ЛОГОВ (новая система)
+    echo "🗑️ Запуск универсальной очистки логов и дашбордов..."
+    if [ -f "log_cleanup_manager.py" ]; then
+        "$VENV_DIR/bin/python" log_cleanup_manager.py --keep-days 7 --include-checkpoints
+        if [ $? -eq 0 ]; then
+            echo "✅ Универсальная очистка завершена успешно"
+        else
+            echo "⚠️ Ошибка универсальной очистки, используем старый метод"
+            # Fallback на старый метод
+            rm -rf output/ mlruns/ smart_tuner/models/ tensorboard.log mlflow.log ultimate_training.log smart_tuner/optuna_studies.db
+        fi
+    else
+        echo "⚠️ LogCleanupManager недоступен, используем старый метод очистки"
+        # Старый метод очистки как fallback
+        rm -rf output/ mlruns/ smart_tuner/models/ tensorboard.log mlflow.log ultimate_training.log smart_tuner/optuna_studies.db
+    fi
+    
     mkdir -p output/ mlruns/ smart_tuner/models/ checkpoints/
-    echo "✓ Старые логи и артефакты удалены, директории пересозданы"
+    echo "✓ Логи и артефакты очищены, директории подготовлены"
 
     if [ "$TRAINING_MODE" != "old_system" ]; then
         # Запуск мониторинга для новой системы

@@ -440,6 +440,36 @@ class UltimateEnhancedTacotronTrainer:
         """Инициализирует все компоненты для обучения."""
         self.logger.info("🔧 Инициализация компонентов обучения...")
         
+        # 🗑️ УНИВЕРСАЛЬНАЯ ОЧИСТКА ЛОГОВ И ДАШБОРДОВ
+        try:
+            from log_cleanup_manager import LogCleanupManager
+            
+            # Определяем уровень очистки по режиму
+            include_checkpoints = self.mode in ['ultimate', 'enhanced']  # Полная очистка для продвинутых режимов
+            keep_days = 3 if self.mode == 'ultimate' else 7  # Ultimate - более агрессивная очистка
+            
+            self.logger.info("🗑️ Запуск универсальной очистки логов и дашбордов...")
+            cleanup_manager = LogCleanupManager(
+                project_root=".",
+                keep_last_days=keep_days,
+                dry_run=False
+            )
+            
+            cleanup_stats = cleanup_manager.cleanup_all(include_checkpoints=include_checkpoints)
+            
+            # Логируем результаты очистки
+            self.logger.info(f"✅ Очистка завершена: {cleanup_stats.directories_cleaned} директорий, "
+                           f"{cleanup_stats.files_removed} файлов, {cleanup_stats.databases_cleaned} БД, "
+                           f"{cleanup_stats.space_freed_mb:.1f} MB освобождено")
+            
+            if cleanup_stats.errors:
+                self.logger.warning(f"⚠️ Ошибок при очистке: {len(cleanup_stats.errors)}")
+            
+        except ImportError:
+            self.logger.warning("⚠️ LogCleanupManager недоступен - очистка пропущена")
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка универсальной очистки логов: {e}")
+        
         # 🚀 АВТОМАТИЧЕСКАЯ ОПТИМИЗАЦИЯ ГИПЕРПАРАМЕТРОВ (для режимов auto_optimized и ultimate)
         if self.mode in ['auto_optimized', 'ultimate'] and self.smart_tuner:
             try:
