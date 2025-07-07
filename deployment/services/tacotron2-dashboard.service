@@ -1,0 +1,14 @@
+[Unit]
+Description=Tacotron2 dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=m1krot1k
+WorkingDirectory=/home/m1krot1k/Desktop/Tacotron2-New
+ExecStart=/home/m1krot1k/Desktop/Tacotron2-New/venv/bin/python production_realtime_dashboard.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
