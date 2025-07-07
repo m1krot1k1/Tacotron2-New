@@ -23,6 +23,8 @@ import time
 import torch
 import torch.nn as nn
 import torch.distributed as dist
+import torch.utils.data
+from torch.utils.data import DataLoader
 import numpy as np
 import logging
 import copy
@@ -88,6 +90,14 @@ try:
 except ImportError:
     LOGGING_AVAILABLE = False
     logging.warning("MLflow/TensorBoard недоступны")
+
+# Импорт для данных
+try:
+    from data_utils import TextMelLoader, TextMelCollate
+    DATA_UTILS_AVAILABLE = True
+except ImportError:
+    DATA_UTILS_AVAILABLE = False
+    logging.warning("data_utils недоступен - создам минимальную реализацию")
 
 class UltimateEnhancedTacotronTrainer:
     """
@@ -504,19 +514,31 @@ class UltimateEnhancedTacotronTrainer:
         # Сохраняем диагональность для следующего шага
         self.last_attention_diagonality = attention_diagonality
         
-        # 🎯 АДАПТИВНАЯ НАСТРОЙКА GUIDED ATTENTION (из enhanced_training_main.py)
+        # 🎯 БЕЗОПАСНАЯ АДАПТИВНАЯ НАСТРОЙКА GUIDED ATTENTION
         if hasattr(self.criterion, 'guide_loss_weight') and self.global_step > 0:
+            current_weight = self.criterion.guide_loss_weight
+            
+            # КРИТИЧЕСКИ ВАЖНО: НЕ ДОПУСКАЕМ ВЗРЫВА ДО 100.0!
             if attention_diagonality < 0.05:
-                new_weight = min(self.criterion.guide_loss_weight * 3.0, 100.0)
+                # Очень осторожное увеличение - НЕ БОЛЕЕ 15.0!
+                new_weight = min(current_weight * 1.5, 15.0)
                 self.criterion.guide_loss_weight = new_weight
-                self.logger.warning(f"🚨 КРИТИЧЕСКОЕ увеличение guided attention weight: {new_weight:.1f}")
+                self.logger.warning(f"🚨 Осторожное увеличение guided attention weight: {current_weight:.1f} → {new_weight:.1f}")
             elif attention_diagonality < 0.1:
-                new_weight = min(self.criterion.guide_loss_weight * 2.5, 75.0)
+                # Умеренное увеличение - НЕ БОЛЕЕ 12.0!
+                new_weight = min(current_weight * 1.3, 12.0)
                 self.criterion.guide_loss_weight = new_weight
-                self.logger.warning(f"🚨 Сильное увеличение guided attention weight: {new_weight:.1f}")
+                self.logger.warning(f"🚨 Умеренное увеличение guided attention weight: {current_weight:.1f} → {new_weight:.1f}")
             elif attention_diagonality > 0.7:
-                new_weight = max(self.criterion.guide_loss_weight * 0.9, 1.0)
+                # Снижение когда attention уже хорошее
+                new_weight = max(current_weight * 0.9, 1.0)
                 self.criterion.guide_loss_weight = new_weight
+                self.logger.info(f"📉 Снижение guided attention weight: {current_weight:.1f} → {new_weight:.1f}")
+            
+            # АВАРИЙНАЯ ЗАЩИТА: если как-то дошло до критических значений
+            if self.criterion.guide_loss_weight > 20.0:
+                self.criterion.guide_loss_weight = 10.0  # Сбрасываем до безопасного
+                self.logger.error(f"🚨 АВАРИЙНЫЙ СБРОС guided attention weight до 10.0!")
         
         # 🎯 ВЫЧИСЛЕНИЕ LOSS С БЕЗОПАСНОЙ ОБРАБОТКОЙ
         try:
@@ -614,7 +636,15 @@ class UltimateEnhancedTacotronTrainer:
                 )
                 if lr_changed:
                     current_lr = self.optimizer.param_groups[0]['lr']
-                    self.logger.info(f"🔄 Smart LR адаптация: LR изменен на {current_lr:.2e}")
+                    # Проверяем что LR не стал слишком маленьким
+                    if current_lr < 1e-7:
+                        # Устанавливаем минимально допустимый LR
+                        for param_group in self.optimizer.param_groups:
+                            param_group['lr'] = 1e-6
+                        current_lr = 1e-6
+                        self.logger.info(f"🔄 LR восстановлен до минимального уровня: {current_lr:.2e}")
+                    else:
+                        self.logger.info(f"🔄 Smart LR адаптация: LR изменен на {current_lr:.2e}")
             except Exception as e:
                 self.logger.error(f"Ошибка Smart LR Adapter: {e}")
         
@@ -700,7 +730,7 @@ class UltimateEnhancedTacotronTrainer:
         
         return validation_metrics 
 
-    def train(self, train_loader, val_loader, num_epochs: int = 3500):
+    def train(self, train_loader, val_loader, num_epochs: int = 3500, max_steps: Optional[int] = None):
         """
         Главный метод обучения с полной интеграцией всех систем.
         
@@ -708,9 +738,13 @@ class UltimateEnhancedTacotronTrainer:
             train_loader: DataLoader для обучения
             val_loader: DataLoader для валидации
             num_epochs: Количество эпох обучения
+            max_steps: Максимальное количество шагов (для быстрого тестирования)
         """
         self.logger.info(f"🚀 Начинаем Ultimate Enhanced Training (режим: {self.mode})")
-        self.logger.info(f"📊 Эпох: {num_epochs}, Батчей: {len(train_loader)}")
+        if max_steps:
+            self.logger.info(f"🔬 ТЕСТОВЫЙ РЕЖИМ: ограничение {max_steps} шагов")
+        else:
+            self.logger.info(f"📊 Эпох: {num_epochs}, Батчей: {len(train_loader)}")
         
         # Инициализация обучения
         self.initialize_training()
@@ -718,10 +752,17 @@ class UltimateEnhancedTacotronTrainer:
         # 📱 Отправка стартового уведомления
         if self.telegram_monitor:
             try:
-                self.telegram_monitor.send_training_start_notification(
-                    hparams=self.hparams,
-                    dataset_info=self.dataset_info
-                )
+                if hasattr(self.telegram_monitor, 'send_training_start_notification'):
+                    self.telegram_monitor.send_training_start_notification(
+                        hparams=self.hparams,
+                        dataset_info=self.dataset_info
+                    )
+                elif hasattr(self.telegram_monitor, 'send_message'):
+                    self.telegram_monitor.send_message("🚀 Начинаю Ultimate Enhanced Training!")
+                elif hasattr(self.telegram_monitor, 'send_training_notification'):
+                    self.telegram_monitor.send_training_notification("🚀 Начинаю Ultimate Enhanced Training!")
+                else:
+                    self.logger.debug("Telegram monitor не поддерживает отправку сообщений")
             except Exception as e:
                 self.logger.warning(f"Ошибка Telegram уведомления: {e}")
         
@@ -760,8 +801,9 @@ class UltimateEnhancedTacotronTrainer:
                     epoch_attention_scores.append(step_metrics.get('attention_diagonality', 0))
                     epoch_gate_accuracies.append(step_metrics.get('gate_accuracy', 0))
                     
-                    # 📊 ЛОГИРОВАНИЕ КАЖДЫЕ 100 ШАГОВ
-                    if self.global_step % 100 == 0:
+                    # 📊 ЛОГИРОВАНИЕ КАЖДЫЕ 100 ШАГОВ (или каждые 10 в тестовом режиме)
+                    log_frequency = 10 if max_steps else 100
+                    if self.global_step % log_frequency == 0:
                         self._log_training_step(step_metrics, epoch, batch_idx)
                     
                     # 🔧 КРИТИЧЕСКИЙ МОНИТОРИНГ
@@ -778,6 +820,11 @@ class UltimateEnhancedTacotronTrainer:
                             if emergency_fixes:
                                 self.logger.info(f"🔧 Применены аварийные меры: {emergency_fixes}")
                     
+                    # 🔬 ПРОВЕРКА ЛИМИТА ШАГОВ ДЛЯ ТЕСТИРОВАНИЯ
+                    if max_steps and self.global_step >= max_steps:
+                        self.logger.info(f"🔬 Достигнут лимит тестирования: {max_steps} шагов на эпохе {epoch}")
+                        break
+                        
                 except Exception as e:
                     self.logger.error(f"❌ Ошибка в шаге обучения {batch_idx}: {e}")
                     continue
@@ -794,8 +841,9 @@ class UltimateEnhancedTacotronTrainer:
                 'epoch_time': time.time() - epoch_start
             }
             
-            # 📊 ВАЛИДАЦИЯ КАЖДЫЕ 10 ЭПОХ (или по расписанию)
-            if epoch % 10 == 0 or epoch < 5:
+            # 📊 ВАЛИДАЦИЯ КАЖДЫЕ 10 ЭПОХ (или сразу в тестовом режиме)
+            validation_frequency = 1 if max_steps else 10
+            if epoch % validation_frequency == 0 or epoch < 5:
                 try:
                     val_metrics = self.validate_step(val_loader)
                     epoch_metrics.update(val_metrics)
@@ -820,21 +868,28 @@ class UltimateEnhancedTacotronTrainer:
             # 📊 ПОДРОБНОЕ ЛОГИРОВАНИЕ ЭПОХИ
             self._log_epoch_summary(epoch_metrics)
             
-            # 📱 TELEGRAM УВЕДОМЛЕНИЯ (каждые 50 эпох или при важных событиях)
-            if epoch % 50 == 0 or epoch < 5 or patience_counter > max_patience // 2:
+            # 📱 TELEGRAM УВЕДОМЛЕНИЯ (каждые 5 шагов в тестовом режиме, каждые 50 эпох в обычном)
+            telegram_frequency = 5 if max_steps else 50
+            if epoch % telegram_frequency == 0 or epoch < 5 or patience_counter > max_patience // 2:
                 self._send_epoch_telegram_update(epoch_metrics)
             
             # 🔄 АВТОМАТИЧЕСКАЯ ОПТИМИЗАЦИЯ (для ultimate режима)
-            if self.mode == 'ultimate' and epoch > 100 and epoch % 200 == 0:
-                self._perform_intelligent_adjustments(training_history[-50:])  # Анализ последних 50 эпох
+            if self.mode == 'ultimate' and epoch > 10 and len(training_history) >= 10:
+                self._perform_intelligent_adjustments(training_history[-10:])  # Анализ последних 10 эпох
             
             # 🛑 EARLY STOPPING
             if patience_counter >= max_patience:
                 self.logger.info(f"🛑 Early stopping после {patience_counter} эпох без улучшений")
                 break
+                
+            # 🔬 ВЫХОД ИЗ ЦИКЛА ПРИ ДОСТИЖЕНИИ ЛИМИТА ШАГОВ
+            if max_steps and self.global_step >= max_steps:
+                self.logger.info(f"🔬 Тестирование завершено на {self.global_step} шагах")
+                break
             
             # 🔧 ПЕРИОДИЧЕСКОЕ СОХРАНЕНИЕ
-            if epoch % 100 == 0:
+            save_frequency = 20 if max_steps else 100
+            if epoch % save_frequency == 0:
                 self._save_checkpoint(epoch, is_best=False)
                 
         # 🎉 ЗАВЕРШЕНИЕ ОБУЧЕНИЯ
@@ -916,7 +971,13 @@ class UltimateEnhancedTacotronTrainer:
 
 🚀 Режим: {self.mode}"""
             
-            self.telegram_monitor.send_message(message)
+            # Безопасная отправка сообщения
+            if hasattr(self.telegram_monitor, 'send_message'):
+                self.telegram_monitor.send_message(message)
+            elif hasattr(self.telegram_monitor, 'send_epoch_update'):
+                self.telegram_monitor.send_epoch_update(metrics)
+            else:
+                self.logger.debug("Telegram monitor не поддерживает отправку сообщений")
         except Exception as e:
             self.logger.warning(f"Ошибка Telegram уведомления: {e}")
     
@@ -947,10 +1008,12 @@ class UltimateEnhancedTacotronTrainer:
         # Проблема 2: Низкое внимание
         avg_attention = np.mean(attention_scores[-10:]) if len(attention_scores) >= 10 else 0
         if avg_attention < 0.3:
-            # Увеличиваем фокус на attention
+            # Увеличиваем фокус на attention БЕЗОПАСНО
             if hasattr(self.criterion, 'guide_loss_weight'):
-                self.criterion.guide_loss_weight = min(self.criterion.guide_loss_weight * 2.0, 50.0)
-                adjustments_made.append(f"Критическое увеличение guided attention weight до {self.criterion.guide_loss_weight:.1f}")
+                # Безопасное увеличение - НЕ БОЛЕЕ 20.0!
+                old_weight = self.criterion.guide_loss_weight
+                self.criterion.guide_loss_weight = min(old_weight * 1.5, 15.0)  # Максимум 15.0
+                adjustments_made.append(f"Безопасное увеличение guided attention weight: {old_weight:.1f} → {self.criterion.guide_loss_weight:.1f}")
         
         # Проблема 3: Высокие градиенты
         avg_grad_norm = np.mean(grad_norms[-10:]) if len(grad_norms) >= 10 else 0
@@ -1017,13 +1080,35 @@ class UltimateEnhancedTacotronTrainer:
         # Сохранение финального отчета
         try:
             import json
-            with open('ultimate_training_report.json', 'w') as f:
-                json.dump({
-                    'final_stats': final_stats,
-                    'training_history': training_history,
-                    'mode': self.mode,
-                    'hparams': vars(self.hparams)
-                }, f, indent=2)
+            import numpy as np
+            
+            # Функция для конвертации numpy типов и type объектов в стандартные Python типы
+            def convert_numpy_types(obj):
+                if isinstance(obj, (np.integer, np.floating)):
+                    return obj.item()
+                elif isinstance(obj, np.ndarray):
+                    return obj.tolist()
+                elif isinstance(obj, type):  # Исправляем type объекты
+                    return str(obj)
+                elif hasattr(obj, '__dict__') and not isinstance(obj, (str, int, float, bool)):
+                    # Для сложных объектов преобразуем в строку
+                    return str(obj)
+                elif isinstance(obj, dict):
+                    return {k: convert_numpy_types(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [convert_numpy_types(item) for item in obj]
+                return obj
+            
+            # Конвертируем все данные
+            report_data = {
+                'final_stats': convert_numpy_types(final_stats),
+                'training_history': convert_numpy_types(training_history),
+                'mode': self.mode,
+                'hparams': convert_numpy_types(vars(self.hparams))
+            }
+            
+            with open('ultimate_training_report.json', 'w', encoding='utf-8') as f:
+                json.dump(report_data, f, indent=2, ensure_ascii=False)
             self.logger.info("📄 Сохранен детальный отчет: ultimate_training_report.json")
         except Exception as e:
             self.logger.warning(f"Ошибка сохранения отчета: {e}")
@@ -1042,7 +1127,11 @@ class UltimateEnhancedTacotronTrainer:
 🚀 Режим: {self.mode}
 ✅ Все системы работали стабильно!"""
                 
-                self.telegram_monitor.send_message(message)
+                # Безопасная отправка финального сообщения
+                if hasattr(self.telegram_monitor, 'send_message'):
+                    self.telegram_monitor.send_message(message)
+                else:
+                    self.logger.debug("Telegram monitor не поддерживает отправку сообщений")
             except Exception as e:
                 self.logger.warning(f"Ошибка финального Telegram уведомления: {e}")
         
@@ -1060,6 +1149,7 @@ def main():
                        default='enhanced', help='Режим обучения')
     parser.add_argument('--config', type=str, default='hparams.py', help='Путь к конфигурации')
     parser.add_argument('--epochs', type=int, default=3500, help='Количество эпох')
+    parser.add_argument('--max-steps', type=int, default=None, help='Максимальное количество шагов (для тестирования)')
     parser.add_argument('--dataset-path', type=str, required=True, help='Путь к датасету')
     
     args = parser.parse_args()
@@ -1079,12 +1169,92 @@ def main():
         dataset_info=dataset_info
     )
     
-    # TODO: Здесь должна быть инициализация DataLoader'ов
-    # train_loader = создать train_loader из args.dataset_path
-    # val_loader = создать val_loader из args.dataset_path
-    
-    print("⚠️ DataLoader инициализация должна быть добавлена")
-    print("✅ Ultimate Enhanced Tacotron Trainer готов к работе!")
+    # Инициализация DataLoader'ов
+    try:
+        print("📊 Инициализация DataLoader'ов...")
+        
+        if DATA_UTILS_AVAILABLE:
+            # Стандартная инициализация
+            trainset = TextMelLoader(args.dataset_path, hparams)
+            valset = TextMelLoader(args.dataset_path.replace('train', 'val'), hparams)
+            collate_fn = TextMelCollate(hparams.n_frames_per_step)
+            
+            train_loader = DataLoader(
+                trainset, 
+                num_workers=1, 
+                shuffle=True,
+                sampler=None,
+                batch_size=hparams.batch_size, 
+                pin_memory=False,
+                drop_last=True, 
+                collate_fn=collate_fn
+            )
+            
+            val_loader = DataLoader(
+                valset, 
+                num_workers=1, 
+                shuffle=False,
+                sampler=None,
+                batch_size=hparams.batch_size, 
+                pin_memory=False,
+                collate_fn=collate_fn
+            )
+            
+            print(f"✅ DataLoader'ы созданы успешно!")
+            print(f"📊 Train samples: {len(trainset)}")
+            print(f"📊 Val samples: {len(valset)}")
+            
+        else:
+            print("⚠️ data_utils недоступен - создание mock DataLoader'ов для тестирования")
+            
+            # Создание mock данных для тестирования
+            class MockDataset(torch.utils.data.Dataset):
+                def __init__(self, size=100):
+                    self.size = size
+                
+                def __len__(self):
+                    return self.size
+                    
+                def __getitem__(self, idx):
+                    return (
+                        torch.randint(0, 100, (50,)),  # text
+                        torch.randn(80, 100),           # mel
+                        torch.randint(0, 2, (100,))    # gate
+                    )
+            
+            train_loader = DataLoader(MockDataset(1000), batch_size=8, shuffle=True)
+            val_loader = DataLoader(MockDataset(200), batch_size=8, shuffle=False)
+            
+            print("✅ Mock DataLoader'ы созданы для тестирования")
+            
+        # Инициализация обучения
+        trainer.initialize_training()
+        
+        # Запуск обучения
+        if args.max_steps:
+            print(f"🔬 Начинаю ТЕСТИРОВАНИЕ в режиме '{args.mode}' на {args.max_steps} шагов...")
+            trainer.train(train_loader, val_loader, args.epochs, args.max_steps)
+        else:
+            print(f"🏆 Начинаю обучение в режиме '{args.mode}' на {args.epochs} эпох...")
+            trainer.train(train_loader, val_loader, args.epochs)
+        
+        print("🎉 Ultimate Enhanced Tacotron Trainer завершил работу!")
+        
+    except Exception as e:
+        print(f"❌ Критическая ошибка при инициализации: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        # Создаем минимальное демо для тестирования базового функционала
+        print("\n🔧 Попытка создания демо для тестирования базовых функций...")
+        try:
+            trainer.initialize_training()
+            print("✅ Базовая инициализация прошла успешно!")
+            print("⚠️ Для полного обучения необходимо исправить проблемы с данными")
+        except Exception as e2:
+            print(f"❌ Даже базовая инициализация не удалась: {e2}")
+            import traceback
+            traceback.print_exc()
 
 
 if __name__ == "__main__":

@@ -204,7 +204,7 @@ transcribe_data() {
 
 # Функция для запуска процесса обучения
 train_model() {
-    echo -e "${BLUE}--- Шаг 3: Запуск умного обучения (Optuna HPO) ---${NC}"
+    echo -e "${BLUE}--- Шаг 3: Ultimate Enhanced Training ---${NC}"
     
     # Проверка, существует ли виртуальное окружение
     if [ ! -f "$VENV_DIR/bin/python" ]; then
@@ -219,62 +219,124 @@ train_model() {
         return
     fi
 
-    echo -e "${GREEN}🤖 Запуск обучения с автоматической оптимизацией гиперпараметров (Optuna HPO)...${NC}"
-    echo "Система автоматически:"
-    echo "  ✅ Запустит Optuna HPO (20 trials)"
-    echo "  ✅ Найдет лучшие гиперпараметры для вашей задачи"
-    echo "  ✅ Сохранит все результаты в output/ и logs/"
-    echo "  ✅ Включит MLflow, TensorBoard и Optuna Dashboard"
-    echo -e "${YELLOW}Для остановки нажмите Ctrl+C в этом терминале.${NC}"
-    echo
+    echo -e "${GREEN}🏆 ULTIMATE ENHANCED TACOTRON TRAINING 🏆${NC}"
+    echo -e "${BLUE}Выберите режим обучения:${NC}"
+    echo "  ${GREEN}1. Ultimate Mode (РЕКОМЕНДУЕТСЯ)${NC} - Все возможности + интеллектуальная адаптация"
+    echo "  2. Auto-Optimized Mode - Автоматическая оптимизация + обучение"
+    echo "  3. Enhanced Mode - Фазовое обучение + продвинутый мониторинг"
+    echo "  4. Simple Mode - Быстрое обучение без дополнительных функций"
+    echo "  5. Old System (Smart Tuner V2) - Для сравнения/отладки"
+    echo -n "Ваш выбор [1-5]: "
+    read -r MODE_CHOICE
+
+    case $MODE_CHOICE in
+        1) TRAINING_MODE="ultimate" ;;
+        2) TRAINING_MODE="auto_optimized" ;;
+        3) TRAINING_MODE="enhanced" ;;
+        4) TRAINING_MODE="simple" ;;
+        5) TRAINING_MODE="old_system" ;;
+        *) 
+            echo -e "${YELLOW}Неверный выбор, используется Ultimate Mode по умолчанию${NC}"
+            TRAINING_MODE="ultimate"
+            ;;
+    esac
 
     # --- Подготовка и запуск мониторинга ---
     echo -e "\n${YELLOW}🗑️  Полная очистка и подготовка к новому запуску...${NC}"
     pkill -f "tensorboard" &>/dev/null
     pkill -f "mlflow" &>/dev/null
     pkill -f "smart_tuner/web_interfaces.py" &>/dev/null
+    pkill -f "optuna-dashboard" &>/dev/null
     sleep 1
     echo "✓ Старые процессы мониторинга остановлены"
-    rm -rf output/ mlruns/ smart_tuner/models/ tensorboard.log mlflow.log smart_tuner_main.log smart_tuner/optuna_studies.db
-    mkdir -p output/ mlruns/ smart_tuner/models/
+    rm -rf output/ mlruns/ smart_tuner/models/ tensorboard.log mlflow.log ultimate_training.log smart_tuner/optuna_studies.db
+    mkdir -p output/ mlruns/ smart_tuner/models/ checkpoints/
     echo "✓ Старые логи и артефакты удалены, директории пересозданы"
 
-    # Запуск мониторинга
-    IP_ADDR=$(hostname -I | awk '{print $1}')
-    if [ -z "$IP_ADDR" ]; then
-        IP_ADDR="localhost"
-    fi
-    nohup "$VENV_DIR/bin/python" -m tensorboard.main --logdir "output/" --host 0.0.0.0 --port 5001 --reload_interval 5 > tensorboard.log 2>&1 &
-    echo "✓ TensorBoard запущен на порту 5001"
-    nohup "$VENV_DIR/bin/mlflow" ui --host 0.0.0.0 --port 5000 --backend-store-uri "file://$(pwd)/mlruns" > mlflow.log 2>&1 &
-    echo "✓ MLflow UI запущен на порту 5000"
-    mkdir -p smart_tuner
-    if [ ! -f "smart_tuner/optuna_studies.db" ]; then
-        "$VENV_DIR/bin/python" -c "import optuna; study_name = 'tacotron2_optimization'; storage = 'sqlite:///smart_tuner/optuna_studies.db'; optuna.create_study(study_name=study_name, storage=storage, direction='minimize', load_if_exists=True); print('База данных Optuna создана')"
-    fi
-    nohup "$VENV_DIR/bin/optuna-dashboard" sqlite:///smart_tuner/optuna_studies.db --host 0.0.0.0 --port 5002 > optuna.log 2>&1 &
-    echo "✓ Optuna Dashboard запущен на порту 5002"
-    sleep 3
-    echo -e "\n${BLUE}📈 Мониторинг будет доступен по адресам (через ~1-2 минуты):${NC}"
-    echo -e "  MLflow:           ${GREEN}http://${IP_ADDR}:5000${NC}"
-    echo -e "  TensorBoard:      ${GREEN}http://${IP_ADDR}:5001${NC}"
-    echo -e "  Optuna Dashboard: ${GREEN}http://${IP_ADDR}:5002${NC}"
-    echo
+    if [ "$TRAINING_MODE" != "old_system" ]; then
+        # Запуск мониторинга для новой системы
+        IP_ADDR=$(hostname -I | awk '{print $1}')
+        if [ -z "$IP_ADDR" ]; then
+            IP_ADDR="localhost"
+        fi
+        
+        nohup "$VENV_DIR/bin/python" -m tensorboard.main --logdir "output/" --host 0.0.0.0 --port 5001 --reload_interval 5 > tensorboard.log 2>&1 &
+        echo "✓ TensorBoard запущен на порту 5001"
+        nohup "$VENV_DIR/bin/mlflow" ui --host 0.0.0.0 --port 5000 --backend-store-uri "file://$(pwd)/mlruns" > mlflow.log 2>&1 &
+        echo "✓ MLflow UI запущен на порту 5000"
+        
+        if [ "$TRAINING_MODE" = "auto_optimized" ] || [ "$TRAINING_MODE" = "ultimate" ]; then
+            mkdir -p smart_tuner
+            if [ ! -f "smart_tuner/optuna_studies.db" ]; then
+                "$VENV_DIR/bin/python" -c "import optuna; study_name = 'tacotron2_optimization'; storage = 'sqlite:///smart_tuner/optuna_studies.db'; optuna.create_study(study_name=study_name, storage=storage, direction='minimize', load_if_exists=True); print('База данных Optuna создана')"
+            fi
+            nohup "$VENV_DIR/bin/optuna-dashboard" sqlite:///smart_tuner/optuna_studies.db --host 0.0.0.0 --port 5002 > optuna.log 2>&1 &
+            echo "✓ Optuna Dashboard запущен на порту 5002"
+        fi
+        
+        sleep 3
+        echo -e "\n${BLUE}📈 Мониторинг будет доступен по адресам (через ~1-2 минуты):${NC}"
+        echo -e "  MLflow:           ${GREEN}http://${IP_ADDR}:5000${NC}"
+        echo -e "  TensorBoard:      ${GREEN}http://${IP_ADDR}:5001${NC}"
+        if [ "$TRAINING_MODE" = "auto_optimized" ] || [ "$TRAINING_MODE" = "ultimate" ]; then
+            echo -e "  Optuna Dashboard: ${GREEN}http://${IP_ADDR}:5002${NC}"
+        fi
+        echo
 
-    # --- Запуск обучения с HPO ---
-    echo -e "${GREEN}🚀 Запуск обучения с Optuna HPO...${NC}"
-    "$VENV_DIR/bin/python" train.py --optimize-hyperparams --n-trials 20 -o output -l logs
+        # --- Запуск Ultimate Enhanced Training ---
+        echo -e "${GREEN}🏆 Запуск Ultimate Enhanced Training (режим: $TRAINING_MODE)...${NC}"
+        "$VENV_DIR/bin/python" ultimate_tacotron_trainer.py --mode "$TRAINING_MODE" --dataset-path "data/dataset/train.csv" --epochs 3500
 
-    if [ $? -eq 0 ]; then
-        echo -e "\n${GREEN}🎉 Обучение успешно завершено!${NC}"
-        echo -e "${YELLOW}Результаты сохранены в:${NC}"
-        echo "  📁 Модели: output/ и smart_tuner/models/"
-        echo "  📊 Логи: mlruns/"
-        echo "  📋 Подробные логи: smart_tuner_main.log"
+        if [ $? -eq 0 ]; then
+            echo -e "\n${GREEN}🎉 Ultimate Enhanced Training успешно завершено!${NC}"
+            echo -e "${YELLOW}Результаты сохранены в:${NC}"
+            echo "  📁 Чекпоинты: checkpoints/"
+            echo "  📁 Артефакты: output/"
+            echo "  📊 MLflow: mlruns/"
+            echo "  📋 Основной лог: ultimate_training.log"
+            echo "  📄 Отчет: ultimate_training_report.json"
+        else
+            echo -e "\n${RED}❌ Во время обучения произошла ошибка.${NC}"
+            echo -e "${YELLOW}Проверьте логи для диагностики:${NC}"
+            echo "  tail -f ultimate_training.log"
+        fi
     else
-        echo -e "\n${RED}❌ Во время обучения произошла ошибка.${NC}"
-        echo -e "${YELLOW}Проверьте логи для диагностики:${NC}"
-        echo "  tail -f smart_tuner_main.log"
+        # Старая система (для сравнения)
+        IP_ADDR=$(hostname -I | awk '{print $1}')
+        if [ -z "$IP_ADDR" ]; then
+            IP_ADDR="localhost"
+        fi
+        nohup "$VENV_DIR/bin/python" -m tensorboard.main --logdir "output/" --host 0.0.0.0 --port 5001 --reload_interval 5 > tensorboard.log 2>&1 &
+        echo "✓ TensorBoard запущен на порту 5001"
+        nohup "$VENV_DIR/bin/mlflow" ui --host 0.0.0.0 --port 5000 --backend-store-uri "file://$(pwd)/mlruns" > mlflow.log 2>&1 &
+        echo "✓ MLflow UI запущен на порту 5000"
+        mkdir -p smart_tuner
+        if [ ! -f "smart_tuner/optuna_studies.db" ]; then
+            "$VENV_DIR/bin/python" -c "import optuna; study_name = 'tacotron2_optimization'; storage = 'sqlite:///smart_tuner/optuna_studies.db'; optuna.create_study(study_name=study_name, storage=storage, direction='minimize', load_if_exists=True); print('База данных Optuna создана')"
+        fi
+        nohup "$VENV_DIR/bin/optuna-dashboard" sqlite:///smart_tuner/optuna_studies.db --host 0.0.0.0 --port 5002 > optuna.log 2>&1 &
+        echo "✓ Optuna Dashboard запущен на порту 5002"
+        sleep 3
+        echo -e "\n${BLUE}📈 Мониторинг будет доступен по адресам (через ~1-2 минуты):${NC}"
+        echo -e "  MLflow:           ${GREEN}http://${IP_ADDR}:5000${NC}"
+        echo -e "  TensorBoard:      ${GREEN}http://${IP_ADDR}:5001${NC}"
+        echo -e "  Optuna Dashboard: ${GREEN}http://${IP_ADDR}:5002${NC}"
+        echo
+
+        echo -e "${YELLOW}🔄 Запуск старой системы Smart Tuner V2 (для сравнения)...${NC}"
+        "$VENV_DIR/bin/python" train.py --optimize-hyperparams --n-trials 20 -o output -l logs
+
+        if [ $? -eq 0 ]; then
+            echo -e "\n${GREEN}🎉 Обучение (старая система) успешно завершено!${NC}"
+            echo -e "${YELLOW}Результаты сохранены в:${NC}"
+            echo "  📁 Модели: output/ и smart_tuner/models/"
+            echo "  📊 Логи: mlruns/"
+            echo "  📋 Подробные логи: smart_tuner_main.log"
+        else
+            echo -e "\n${RED}❌ Во время обучения произошла ошибка.${NC}"
+            echo -e "${YELLOW}Проверьте логи для диагностики:${NC}"
+            echo "  tail -f smart_tuner_main.log"
+        fi
     fi
 }
 
