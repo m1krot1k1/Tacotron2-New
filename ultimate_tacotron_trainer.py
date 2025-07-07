@@ -61,13 +61,19 @@ except ImportError:
     SMART_LR_AVAILABLE = False
     logging.warning("SmartLRAdapter недоступен")
 
-# 🤖 АВТОМАТИЧЕСКИЕ ИСПРАВЛЕНИЯ
+# 🧠 ИНТЕЛЛЕКТУАЛЬНАЯ СИСТЕМА ОБУЧЕНИЯ (замена AutoFixManager)
 try:
-    from smart_tuner.auto_fix_manager import AutoFixManager
-    AUTO_FIX_AVAILABLE = True
+    from context_aware_training_manager import ContextAwareTrainingManager, create_context_aware_manager
+    CONTEXT_AWARE_AVAILABLE = True
+    logging.info("✅ Context-Aware Training Manager доступен")
 except ImportError:
-    AUTO_FIX_AVAILABLE = False
-    logging.warning("AutoFixManager недоступен")
+    CONTEXT_AWARE_AVAILABLE = False
+    logging.warning("❌ Context-Aware Training Manager недоступен")
+
+# 🤖 АВТОМАТИЧЕСКИЕ ИСПРАВЛЕНИЯ (ПОЛНОСТЬЮ УДАЛЕНО - заменено на умную систему)
+# AutoFixManager УДАЛЕН - заменен на Context-Aware Training Manager
+AUTO_FIX_AVAILABLE = False
+logging.info("🔧 AutoFixManager полностью удален - заменен на Context-Aware Manager")
 
 # 🚀 АВТОМАТИЧЕСКАЯ ОПТИМИЗАЦИЯ
 try:
@@ -112,7 +118,7 @@ class UltimateEnhancedTacotronTrainer:
     
     Объединяет ВСЕ лучшие решения из всех систем:
     - Фазовое обучение (4 фазы с адаптацией)
-    - Автоматические исправления (AutoFixManager)
+    - Интеллектуальная система обучения (Context-Aware Manager)
     - Адаптивное управление градиентами (AdaptiveGradientClipper)
     - Smart LR адаптация в реальном времени
     - Автоматическая оптимизация гиперпараметров
@@ -147,8 +153,11 @@ class UltimateEnhancedTacotronTrainer:
         self.adaptive_gradient_clipper = None
         self.smart_lr_adapter = None
         
-        # 🤖 АВТОМАТИЧЕСКИЕ ИСПРАВЛЕНИЯ
-        self.auto_fix_manager = None
+        # 🧠 ИНТЕЛЛЕКТУАЛЬНАЯ СИСТЕМА ОБУЧЕНИЯ
+        self.context_aware_manager = None
+        
+        # 🤖 АВТОМАТИЧЕСКИЕ ИСПРАВЛЕНИЯ (ОТКЛЮЧЕНО)
+        # 🤖 AutoFixManager ПОЛНОСТЬЮ УДАЛЕН - заменен на context_aware_manager
         
         # 🚀 АВТОМАТИЧЕСКАЯ ОПТИМИЗАЦИЯ
         self.optimization_engine = None
@@ -375,13 +384,16 @@ class UltimateEnhancedTacotronTrainer:
             except Exception as e:
                 self.logger.error(f"❌ Ошибка AdaptiveGradientClipper: {e}")
         
-        # 🤖 AutoFixManager  
-        if AUTO_FIX_AVAILABLE:
+        # 🧠 Context-Aware Training Manager
+        if CONTEXT_AWARE_AVAILABLE:
             try:
-                # AutoFixManager будет инициализирован после создания модели
-                self.logger.info("🤖 AutoFixManager будет инициализирован после модели")
+                # Context-Aware Manager будет инициализирован после создания модели
+                self.logger.info("🧠 Context-Aware Training Manager будет инициализирован после модели")
             except Exception as e:
-                self.logger.error(f"❌ Ошибка подготовки AutoFixManager: {e}")
+                self.logger.error(f"❌ Ошибка подготовки Context-Aware Manager: {e}")
+        
+        # 🤖 AutoFixManager (ПОЛНОСТЬЮ УДАЛЕН)
+        self.logger.info("🔧 AutoFixManager полностью удален - заменен на Context-Aware Manager")
         
         # 📊 Alignment Diagnostics
         if MONITORING_AVAILABLE:
@@ -479,18 +491,18 @@ class UltimateEnhancedTacotronTrainer:
             except Exception as e:
                 self.logger.error(f"Ошибка Smart LR Adapter: {e}")
         
-        # 🤖 AutoFixManager (инициализируем после модели и оптимизатора)
-        if AUTO_FIX_AVAILABLE and self.mode in ['enhanced', 'auto_optimized', 'ultimate']:
+        # 🧠 Context-Aware Training Manager (инициализируем после модели и оптимизатора)
+        if CONTEXT_AWARE_AVAILABLE and self.mode in ['enhanced', 'auto_optimized', 'ultimate']:
             try:
-                self.auto_fix_manager = AutoFixManager(
-                    model=self.model,
-                    optimizer=self.optimizer,
-                    hparams=self.hparams,
-                    telegram_monitor=self.telegram_monitor
-                )
-                self.logger.info("✅ AutoFixManager инициализирован")
+                self.context_aware_manager = create_context_aware_manager(self.hparams)
+                self.logger.info("✅ Context-Aware Training Manager инициализирован")
+                self.logger.info("🎯 Система умного обучения активирована (замена AutoFixManager)")
             except Exception as e:
-                self.logger.error(f"Ошибка AutoFixManager: {e}")
+                self.logger.error(f"❌ Ошибка Context-Aware Manager: {e}")
+        
+        # 🤖 AutoFixManager (ПОЛНОСТЬЮ УДАЛЕН - заменено на умную систему)
+        # AutoFixManager больше НЕ ИСПОЛЬЗУЕТСЯ - заменен на Context-Aware Manager
+        self.logger.info("🔧 AutoFixManager полностью удален - используется Context-Aware Manager")
     
     def get_current_training_phase(self) -> str:
         """Определяет текущую фазу обучения на основе эпохи."""
@@ -815,30 +827,34 @@ class UltimateEnhancedTacotronTrainer:
             if grad_norm > 100.0:
                 self.logger.error(f"🚨 КРИТИЧЕСКАЯ норма градиентов: {grad_norm:.2f}")
         
-        # 🤖 АВТОМАТИЧЕСКИЕ ИСПРАВЛЕНИЯ
-        if self.auto_fix_manager:
+        # 🧠 ИНТЕЛЛЕКТУАЛЬНАЯ СИСТЕМА ОБУЧЕНИЯ (замена AutoFixManager)
+        if self.context_aware_manager:
             try:
-                fix_metrics = {
+                context_metrics = {
                     'grad_norm': float(grad_norm),
                     'attention_diagonality': attention_diagonality,
                     'gate_accuracy': gate_accuracy,
                     'loss': float(loss.item()),
                     'mel_loss': loss_dict.get('mel_loss', 0),
                     'gate_loss': loss_dict.get('gate_loss', 0),
-                    'guide_loss': loss_dict.get('guide_loss', 0)
+                    'guided_attention_loss': loss_dict.get('guide_loss', 0),
+                    'epoch': self.current_epoch
                 }
                 
-                applied_fixes = self.auto_fix_manager.analyze_and_fix(
+                adaptations = self.context_aware_manager.analyze_and_adapt(
                     step=self.global_step,
-                    metrics=fix_metrics,
-                    loss=loss
+                    metrics=context_metrics,
+                    model=self.model,
+                    optimizer=self.optimizer
                 )
                 
-                if applied_fixes:
-                    self.logger.info(f"🔧 Применено {len(applied_fixes)} автоматических исправлений")
+                if adaptations and len(adaptations) > 4:  # Более 4 параметров означает активные адаптации
+                    adapted_params = [k for k, v in adaptations.items() if k not in ['mel_weight', 'gate_weight']]
+                    if adapted_params:
+                        self.logger.info(f"🎯 Context-Aware адаптации: {adapted_params}")
                     
             except Exception as e:
-                self.logger.error(f"❌ Ошибка в AutoFixManager: {e}")
+                self.logger.error(f"❌ Ошибка в Context-Aware Manager: {e}")
         
         # 🔧 Smart LR Adapter
         if self.smart_lr_adapter:
@@ -1087,15 +1103,26 @@ class UltimateEnhancedTacotronTrainer:
                     epoch_attention_scores.append(step_metrics.get('attention_diagonality', 0))
                     epoch_gate_accuracies.append(step_metrics.get('gate_accuracy', 0))
                     
-                    # 🔧 АВТОМАТИЧЕСКИЕ ИСПРАВЛЕНИЯ - логируем только если применены
-                    if self.auto_fix_manager and step_metrics.get('total_loss', 0) > 50:
-                        emergency_fixes = self.auto_fix_manager.check_and_fix_issues(
+                    # 🧠 КОНТЕКСТНО-ОСОЗНАННЫЕ АДАПТАЦИИ - только при критических проблемах
+                    if self.context_aware_manager and step_metrics.get('total_loss', 0) > 50:
+                        critical_metrics = {
+                            'loss': step_metrics.get('total_loss', 0),
+                            'attention_diagonality': step_metrics.get('attention_diagonality', 0),
+                            'grad_norm': step_metrics.get('grad_norm', 0),
+                            'gate_accuracy': step_metrics.get('gate_accuracy', 0),
+                            'epoch': epoch
+                        }
+                        
+                        emergency_adaptations = self.context_aware_manager.analyze_and_adapt(
                             step=self.global_step,
-                            metrics=step_metrics
+                            metrics=critical_metrics,
+                            model=self.model,
+                            optimizer=self.optimizer
                         )
-                        if emergency_fixes:
-                            fixes_applied += len(emergency_fixes)
-                            self.logger.warning(f"Применено {len(emergency_fixes)} автоисправлений")
+                        
+                        if emergency_adaptations and any(k in emergency_adaptations for k in ['learning_rate', 'guided_attention_weight']):
+                            fixes_applied += 1  # Считаем как одну адаптацию
+                            self.logger.warning(f"🎯 Критические контекстные адаптации применены")
                     
                     # 🔬 ЛИМИТ ШАГОВ ДЛЯ ТЕСТИРОВАНИЯ
                     if max_steps and self.global_step >= max_steps:

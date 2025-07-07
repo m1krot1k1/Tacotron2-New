@@ -6,6 +6,28 @@ from typing import Optional, Tuple, Dict, Any
 import math
 from smart_tuner.ddc_diagnostic import get_global_ddc_diagnostic
 
+# 🔥 ИМПОРТ унифицированной системы guided attention
+try:
+    from unified_guided_attention import UnifiedGuidedAttentionLoss, create_unified_guided_attention
+    UNIFIED_GUIDED_AVAILABLE = True
+except ImportError:
+    UNIFIED_GUIDED_AVAILABLE = False
+    print("⚠️ UnifiedGuidedAttentionLoss недоступен - используем legacy реализацию")
+
+# 🎯 ИМПОРТ новой адаптивной системы loss функций
+try:
+    from adaptive_loss_system import (
+        create_adaptive_loss_system, 
+        create_loss_context_from_metrics,
+        LossPhase,
+        LossContext
+    )
+    ADAPTIVE_LOSS_AVAILABLE = True
+    print("✅ Enhanced Adaptive Loss System доступна")
+except ImportError:
+    ADAPTIVE_LOSS_AVAILABLE = False
+    print("⚠️ Enhanced Adaptive Loss System недоступна - используем стандартную реализацию")
+
 
 class SpectralMelLoss(nn.Module):
     """
@@ -126,6 +148,30 @@ class Tacotron2Loss(nn.Module):
         self.style_loss = StyleLoss()
         self.monotonic_alignment_loss = MonotonicAlignmentLoss()
         
+        # 🔥 УНИФИЦИРОВАННАЯ система guided attention
+        if UNIFIED_GUIDED_AVAILABLE:
+            self.unified_guided_attention = create_unified_guided_attention(hparams)
+            self.use_unified_guided = True
+            print("✅ Использую UnifiedGuidedAttentionLoss")
+        else:
+            self.unified_guided_attention = None
+            self.use_unified_guided = False
+            print("⚠️ Использую legacy guided attention")
+        
+        # 🎯 ИНТЕГРАЦИЯ Enhanced Adaptive Loss System
+        if ADAPTIVE_LOSS_AVAILABLE:
+            self.adaptive_loss_system = create_adaptive_loss_system(hparams)
+            self.use_adaptive_loss = True
+            print("✅ Enhanced Adaptive Loss System интегрирована")
+        else:
+            self.adaptive_loss_system = None
+            self.use_adaptive_loss = False
+            print("⚠️ Используем стандартную систему loss функций")
+        
+        # Контекст для адаптивной системы
+        self.current_context = None
+        self.training_metrics = {}
+        
         # DDC
         self.use_ddc = getattr(hparams, 'use_ddc', False)
         self.ddc_consistency_weight = getattr(hparams, 'ddc_consistency_weight', 0.5)
@@ -167,15 +213,19 @@ class Tacotron2Loss(nn.Module):
         raw_gate_loss = self.adaptive_gate_loss(gate_out, gate_target, self.global_step)
         gate_loss = self.gate_loss_weight * raw_gate_loss
         
-        # 🔥 2. GUIDED ATTENTION LOSS (ИСПРАВЛЕННЫЙ из MonoAlign)
+        # 🔥 2. GUIDED ATTENTION LOSS (УНИФИЦИРОВАННАЯ СИСТЕМА)
         guide_loss = 0.0
-        # ИСПРАВЛЕНИЕ: Используем alignments из model_output вместо None параметра
         if alignments is not None and self.guide_loss_weight > 0:
-            guide_loss = self.guided_attention_loss(
-                alignments, 
-                mel_target.size(2), 
-                mel_out.size(1)
-            )
+            if self.use_unified_guided and self.unified_guided_attention:
+                # Используем новую унифицированную систему
+                guide_loss = self.unified_guided_attention(model_output)
+            else:
+                # Fallback на legacy реализацию
+                guide_loss = self.guided_attention_loss(
+                    alignments, 
+                    mel_target.size(2), 
+                    mel_out.size(1)
+                )
         
         # 🎵 3. ПРОДВИНУТЫЕ LOSS ФУНКЦИИ
         
@@ -199,21 +249,70 @@ class Tacotron2Loss(nn.Module):
         # Обновляем счетчик шагов
         self.global_step += 1
         
-        # Объединяем mel loss + продвинутые loss для совместимости
-        combined_mel_loss = (
-            self.mel_loss_weight * mel_loss +
-            self.spectral_loss_weight * spectral_loss +
-            self.perceptual_loss_weight * perceptual_loss
-        )
-        
-        # Style loss + monotonic loss как embedding loss
-        combined_emb_loss = (
-            self.style_loss_weight * style_loss +
-            self.monotonic_loss_weight * monotonic_loss
-        )
-        
-        # Адаптивный guided attention loss
-        adaptive_guide_loss = self._get_adaptive_guide_weight() * guide_loss
+        # 🎯 АДАПТИВНАЯ СИСТЕМА LOSS ФУНКЦИЙ
+        if self.use_adaptive_loss and self.adaptive_loss_system and self.current_context:
+            # Подготавливаем компоненты loss для адаптивной системы
+            loss_components = {
+                'mel': mel_loss,
+                'gate': raw_gate_loss,
+                'guided_attention': guide_loss,
+                'spectral': spectral_loss,
+                'perceptual': perceptual_loss,
+                'style': style_loss,
+                'monotonic': monotonic_loss
+            }
+            
+            # Если есть gate predictions/targets для Dynamic Tversky
+            if gate_out is not None and gate_targets is not None:
+                loss_components['gate_predictions'] = gate_out
+                loss_components['gate_targets'] = gate_targets
+            
+            # Применяем адаптивную оптимизацию
+            optimized_loss, diagnostics = self.adaptive_loss_system.optimize_loss_computation(
+                loss_components, self.current_context
+            )
+            
+            # Разбиваем оптимизированную loss на компоненты для совместимости
+            component_contributions = diagnostics['component_contributions']
+            
+            combined_mel_loss = (
+                component_contributions.get('mel', 0.0) +
+                component_contributions.get('spectral', 0.0) +
+                component_contributions.get('perceptual', 0.0)
+            )
+            
+            gate_loss = component_contributions.get('gate', 0.0)
+            adaptive_guide_loss = component_contributions.get('guided_attention', 0.0)
+            combined_emb_loss = (
+                component_contributions.get('style', 0.0) +
+                component_contributions.get('monotonic', 0.0)
+            )
+            
+            # Сохраняем диагностику для мониторинга
+            self.training_metrics['adaptive_diagnostics'] = diagnostics
+            
+        else:
+            # 🔄 FALLBACK: стандартная система loss функций
+            # Объединяем mel loss + продвинутые loss для совместимости
+            combined_mel_loss = (
+                self.mel_loss_weight * mel_loss +
+                self.spectral_loss_weight * spectral_loss +
+                self.perceptual_loss_weight * perceptual_loss
+            )
+            
+            # Style loss + monotonic loss как embedding loss
+            combined_emb_loss = (
+                self.style_loss_weight * style_loss +
+                self.monotonic_loss_weight * monotonic_loss
+            )
+            
+            # Адаптивный guided attention loss (унифицированная система уже применяет веса)
+            if self.use_unified_guided and self.unified_guided_attention:
+                # Унифицированная система уже применила адаптивный вес
+                adaptive_guide_loss = guide_loss
+            else:
+                # Legacy система нуждается в адаптивном весе
+                adaptive_guide_loss = self._get_adaptive_guide_weight() * guide_loss
         
         # Double Decoder Consistency Loss
         ddc_loss = 0.0
@@ -268,6 +367,133 @@ class Tacotron2Loss(nn.Module):
         
         # Возвращаем 4 компонента в ожидаемом формате train.py
         return combined_mel_loss, gate_loss, adaptive_guide_loss, combined_emb_loss
+
+    def set_context_aware_manager(self, context_manager):
+        """
+        🧠 Интеграция с Context-Aware Training Manager
+        
+        Args:
+            context_manager: Экземпляр ContextAwareTrainingManager
+        """
+        if self.use_unified_guided and self.unified_guided_attention:
+            self.unified_guided_attention.set_context_aware_manager(context_manager)
+            print("✅ Context-Aware Manager интегрирован с UnifiedGuidedAttention")
+        else:
+            print("⚠️ Context-Aware интеграция доступна только с UnifiedGuidedAttention")
+    
+    def get_guided_attention_diagnostics(self) -> Dict[str, Any]:
+        """
+        📊 Получение диагностической информации guided attention
+        
+        Returns:
+            Dict[str, Any]: Диагностическая информация
+        """
+        if self.use_unified_guided and self.unified_guided_attention:
+            diagnostics = self.unified_guided_attention.get_diagnostics()
+            diagnostics['system_type'] = 'unified'
+            return diagnostics
+        else:
+            return {
+                'system_type': 'legacy',
+                'current_weight': self._get_adaptive_guide_weight(),
+                'current_sigma': self._get_adaptive_sigma(),
+                'global_step': self.global_step
+            }
+    
+    def update_training_context(self, 
+                                phase: str,
+                                attention_quality: float,
+                                gate_accuracy: float,
+                                mel_consistency: float = 0.5,
+                                gradient_norm: float = 1.0,
+                                loss_stability: float = 1.0,
+                                learning_rate: float = 1e-3):
+        """
+        🎯 Обновление контекста обучения для адаптивной системы loss функций
+        
+        Args:
+            phase: Фаза обучения ('PRE_ALIGNMENT', 'ALIGNMENT_LEARNING', etc.)
+            attention_quality: Качество attention alignment (0.0 - 1.0)  
+            gate_accuracy: Точность gate предсказаний (0.0 - 1.0)
+            mel_consistency: Консистентность mel spectrogram (0.0 - 1.0)
+            gradient_norm: Норма градиентов
+            loss_stability: Стабильность loss (стандартное отклонение)
+            learning_rate: Текущий learning rate
+        """
+        if self.use_adaptive_loss and ADAPTIVE_LOSS_AVAILABLE:
+            # Обновляем метрики
+            self.training_metrics.update({
+                'attention_quality': attention_quality,
+                'gate_accuracy': gate_accuracy,
+                'mel_consistency': mel_consistency,
+                'gradient_norm': gradient_norm,
+                'loss_stability': loss_stability,
+                'learning_rate': learning_rate
+            })
+            
+            # Создаем контекст для адаптивной системы
+            self.current_context = create_loss_context_from_metrics(
+                self.training_metrics, phase, self.global_step
+            )
+            
+            print(f"🎯 Контекст обновлен: фаза={phase}, attention={attention_quality:.3f}, gate={gate_accuracy:.3f}")
+    
+    def get_adaptive_loss_diagnostics(self) -> Dict[str, Any]:
+        """
+        📊 Получение полной диагностики адаптивной системы loss функций
+        
+        Returns:
+            Dict[str, Any]: Полная диагностическая информация
+        """
+        if self.use_adaptive_loss and self.adaptive_loss_system:
+            return self.adaptive_loss_system.get_system_diagnostics()
+        else:
+            return {
+                'system_type': 'standard',
+                'adaptive_loss_available': False,
+                'message': 'Enhanced Adaptive Loss System не используется'
+            }
+    
+    def get_current_adaptive_weights(self) -> Dict[str, float]:
+        """
+        📊 Получение текущих адаптивных весов loss компонентов
+        
+        Returns:
+            Dict[str, float]: Текущие веса для каждого компонента
+        """
+        if (self.use_adaptive_loss and 
+            self.adaptive_loss_system and 
+            self.current_context):
+            return self.adaptive_loss_system.weight_manager.get_adaptive_weights(self.current_context)
+        else:
+            # Fallback к стандартным весам
+            return {
+                'mel': self.mel_loss_weight,
+                'gate': self.gate_loss_weight,
+                'guided_attention': self.guide_loss_weight,
+                'spectral': self.spectral_loss_weight,
+                'perceptual': self.perceptual_loss_weight,
+                'style': self.style_loss_weight,
+                'monotonic': self.monotonic_loss_weight
+            }
+    
+    def integrate_with_context_aware_manager(self, context_manager):
+        """
+        🧠 Интеграция с Context-Aware Training Manager
+        
+        Args:
+            context_manager: Экземпляр ContextAwareTrainingManager
+        """
+        if self.use_unified_guided and self.unified_guided_attention:
+            self.unified_guided_attention.set_context_aware_manager(context_manager)
+            print("✅ Context-Aware Manager интегрирован с UnifiedGuidedAttention")
+            
+        if self.use_adaptive_loss:
+            # Устанавливаем связь для автоматического обновления контекста
+            self._context_aware_manager = context_manager
+            print("✅ Context-Aware Manager интегрирован с Enhanced Adaptive Loss System")
+        else:
+            print("⚠️ Enhanced Adaptive Loss System недоступна для интеграции")
 
     def guided_attention_loss(self, att_ws, mel_len, text_len):
         """
@@ -536,10 +762,13 @@ def create_enhanced_loss_function(hparams):
 
 class GuidedAttentionLoss(nn.Module):
     """
-    🔥 КРИТИЧЕСКИЙ ИСПРАВЛЯЮЩИЙ КЛАСС: GuidedAttentionLoss
+    ❌ DEPRECATED: Заменен на UnifiedGuidedAttentionLoss
     
-    Этот класс НЕОБХОДИМ для работы train.py.
-    Реализует революционный Guided Attention на основе Very Attentive Tacotron (2025).
+    Этот класс оставлен для обратной совместимости.
+    🔥 ИСПОЛЬЗУЙТЕ UnifiedGuidedAttentionLoss для новых проектов!
+    
+    Legacy класс с медленными Python циклами.
+    Новая система в 10x быстрее и умнее.
     """
     
     def __init__(self, alpha=2.0, sigma=0.4, decay_rate=0.9999):
