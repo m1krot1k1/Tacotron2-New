@@ -39,8 +39,8 @@ class UnifiedGuidedAttentionLoss(nn.Module):
         super(UnifiedGuidedAttentionLoss, self).__init__()
         self.hparams = hparams
         
-        # 🎯 БАЗОВЫЕ параметры из hparams
-        self.initial_weight = getattr(hparams, 'guide_loss_initial_weight', 5.0)
+        # 🎯 БАЗОВЫЕ параметры из hparams (увеличен для MSE loss)
+        self.initial_weight = getattr(hparams, 'guide_loss_initial_weight', 10.0)
         self.min_weight = getattr(hparams, 'guide_loss_min_weight', 0.1)
         self.max_weight = getattr(hparams, 'guide_loss_max_weight', 15.0)
         
@@ -172,8 +172,8 @@ class UnifiedGuidedAttentionLoss(nn.Module):
             batch_size, mel_len, text_len, mel_lengths, text_lengths, device
         )
         
-        # 🔥 ВЕКТОРИЗОВАННЫЙ KL divergence loss
-        loss = self._compute_kl_divergence_loss(alignments, expected_alignment, mask)
+        # 🔥 ИСПРАВЛЕНО: СТАБИЛЬНЫЙ MSE loss вместо KL divergence
+        loss = self._compute_mse_loss(alignments, expected_alignment, mask)
         
         return loss
     
@@ -220,37 +220,41 @@ class UnifiedGuidedAttentionLoss(nn.Module):
         
         return mask
     
-    def _compute_kl_divergence_loss(self, alignments: torch.Tensor, 
-                                  expected_alignment: torch.Tensor,
-                                  mask: torch.Tensor) -> torch.Tensor:
-        """🔥 Векторизованный KL divergence loss"""
+    def _compute_mse_loss(self, alignments: torch.Tensor, 
+                         expected_alignment: torch.Tensor,
+                         mask: torch.Tensor) -> torch.Tensor:
+        """🔥 ИСПРАВЛЕНО: Стабильный MSE loss вместо KL divergence"""
         
         # Добавляем batch размерность к expected_alignment
         batch_size = alignments.size(0)
         expected_alignment = expected_alignment.unsqueeze(0).expand(batch_size, -1, -1)
         
-        # 🛡️ ЧИСЛЕННАЯ стабильность
-        epsilon = 1e-8
-        alignments_stable = alignments * mask.float() + epsilon
-        expected_stable = expected_alignment * mask.float() + epsilon
+        # 🛡️ БЕЗОПАСНОЕ маскирование
+        alignments_masked = alignments * mask.float()
+        expected_masked = expected_alignment * mask.float()
         
-        # 🔧 НОРМАЛИЗАЦИЯ распределений
-        alignments_normalized = alignments_stable / alignments_stable.sum(dim=2, keepdim=True)
-        expected_normalized = expected_stable / expected_stable.sum(dim=2, keepdim=True)
+        # 🔧 БЕЗОПАСНАЯ НОРМАЛИЗАЦИЯ с большим epsilon
+        epsilon = 1e-6
         
-        # 📊 KL divergence вычисление
-        kl_div = F.kl_div(
-            torch.log(alignments_normalized + epsilon),
-            expected_normalized,
-            reduction='none'
-        )
+        alignments_sum = alignments_masked.sum(dim=2, keepdim=True)
+        expected_sum = expected_masked.sum(dim=2, keepdim=True)
+        
+        # Клампим суммы для избежания деления на ноль
+        alignments_sum_safe = torch.clamp(alignments_sum, min=epsilon)
+        expected_sum_safe = torch.clamp(expected_sum, min=epsilon)
+        
+        alignments_normalized = alignments_masked / alignments_sum_safe
+        expected_normalized = expected_masked / expected_sum_safe
+        
+        # 🔥 MSE LOSS вместо KL divergence для стабильности
+        mse_loss = F.mse_loss(alignments_normalized, expected_normalized, reduction='none')
         
         # 🎭 МАСКИРОВАНИЕ и усреднение
-        kl_div_masked = kl_div * mask.float()
+        mse_loss_masked = mse_loss * mask.float()
         valid_elements = mask.float().sum()
         
         if valid_elements > 0:
-            loss = kl_div_masked.sum() / valid_elements
+            loss = mse_loss_masked.sum() / valid_elements
         else:
             loss = torch.tensor(0.0, device=alignments.device, requires_grad=True)
         

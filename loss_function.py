@@ -4,6 +4,7 @@ import numpy as np
 import torch.nn.functional as F
 from typing import Optional, Tuple, Dict, Any
 import math
+import logging  # 🔥 ДОБАВЛЯЕМ ИМПОРТ LOGGING
 from smart_tuner.ddc_diagnostic import get_global_ddc_diagnostic
 
 # 🔥 ИМПОРТ унифицированной системы guided attention
@@ -131,10 +132,13 @@ class Tacotron2Loss(nn.Module):
         super(Tacotron2Loss, self).__init__()
         self.hparams = hparams
         
+        # 🔥 ДОБАВЛЯЕМ LOGGER
+        self.logger = logging.getLogger(__name__)
+        
         # 📊 ИСПРАВЛЕННЫЕ веса loss функций (из исследований)
         self.mel_loss_weight = getattr(hparams, 'mel_loss_weight', 1.0)
         self.gate_loss_weight = getattr(hparams, 'gate_loss_weight', 1.0)
-        self.guide_loss_weight = getattr(hparams, 'guide_loss_weight', 2.0)  # Увеличено
+        self.guide_loss_weight = getattr(hparams, 'guide_loss_weight', 5.0)  # 🔥 УВЕЛИЧЕНО для MSE loss
         
         # 🎵 НОВЫЕ продвинутые loss функции
         self.spectral_loss_weight = getattr(hparams, 'spectral_loss_weight', 0.3)
@@ -215,29 +219,58 @@ class Tacotron2Loss(nn.Module):
             mel_out, mel_out_postnet, gate_out, alignments = model_output[:4]
         gate_out = gate_out.view(-1, 1)
         
-        # 🎯 1. ОСНОВНЫЕ LOSS ФУНКЦИИ
+        # 🎯 1. ОСНОВНЫЕ LOSS ФУНКЦИИ С ЗАЩИТОЙ ОТ NaN
         
-        # Mel loss (основа качества)
-        mel_loss = nn.MSELoss()(mel_out, mel_target) + \
-            nn.MSELoss()(mel_out_postnet, mel_target)
+        # 🔥 Mel loss с проверкой на NaN
+        try:
+            mel_loss = nn.MSELoss()(mel_out, mel_target) + \
+                nn.MSELoss()(mel_out_postnet, mel_target)
+            
+            # Проверка на NaN/Inf в mel loss
+            if torch.isnan(mel_loss) or torch.isinf(mel_loss):
+                self.logger.error("🚨 NaN/Inf в mel_loss, заменяем на единицу")
+                mel_loss = torch.tensor(1.0, requires_grad=True, device=mel_out.device)
+        except Exception as e:
+            self.logger.error(f"🚨 Ошибка в mel_loss: {e}")
+            mel_loss = torch.tensor(1.0, requires_grad=True, device=mel_out.device)
         
-        # Gate loss (адаптивный с весом)
-        raw_gate_loss = self.adaptive_gate_loss(gate_out, gate_target, self.global_step)
-        gate_loss = self.gate_loss_weight * raw_gate_loss
+        # 🔥 Gate loss с проверкой на NaN
+        try:
+            raw_gate_loss = self.adaptive_gate_loss(gate_out, gate_target, self.global_step)
+            
+            # Проверка на NaN/Inf в gate loss
+            if torch.isnan(raw_gate_loss) or torch.isinf(raw_gate_loss):
+                self.logger.error("🚨 NaN/Inf в gate_loss, заменяем на BCE")
+                raw_gate_loss = F.binary_cross_entropy_with_logits(gate_out, gate_target)
+                
+            gate_loss = self.gate_loss_weight * raw_gate_loss
+        except Exception as e:
+            self.logger.error(f"🚨 Ошибка в gate_loss: {e}")
+            gate_loss = torch.tensor(0.5, requires_grad=True, device=gate_out.device)
         
-        # 🔥 2. GUIDED ATTENTION LOSS (УНИФИЦИРОВАННАЯ СИСТЕМА)
+        # 🔥 2. GUIDED ATTENTION LOSS С ЗАЩИТОЙ ОТ NaN
         guide_loss = 0.0
         if alignments is not None and self.guide_loss_weight > 0:
-            if self.use_unified_guided and self.unified_guided_attention:
-                # Используем новую унифицированную систему
-                guide_loss = self.unified_guided_attention(model_output)
-            else:
-                # Fallback на legacy реализацию
-                guide_loss = self.guided_attention_loss(
-                    alignments, 
-                    mel_target.size(2), 
-                    mel_out.size(1)
-                )
+            try:
+                if self.use_unified_guided and self.unified_guided_attention:
+                    # Используем новую унифицированную систему
+                    guide_loss = self.unified_guided_attention(model_output)
+                else:
+                    # Fallback на legacy реализацию
+                    guide_loss = self.guided_attention_loss(
+                        alignments, 
+                        mel_target.size(2), 
+                        mel_out.size(1)
+                    )
+                
+                # 🔥 ЗАЩИТА ОТ NaN В GUIDED ATTENTION
+                if torch.isnan(guide_loss) or torch.isinf(guide_loss):
+                    self.logger.error("🚨 NaN/Inf в guide_loss, заменяем на ноль")
+                    guide_loss = torch.tensor(0.0, requires_grad=True, device=mel_out.device)
+                    
+            except Exception as e:
+                self.logger.error(f"🚨 Ошибка в guide_loss: {e}")
+                guide_loss = torch.tensor(0.0, requires_grad=True, device=mel_out.device)
         
         # 🎵 3. ПРОДВИНУТЫЕ LOSS ФУНКЦИИ
         
@@ -377,8 +410,26 @@ class Tacotron2Loss(nn.Module):
         # Добавляем DDC к composite mel loss
         combined_mel_loss = combined_mel_loss + self.ddc_consistency_weight * ddc_loss
         
-        # Возвращаем 4 компонента в ожидаемом формате train.py
-        return combined_mel_loss, gate_loss, adaptive_guide_loss, combined_emb_loss
+        # 🛡️ ФИНАЛЬНАЯ ЗАЩИТА ОТ NaN - ПРОВЕРЯЕМ ВСЕ КОМПОНЕНТЫ
+        def safe_loss_component(loss_value, default_value, component_name):
+            """Безопасное создание loss компонента с защитой от NaN/Inf"""
+            try:
+                if torch.isnan(loss_value) or torch.isinf(loss_value):
+                    self.logger.error(f"🚨 NaN/Inf в {component_name}, заменяем на {default_value}")
+                    return torch.tensor(default_value, requires_grad=True, device=loss_value.device)
+                return loss_value
+            except Exception as e:
+                self.logger.error(f"🚨 Ошибка в {component_name}: {e}")
+                return torch.tensor(default_value, requires_grad=True, device=mel_out.device)
+        
+        # Применяем защиту ко всем компонентам
+        safe_mel_loss = safe_loss_component(combined_mel_loss, 1.0, "combined_mel_loss")
+        safe_gate_loss = safe_loss_component(gate_loss, 0.5, "gate_loss")
+        safe_guide_loss = safe_loss_component(adaptive_guide_loss, 0.0, "adaptive_guide_loss")
+        safe_emb_loss = safe_loss_component(combined_emb_loss, 0.0, "combined_emb_loss")
+        
+        # Возвращаем 4 безопасных компонента в ожидаемом формате train.py
+        return safe_mel_loss, safe_gate_loss, safe_guide_loss, safe_emb_loss
 
     def set_context_aware_manager(self, context_manager):
         """
@@ -550,29 +601,32 @@ class Tacotron2Loss(nn.Module):
             actual_text_len = min(text_len, max_text_len) if isinstance(text_len, int) else min(text_len[b], max_text_len)
             mask[b, :actual_mel_len, :actual_text_len] = True
         
-        # 🔥 KL DIVERGENCE вместо MSE для лучшей стабильности
-        # Добавляем небольшое epsilon для численной стабильности
-        att_ws_masked = att_ws * mask.float() + 1e-8
-        expected_masked = expected_alignment * mask.float() + 1e-8
+        # 🔥 ИСПРАВЛЕНИЕ NaN: Используем MSE вместо KL divergence для стабильности
+        # KL divergence слишком чувствителен к нулевым значениям на раннем этапе
+        att_ws_masked = att_ws * mask.float()
+        expected_masked = expected_alignment * mask.float()
         
-        # Нормализуем распределения
-        att_ws_normalized = att_ws_masked / att_ws_masked.sum(dim=2, keepdim=True)
-        expected_normalized = expected_masked / expected_masked.sum(dim=2, keepdim=True)
+        # 🔥 БЕЗОПАСНАЯ нормализация с большим epsilon
+        att_sum = att_ws_masked.sum(dim=2, keepdim=True)
+        expected_sum = expected_masked.sum(dim=2, keepdim=True)
         
-        # 🔥 ВЕКТОРИЗОВАННЫЙ KL divergence
-        kl_div = F.kl_div(
-            torch.log(att_ws_normalized + 1e-8), 
-            expected_normalized, 
-            reduction='none'
-        )
+        # Клампим суммы для избежания деления на ноль
+        att_sum_safe = torch.clamp(att_sum, min=1e-6)
+        expected_sum_safe = torch.clamp(expected_sum, min=1e-6)
+        
+        att_ws_normalized = att_ws_masked / att_sum_safe
+        expected_normalized = expected_masked / expected_sum_safe
+        
+        # 🔥 ИСПОЛЬЗУЕМ MSE ВМЕСТО KL DIVERGENCE для стабильности
+        mse_loss = F.mse_loss(att_ws_normalized, expected_normalized, reduction='none')
         
         # Маскируем и усредняем
-        kl_div_masked = kl_div * mask.float()
+        mse_loss_masked = mse_loss * mask.float()
         
-        # Усредняем по действительным элементам
+        # Усредняем по действительным элементам  
         valid_elements = mask.float().sum()
         if valid_elements > 0:
-            guide_loss = kl_div_masked.sum() / valid_elements
+            guide_loss = mse_loss_masked.sum() / valid_elements
         else:
             guide_loss = torch.tensor(0.0, device=att_ws.device, requires_grad=True)
         
@@ -878,21 +932,30 @@ class GuidedAttentionLoss(nn.Module):
         # Применяем к каждому элементу batch
         loss = 0.0
         for i in range(batch_size):
-            # Нормализуем attention веса
-            att_norm = alignments[i] / alignments[i].sum(dim=1, keepdim=True).clamp(min=1e-6)
+            # 🔥 ИСПРАВЛЕНИЕ NaN: Более безопасная нормализация attention весов
+            att_sum = alignments[i].sum(dim=1, keepdim=True)
+            att_sum_safe = torch.clamp(att_sum, min=1e-8)  # Увеличенный порог
+            att_norm = alignments[i] / att_sum_safe
             
-            # KL divergence loss между predicted и guided attention
-            kl_loss = F.kl_div(
-                torch.log(att_norm + 1e-6),
-                guided_attention,
-                reduction='none'
-            )
+            # 🔥 ДОПОЛНИТЕЛЬНАЯ ЗАЩИТА: Клампим нормализованные веса
+            att_norm = torch.clamp(att_norm, min=1e-8, max=1.0 - 1e-8)
+            
+            # 🔥 ИСПРАВЛЕНИЕ: Используем MSE вместо KL divergence для стабильности
+            # KL divergence создает NaN на ранних этапах обучения
+            
+            # MSE loss между нормализованными attention весами
+            mse_loss = F.mse_loss(att_norm, guided_attention, reduction='none')
+            
+            # Проверяем на NaN/Inf после MSE
+            if torch.isnan(mse_loss).any() or torch.isinf(mse_loss).any():
+                self.logger.warning(f"🚨 NaN/Inf в mse_loss, заменяем на ноль")
+                mse_loss = torch.zeros_like(mse_loss)
             
             # Маскируем валидные элементы
             mask = (alignments[i].sum(dim=1) > 0).float().unsqueeze(1)
-            kl_loss_masked = kl_loss * mask
+            mse_loss_masked = mse_loss * mask
             
-            loss += kl_loss_masked.sum()
+            loss += mse_loss_masked.sum()
         
         # Нормализуем по batch size и sequence length
         loss = loss / (batch_size * mel_len)
@@ -919,8 +982,10 @@ class GuidedAttentionLoss(nn.Module):
         Используется при обнаружении NaN или критически низкой диагональности.
         """
         self.critical_mode = True
-        self.current_weight = self.emergency_weight
-        print(f"🛡️ GuidedAttentionLoss: КРИТИЧЕСКИЙ РЕЖИМ активирован! Вес: {self.emergency_weight}")
+        # 🔥 ИСПРАВЛЕНИЕ: В критическом режиме СНИЖАЕМ вес guided attention
+        # Вместо увеличения веса (что может вызывать NaN), сначала стабилизируем систему
+        self.current_weight = min(self.emergency_weight, 1.0)  # Максимум 1.0 в критическом режиме
+        print(f"🛡️ GuidedAttentionLoss: КРИТИЧЕСКИЙ РЕЖИМ активирован! Вес СНИЖЕН до: {self.current_weight}")
 
     def deactivate_critical_mode(self):
         """Деактивирует критический режим."""

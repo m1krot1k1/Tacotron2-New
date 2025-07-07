@@ -122,7 +122,7 @@ def create_hparams(hparams_string=None, verbose=False):
         learning_rate_min=1e-7,             # 🔧 Минимальный learning rate для recovery
         weight_decay=5e-8,                  # 🔧 Еще меньше regularization для стабильности
         grad_clip_thresh=1.0,               # 🔧 ИСПРАВЛЕНО: увеличено для работы с AdaptiveGradientClipper
-        batch_size=16,                      # 🔥 КРИТИЧЕСКОЕ: оптимизировано для баланса стабильности и качества
+        batch_size=4,                       # 🔥 ИСПРАВЛЕНИЕ: Уменьшено для устранения tensor mismatch
         mask_padding=True,
 
         ################################

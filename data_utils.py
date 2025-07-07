@@ -128,21 +128,27 @@ class TextMelCollate():
         ------
         batch: [text_normalized, mel_normalized]
         """
+        # 🔥 ИСПРАВЛЕНИЕ: Ограничиваем максимальные размеры для стабильности
+        MAX_TEXT_LEN = 200  # Максимальная длина текста
+        MAX_MEL_LEN = 1000  # Максимальная длина mel
+        
         # Right zero-pad all one-hot text sequences to max input length
-        text_lengths = [len(x[0]) for x in batch]
+        text_lengths = [min(len(x[0]), MAX_TEXT_LEN) for x in batch]  # Ограничиваем длину
         # Проверяем на нулевые длины и исправляем их
         text_lengths = [max(1, length) for length in text_lengths]  # Минимум 1
         
         input_lengths, ids_sorted_decreasing = torch.sort(
             torch.LongTensor(text_lengths),
             dim=0, descending=True)
-        max_input_len = input_lengths[0]
+        max_input_len = min(input_lengths[0], MAX_TEXT_LEN)  # Ограничиваем
 
         text_padded = torch.LongTensor(len(batch), max_input_len)
         text_padded.zero_()
         for i in range(len(ids_sorted_decreasing)):
             text = batch[ids_sorted_decreasing[i]][0]
-            text_padded[i, :text.size(0)] = text
+            # 🔥 ИСПРАВЛЕНИЕ: Обрезаем текст если он длиннее максимума
+            text_len = min(text.size(0), max_input_len, MAX_TEXT_LEN)
+            text_padded[i, :text_len] = text[:text_len]
 
         max_ctc_txt_len = max([len(x[1]) for x in batch])
         ctc_text_paded = torch.LongTensor(len(batch), max_ctc_txt_len)
@@ -153,11 +159,12 @@ class TextMelCollate():
             ctc_text_paded[i, :ctc_text.size(0)] = ctc_text
             ctc_text_lengths[i] = ctc_text.size(0)
 
-        # Right zero-pad mel-spec
+        # 🔥 ИСПРАВЛЕНИЕ: Right zero-pad mel-spec с ограничением размера
         num_mels = batch[0][2].size(0)
-        max_target_len = max([x[2].size(1) for x in batch])
+        max_target_len = min(max([x[2].size(1) for x in batch]), MAX_MEL_LEN)  # Ограничиваем
         if max_target_len % self.n_frames_per_step != 0:
             max_target_len += self.n_frames_per_step - max_target_len % self.n_frames_per_step
+            max_target_len = min(max_target_len, MAX_MEL_LEN)  # Повторно ограничиваем после выравнивания
             assert max_target_len % self.n_frames_per_step == 0
 
         # include mel padded and gate padded
@@ -168,9 +175,11 @@ class TextMelCollate():
         output_lengths = torch.LongTensor(len(batch))
         for i in range(len(ids_sorted_decreasing)):
             mel = batch[ids_sorted_decreasing[i]][2]
-            mel_padded[i, :, :mel.size(1)] = mel
-            gate_padded[i, mel.size(1)-1:] = 1
-            output_lengths[i] = mel.size(1)
+            # 🔥 ИСПРАВЛЕНИЕ: Обрезаем mel если он длиннее максимума
+            mel_len = min(mel.size(1), max_target_len, MAX_MEL_LEN)
+            mel_padded[i, :, :mel_len] = mel[:, :mel_len]
+            gate_padded[i, mel_len-1:] = 1
+            output_lengths[i] = mel_len
 
         guide_padded = torch.FloatTensor(len(batch), 200, 1000)
         guide_padded.zero_()

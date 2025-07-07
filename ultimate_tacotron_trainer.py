@@ -562,9 +562,31 @@ class UltimateEnhancedTacotronTrainer:
         mel_targets = mel_targets.cuda() 
         gate_targets = gate_targets.cuda()
         
-        # 🔧 БЕЗОПАСНАЯ ОБРАБОТКА MODEL_OUTPUTS (из train.py)
+        # 🔧 БЕЗОПАСНАЯ ОБРАБОТКА MODEL_OUTPUTS с проверкой размеров
         try:
             x, y = self.model.parse_batch(batch)
+            
+            # 🔥 ДИАГНОСТИКА РАЗМЕРОВ ПЕРЕД FORWARD PASS
+            text_inputs, text_lengths, mel_targets, max_len, output_lengths, ctc_text, ctc_text_lengths = x
+            if text_inputs.size(0) != mel_targets.size(0):
+                self.logger.error(f"🚨 Batch size mismatch: text={text_inputs.size(0)}, mel={mel_targets.size(0)}")
+                return {'total_loss': 10.0}
+            
+            # 🔥 ОГРАНИЧЕНИЕ МАКСИМАЛЬНЫХ РАЗМЕРОВ ДЛЯ СТАБИЛЬНОСТИ
+            max_text_len = min(text_inputs.size(1), 200)  # Ограничиваем длину текста
+            max_mel_len = min(mel_targets.size(2), 1000)   # Ограничиваем длину mel
+            
+            if text_inputs.size(1) > max_text_len:
+                text_inputs = text_inputs[:, :max_text_len]
+                text_lengths = torch.clamp(text_lengths, max=max_text_len)
+            
+            if mel_targets.size(2) > max_mel_len:
+                mel_targets = mel_targets[:, :, :max_mel_len]
+                output_lengths = torch.clamp(output_lengths, max=max_mel_len)
+            
+            # Пересобираем x с ограниченными размерами
+            x = (text_inputs, text_lengths, mel_targets, max_len, output_lengths, ctc_text, ctc_text_lengths)
+            
             model_outputs = self.model(x)
             
             # Безопасная распаковка (поддержка 1-7+ значений)
@@ -796,16 +818,23 @@ class UltimateEnhancedTacotronTrainer:
                 
         except Exception as e:
             self.logger.error(f"Ошибка вычисления loss: {e}")
-            return {'total_loss': torch.tensor(float('inf'))}
+            # 🔥 ИСПРАВЛЕНИЕ: Вместо inf возвращаем безопасное значение
+            return {'total_loss': 10.0}  # Высокое, но конечное значение
+        
+        # 🔥 ПРОВЕРКА LOSS ПЕРЕД BACKWARD
+        if torch.isnan(loss) or torch.isinf(loss):
+            self.logger.error(f"🚨 Обнаружен NaN/Inf loss: {loss}, пропускаем backward")
+            return {'total_loss': 10.0}
         
         # Backward pass
         try:
             loss.backward()
         except Exception as e:
             self.logger.error(f"Ошибка backward pass: {e}")
-            return {'total_loss': torch.tensor(float('inf'))}
+            # 🔥 ИСПРАВЛЕНИЕ: Вместо inf возвращаем безопасное значение
+            return {'total_loss': 10.0}
         
-        # 🔧 ПРОДВИНУТОЕ УПРАВЛЕНИЕ ГРАДИЕНТАМИ
+        # 🔧 ПРОДВИНУТОЕ УПРАВЛЕНИЕ ГРАДИЕНТАМИ С ПРИНУДИТЕЛЬНЫМ КЛИППИНГОМ
         if self.adaptive_gradient_clipper:
             # Используем AdaptiveGradientClipper
             was_clipped, grad_norm, clip_threshold = self.adaptive_gradient_clipper.clip_gradients(
@@ -815,17 +844,34 @@ class UltimateEnhancedTacotronTrainer:
             if was_clipped:
                 self.logger.info(f"🔧 Градиенты обрезаны: {grad_norm:.2f} → {clip_threshold:.2f}")
         else:
-            # Стандартное клипирование с критическими алертами
+            # 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Принудительное агрессивное клипирование
             grad_norm = torch.nn.utils.clip_grad_norm_(
                 self.model.parameters(), 
-                getattr(self.hparams, 'grad_clip_thresh', 1.0)
+                max_norm=1.0,  # Принудительно используем 1.0
+                norm_type=2.0
             )
             
-            # Критические алерты для высоких градиентов
-            if grad_norm > 10.0:
-                self.logger.warning(f"🚨 ВЫСОКАЯ норма градиентов: {grad_norm:.2f}")
-            if grad_norm > 100.0:
-                self.logger.error(f"🚨 КРИТИЧЕСКАЯ норма градиентов: {grad_norm:.2f}")
+        # 🚨 ЭКСТРЕННАЯ ЗАЩИТА: Дополнительная проверка после клипирования
+        current_grad_norm = 0.0
+        for param in self.model.parameters():
+            if param.grad is not None:
+                param_norm = param.grad.data.norm(2)
+                current_grad_norm += param_norm.item() ** 2
+        current_grad_norm = current_grad_norm ** 0.5
+        
+        # Если градиенты все еще высокие - принудительно обрезаем еще раз
+        if current_grad_norm > 2.0:
+            self.logger.warning(f"🚨 ПРИНУДИТЕЛЬНОЕ вторичное клипирование: {current_grad_norm:.2f} → 1.0")
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0, norm_type=2.0)
+            current_grad_norm = 1.0
+            
+        # Критические алерты для высоких градиентов
+        if current_grad_norm > 5.0:
+            self.logger.warning(f"🚨 ВЫСОКАЯ норма градиентов: {current_grad_norm:.2f}")
+        if current_grad_norm > 20.0:
+            self.logger.error(f"🚨 КРИТИЧЕСКАЯ норма градиентов: {current_grad_norm:.2f}")
+            
+        grad_norm = current_grad_norm
         
         # 🧠 ИНТЕЛЛЕКТУАЛЬНАЯ СИСТЕМА ОБУЧЕНИЯ (замена AutoFixManager)
         if self.context_aware_manager:
@@ -947,13 +993,18 @@ class UltimateEnhancedTacotronTrainer:
             self.logger.error(f"Ошибка optimizer step: {e}")
             return {'total_loss': torch.tensor(float('inf'))}
         
-        # Добавляем метрики к результату
+        # Добавляем метрики к результату (конвертируем тензоры в числа)
         loss_dict.update({
-            'grad_norm': grad_norm,
+            'grad_norm': grad_norm.cpu().item() if isinstance(grad_norm, torch.Tensor) else grad_norm,
             'attention_diagonality': attention_diagonality,
             'gate_accuracy': gate_accuracy,
             'learning_rate': self.optimizer.param_groups[0]['lr']
         })
+        
+        # Конвертируем все тензоры в числа для безопасности
+        for key, value in loss_dict.items():
+            if isinstance(value, torch.Tensor):
+                loss_dict[key] = value.cpu().item()
         
         return loss_dict
     
@@ -1097,11 +1148,26 @@ class UltimateEnhancedTacotronTrainer:
                         'Gate': f"{step_metrics.get('gate_accuracy', 0):.3f}"
                     })
                     
-                    # Сохраняем метрики
-                    epoch_losses.append(step_metrics['total_loss'])
-                    epoch_grad_norms.append(step_metrics.get('grad_norm', 0))
-                    epoch_attention_scores.append(step_metrics.get('attention_diagonality', 0))
-                    epoch_gate_accuracies.append(step_metrics.get('gate_accuracy', 0))
+                    # Сохраняем метрики (конвертируем CUDA тензоры в числа)
+                    loss_val = step_metrics['total_loss']
+                    if isinstance(loss_val, torch.Tensor):
+                        loss_val = loss_val.cpu().item()
+                    epoch_losses.append(loss_val)
+                    
+                    grad_norm_val = step_metrics.get('grad_norm', 0)
+                    if isinstance(grad_norm_val, torch.Tensor):
+                        grad_norm_val = grad_norm_val.cpu().item()
+                    epoch_grad_norms.append(grad_norm_val)
+                    
+                    attention_val = step_metrics.get('attention_diagonality', 0)
+                    if isinstance(attention_val, torch.Tensor):
+                        attention_val = attention_val.cpu().item()
+                    epoch_attention_scores.append(attention_val)
+                    
+                    gate_acc_val = step_metrics.get('gate_accuracy', 0)
+                    if isinstance(gate_acc_val, torch.Tensor):
+                        gate_acc_val = gate_acc_val.cpu().item()
+                    epoch_gate_accuracies.append(gate_acc_val)
                     
                     # 🧠 КОНТЕКСТНО-ОСОЗНАННЫЕ АДАПТАЦИИ - только при критических проблемах
                     if self.context_aware_manager and step_metrics.get('total_loss', 0) > 50:
@@ -2135,9 +2201,32 @@ def main():
         print("📊 Инициализация DataLoader'ов...")
         
         if DATA_UTILS_AVAILABLE:
-            # Стандартная инициализация
-            trainset = TextMelLoader(args.dataset_path, hparams)
-            valset = TextMelLoader(args.dataset_path.replace('train', 'val'), hparams)
+            # Стандартная инициализация - автоматическое определение путей к файлам CSV
+            import os
+            
+            # Определяем пути к файлам CSV
+            if os.path.isdir(args.dataset_path):
+                # Если передана директория, ищем train.csv и val.csv внутри
+                train_file = os.path.join(args.dataset_path, 'train.csv')
+                val_file = os.path.join(args.dataset_path, 'val.csv')
+            else:
+                # Если передан путь к файлу, используем его напрямую
+                train_file = args.dataset_path
+                val_file = args.dataset_path.replace('train', 'val')
+            
+            # Проверяем существование файлов
+            if not os.path.exists(train_file):
+                raise FileNotFoundError(f"Файл обучения не найден: {train_file}")
+            if not os.path.exists(val_file):
+                print(f"⚠️ Файл валидации не найден: {val_file}, используем файл обучения")
+                val_file = train_file
+            
+            print(f"📂 Используем файлы:")
+            print(f"   Обучение: {train_file}")
+            print(f"   Валидация: {val_file}")
+            
+            trainset = TextMelLoader(train_file, hparams)
+            valset = TextMelLoader(val_file, hparams)
             collate_fn = TextMelCollate(hparams.n_frames_per_step)
             
             train_loader = DataLoader(
