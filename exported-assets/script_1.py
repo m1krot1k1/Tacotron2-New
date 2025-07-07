@@ -1,111 +1,114 @@
-# Создание анализа проблем обучения на основе логов Telegram
-import pandas as pd
-import numpy as np
-
-# Создание таблицы с проблемами из Telegram логов
-training_issues = pd.DataFrame({
-    'Время': ['20:38:41', '20:38:42', '20:38:57', '20:39:14', '20:39:30', '20:41:21', '20:42:28'],
-    'Шаг': [0, 0, 0, 0, 0, 100, 0],
-    'Взрыв_градиентов': [476894.70, 476894.70, 563978.33, 544413.67, 596312.02, 222373.06, 487421.58],
-    'Loss': [32.5662, 32.5662, 36.1027, 31.6153, 33.5660, 200.6304, 34.3313],
-    'Качество_%': [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-    'Фаза': ['prealignment'] * 7,
-    'Перезапуск': [True, True, True, True, True, True, True]
-})
-
-print("АНАЛИЗ ПРОБЛЕМ ОБУЧЕНИЯ ИЗ TELEGRAM ЛОГОВ")
-print("=" * 60)
-print(training_issues.to_string(index=False))
-
-# Статистика проблем
-print("\n" + "=" * 60)
-print("СТАТИСТИКА КРИТИЧЕСКИХ ПРОБЛЕМ:")
-print(f"Среднее значение взрыва градиентов: {training_issues['Взрыв_градиентов'].mean():.2f}")
-print(f"Максимальное значение взрыва градиентов: {training_issues['Взрыв_градиентов'].max():.2f}")
-print(f"Минимальное значение взрыва градиентов: {training_issues['Взрыв_градиентов'].min():.2f}")
-print(f"Среднее значение Loss: {training_issues['Loss'].mean():.2f}")
-print(f"Количество перезапусков на шаге 0: {(training_issues['Шаг'] == 0).sum()}")
-print(f"Качество обучения: {training_issues['Качество_%'].max()}% (критическое)")
-
-# Создание DataFrame с улучшениями в репозитории
-improvements_status = pd.DataFrame({
-    'Компонент': [
-        'Smart Tuner v2',
-        'Gradient Stability Monitor', 
-        'Enhanced MLFlow Logger',
-        'Emergency Recovery System',
-        'Alignment Diagnostics',
-        'Audio Quality Enhancer',
-        'Smart Training Logger',
-        'Gradient Adaptive Factor',
-        'Loss Scaler',
-        'Smart Segmenter',
-        'MLFlow Data Exporter',
-        'Training Integration',
-        'Debug Reporter'
+# Создадим детальную таблицу алгоритмов и методов для умной системы обучения
+algorithms_data = {
+    'Модуль': [
+        'Context Analyzer',
+        'Context Analyzer', 
+        'Context Analyzer',
+        'Multi-Agent Optimizer',
+        'Multi-Agent Optimizer',
+        'Multi-Agent Optimizer',
+        'Adaptive Loss Controller',
+        'Adaptive Loss Controller',
+        'Adaptive Loss Controller',
+        'Dynamic Attention Supervisor',
+        'Dynamic Attention Supervisor',
+        'Dynamic Attention Supervisor',
+        'Meta-Learning Engine',
+        'Meta-Learning Engine',
+        'Meta-Learning Engine',
+        'Feedback Loop Manager',
+        'Feedback Loop Manager',
+        'Risk Assessment Module',
+        'Risk Assessment Module',
+        'Rollback Controller'
     ],
-    'Статус_интеграции': [
-        'Частично интегрирован',
-        'Интегрирован',
-        'Интегрирован', 
-        'Интегрирован',
-        'Требует доработки',
-        'Интегрирован',
-        'Интегрирован',
-        'Требует доработки',
-        'Интегрирован',
-        'Не интегрирован',
-        'Интегрирован',
-        'Требует доработки',
-        'Интегрирован'
+    'Алгоритм/Метод': [
+        'Bayesian Phase Classification',
+        'Temporal Pattern Analysis', 
+        'Multi-Scale Trend Detection',
+        'MARL (Multi-Agent RL)',
+        'Consensus Algorithm',
+        'Nash Equilibrium Solver',
+        'Gradient-Based Reweighting',
+        'Dynamic Tversky Loss',
+        'Focal Loss Adaptation',
+        'Attention Flow Analysis',
+        'Monotonic Alignment Search',
+        'Self-Supervised Attention',
+        'Model-Agnostic Meta-Learning',
+        'Episodic Memory Networks',
+        'Few-Shot Learning',
+        'Kalman Filtering',
+        'Cross-Correlation Analysis',
+        'Monte Carlo Simulation',
+        'Confidence Intervals',
+        'State Checkpointing'
     ],
-    'Критичность': [
-        'Высокая',
-        'Критическая',
-        'Средняя',
-        'Высокая', 
-        'Критическая',
-        'Низкая',
-        'Средняя',
-        'Критическая',
-        'Высокая',
-        'Средняя',
-        'Низкая',
-        'Высокая',
-        'Низкая'
+    'Техническая реализация': [
+        'Gaussian Mixture Models для классификации фаз',
+        'LSTM + Attention для анализа временных рядов',
+        'Wavelet Transform + Statistical Tests',
+        'PPO/SAC агенты с shared experience replay',
+        'Byzantine Fault Tolerant consensus',
+        'Iterative best response с конвергенцией',
+        'Automated gradient scaling по GradNorm',
+        'Адаптивные α,β параметры на основе FP/FN',
+        'Dynamic γ factor основанный на class difficulty',
+        'Graph Neural Networks для attention flow',
+        'Dynamic Programming с constraints',
+        'Contrastive learning для attention maps',
+        'Gradient-based meta-optimization (MAML)',
+        'Differentiable Neural Dictionary',
+        'Prototypical Networks для task adaptation',
+        'Extended Kalman Filter для нелинейных систем',
+        'Sliding window cross-correlation',
+        'Importance sampling для rare events',
+        'Bootstrap sampling для uncertainty estimation',
+        'Copy-on-write memory management'
     ],
-    'Влияние_на_проблему': [
-        'Прямое - основная система',
-        'Прямое - не работает правильно',
-        'Косвенное',
-        'Косвенное - срабатывает но не решает',
-        'Прямое - нужна для диагностики',
-        'Нет влияния',
-        'Косвенное',
-        'Прямое - критично для градиентов',
-        'Прямое - может помочь с loss',
-        'Нет влияния',
-        'Нет влияния',
-        'Косвенное',
-        'Косвенное'
+    'Параметры настройки': [
+        'n_components=3-5, covariance_type="full"',
+        'hidden_size=256, seq_len=50, attention_heads=8',
+        'wavelet="db4", levels=4, significance=0.05',
+        'lr=1e-4, buffer_size=1M, batch_size=256',
+        'f=1/3, timeout=30s, quorum=2/3',
+        'tolerance=1e-6, max_iterations=100',
+        'update_freq=10, momentum=0.9',
+        'A=0.3, B=0.4, eps=1e-8',
+        'alpha=0.25, gamma=2.0, reduction="mean"',
+        'hidden_dim=512, num_layers=3, dropout=0.1',
+        'beam_width=8, max_iterations=500',
+        'temperature=0.1, projection_dim=128',
+        'inner_lr=1e-3, outer_lr=1e-4, n_inner_steps=5',
+        'memory_size=1000, key_dim=128, value_dim=256',
+        'n_support=5, n_query=15, distance="cosine"',
+        'Q_noise=1e-4, R_noise=1e-2, P_init=1e-1',
+        'window_size=20, max_lag=10',
+        'n_samples=10000, confidence=0.95',
+        'n_bootstrap=1000, alpha=0.05',
+        'checkpoint_freq=100, max_checkpoints=10'
     ]
-})
+}
 
-print("\n" + "=" * 60)
-print("СТАТУС ИНТЕГРАЦИИ УЛУЧШЕНИЙ В SMART TUNER V2")
-print("=" * 60)
-print(improvements_status.to_string(index=False))
+algorithms_df = pd.DataFrame(algorithms_data)
+print("Детальная спецификация алгоритмов интеллектуальной системы обучения:")
+print("=" * 120)
+print(algorithms_df.to_string(index=False))
 
-# Подсчет статистики интеграции
-integration_stats = improvements_status['Статус_интеграции'].value_counts()
-print(f"\n\nСТАТИСТИКА ИНТЕГРАЦИИ:")
-for status, count in integration_stats.items():
-    print(f"- {status}: {count} компонентов")
+# Группировка по модулям для лучшего понимания
+print("\n\n" + "="*50)
+print("ГРУППИРОВКА ПО МОДУЛЯМ:")
+print("="*50)
 
-print("\nКРИТИЧЕСКИЕ КОМПОНЕНТЫ С ПРОБЛЕМАМИ:")
-critical_issues = improvements_status[
-    (improvements_status['Критичность'] == 'Критическая') & 
-    (improvements_status['Статус_интеграции'] != 'Интегрирован')
-]
-for _, row in critical_issues.iterrows():
-    print(f"- {row['Компонент']}: {row['Статус_интеграции']}")
+for module in algorithms_df['Модуль'].unique():
+    module_data = algorithms_df[algorithms_df['Модуль'] == module]
+    print(f"\n🔹 {module}:")
+    for _, row in module_data.iterrows():
+        print(f"  • {row['Алгоритм/Метод']}")
+        print(f"    Реализация: {row['Техническая реализация']}")
+        print(f"    Параметры: {row['Параметры настройки']}")
+        print()
+
+# Сохраним в CSV
+algorithms_df.to_csv('intelligent_system_algorithms.csv', index=False, encoding='utf-8')
+print(f"\n📁 Таблица алгоритмов сохранена в файл: intelligent_system_algorithms.csv")

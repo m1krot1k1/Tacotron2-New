@@ -1,0 +1,9 @@
+Компонент,Функция,Входные данные,Выходные данные,Принцип работы
+Context Analyzer,Анализ текущего контекста обучения и фазы,"Loss history, Attention maps, Training phase","Context vector, Phase classification",Байесовский анализ паттернов в метриках
+Multi-Agent Optimizer,Координация множественных агентов оптимизации,"All system metrics, Agent decisions","Optimized hyperparameters, Coordination signals",Мульти-агентное обучение с подкреплением
+Adaptive Loss Controller,Динамическая настройка весов loss функций,"Loss components, Training metrics","Loss weights, Penalty factors",Градиентная балансировка компонентов loss
+Dynamic Attention Supervisor,Умное управление механизмом внимания,"Attention weights, Alignment quality","Attention parameters, Guided loss weights",Адаптивное управление attention через MLE
+Meta-Learning Engine,Обучение на основе предыдущего опыта,"Training history, Success/failure patterns","Learning strategies, Adaptation rules",Episodic memory + gradient-based meta-learning
+Feedback Loop Manager,Управление обратными связями системы,"All component outputs, Validation results","Feedback signals, Performance metrics",Kalman-фильтры + корреляционный анализ
+Risk Assessment Module,Оценка рисков при изменении параметров,"Current parameters, Change proposals","Risk scores, Safety constraints",Monte Carlo симуляции изменений
+Rollback Controller,Откат изменений при неудачных решениях,"System state snapshots, Decision history","Rollback commands, State restoration",State machine с checkpointing

@@ -1,52 +1,118 @@
 import plotly.graph_objects as go
-import plotly.io as pio
+import numpy as np
 
-# Data from the JSON
-status_counts = {"Integrated": 8, "Partially Integrated": 1, "Needs Work": 3, "Not Integrated": 1}
-
-# Use brand colors with green for integrated (using the closest available green)
-color_map = {
-    "Integrated": "#5D878F",  # Cyan (closest to green available)
-    "Partially Integrated": "#D2BA4C",  # Moderate yellow
-    "Needs Work": "#FFC185",  # Light orange
-    "Not Integrated": "#B4413C"  # Moderate red
+# Define the flowchart structure with coordinates and connections
+nodes = {
+    'Training Step Input': {'x': 0, 'y': 10, 'type': 'start', 'color': '#1FB8CD', 'shape': 'circle'},
+    'Context Analysis': {'x': 0, 'y': 8.5, 'type': 'process', 'color': '#1FB8CD', 'shape': 'square'},
+    'Multi-criteria Eval': {'x': 0, 'y': 7, 'type': 'process', 'color': '#1FB8CD', 'shape': 'square'},
+    'Attention Align?': {'x': -3, 'y': 5, 'type': 'decision', 'color': '#D2BA4C', 'shape': 'diamond'},
+    'Gradients Stable?': {'x': 0, 'y': 5, 'type': 'decision', 'color': '#D2BA4C', 'shape': 'diamond'},
+    'Loss Converging?': {'x': 3, 'y': 5, 'type': 'decision', 'color': '#D2BA4C', 'shape': 'diamond'},
+    'Phase Transit?': {'x': 1.5, 'y': 3.5, 'type': 'decision', 'color': '#D2BA4C', 'shape': 'diamond'},
+    'Inc Learn Rate': {'x': -4, 'y': 3, 'type': 'action', 'color': '#ECEBD5', 'shape': 'square'},
+    'Adj Attention': {'x': -2, 'y': 3, 'type': 'action', 'color': '#ECEBD5', 'shape': 'square'},
+    'Dec Learn Rate': {'x': 0, 'y': 3, 'type': 'action', 'color': '#ECEBD5', 'shape': 'square'},
+    'Modify Batch': {'x': 2, 'y': 3, 'type': 'action', 'color': '#ECEBD5', 'shape': 'square'},
+    'Change Optimizer': {'x': 4, 'y': 3, 'type': 'action', 'color': '#ECEBD5', 'shape': 'square'},
+    'Curriculum Learn': {'x': 3, 'y': 1.5, 'type': 'action', 'color': '#ECEBD5', 'shape': 'square'},
+    'Success Valid': {'x': -2, 'y': 1, 'type': 'feedback', 'color': '#944454', 'shape': 'circle'},
+    'Rollback Proc': {'x': 0, 'y': 1, 'type': 'feedback', 'color': '#944454', 'shape': 'circle'},
+    'Learn Decision': {'x': 2, 'y': 1, 'type': 'feedback', 'color': '#944454', 'shape': 'circle'}
 }
 
-# Create stacked bar chart
+# Define connections
+connections = [
+    ('Training Step Input', 'Context Analysis'),
+    ('Context Analysis', 'Multi-criteria Eval'),
+    ('Multi-criteria Eval', 'Attention Align?'),
+    ('Multi-criteria Eval', 'Gradients Stable?'),
+    ('Multi-criteria Eval', 'Loss Converging?'),
+    ('Loss Converging?', 'Phase Transit?'),
+    ('Attention Align?', 'Inc Learn Rate'),
+    ('Attention Align?', 'Adj Attention'),
+    ('Gradients Stable?', 'Dec Learn Rate'),
+    ('Gradients Stable?', 'Modify Batch'),
+    ('Loss Converging?', 'Change Optimizer'),
+    ('Phase Transit?', 'Curriculum Learn'),
+    ('Inc Learn Rate', 'Success Valid'),
+    ('Adj Attention', 'Success Valid'),
+    ('Dec Learn Rate', 'Rollback Proc'),
+    ('Modify Batch', 'Rollback Proc'),
+    ('Change Optimizer', 'Learn Decision'),
+    ('Curriculum Learn', 'Learn Decision')
+]
+
+# Create the figure
 fig = go.Figure()
 
-# Add each status as a separate trace for stacking
-statuses = ["Integrated", "Partially Integrated", "Needs Work", "Not Integrated"]
-counts = [status_counts[status] for status in statuses]
-colors = [color_map[status] for status in statuses]
-
-for i, status in enumerate(statuses):
-    fig.add_trace(go.Bar(
-        y=["Components"],
-        x=[counts[i]],
-        orientation='h',
-        name=status,
-        marker_color=colors[i],
-        text=counts[i],
-        textposition='inside',
-        textfont=dict(size=14, color='white'),
-        hovertemplate=f'{status}: {counts[i]} components<extra></extra>',
+# Add connections as lines
+for start, end in connections:
+    start_node = nodes[start]
+    end_node = nodes[end]
+    fig.add_trace(go.Scatter(
+        x=[start_node['x'], end_node['x']],
+        y=[start_node['y'], end_node['y']],
+        mode='lines',
+        line=dict(color='#5D878F', width=2),
+        showlegend=False,
+        hoverinfo='skip',
         cliponaxis=False
     ))
 
-# Update layout for stacked bar
+# Add nodes with different shapes
+for name, node in nodes.items():
+    # Create abbreviated labels for display
+    display_name = name if len(name) <= 15 else name[:12] + '...'
+    
+    # Different marker symbols for different shapes
+    if node['shape'] == 'diamond':
+        symbol = 'diamond'
+        size = 40
+    elif node['shape'] == 'square':
+        symbol = 'square'
+        size = 35
+    else:  # circle
+        symbol = 'circle'
+        size = 30
+    
+    fig.add_trace(go.Scatter(
+        x=[node['x']],
+        y=[node['y']],
+        mode='markers+text',
+        marker=dict(
+            size=size,
+            color=node['color'],
+            symbol=symbol,
+            line=dict(width=2, color='white')
+        ),
+        text=display_name,
+        textposition='middle center',
+        textfont=dict(size=8, color='black'),
+        name=node['type'].title(),
+        showlegend=True,
+        hovertemplate=f'<b>{name}</b><br>Type: {node["type"]}<extra></extra>',
+        cliponaxis=False
+    ))
+
+# Update layout
 fig.update_layout(
-    title="Smart Tuner v2 Integration Status",
-    xaxis_title="Comp Count",
-    yaxis_title="",
-    barmode='stack',
+    title="Training Param Adjustment Flow",
+    xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+    yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+    showlegend=True,
     legend=dict(orientation='h', yanchor='bottom', y=1.05, xanchor='center', x=0.5),
-    showlegend=True
+    plot_bgcolor='white'
 )
 
-# Update axes
-fig.update_xaxes(range=[0, sum(counts) + 1])
-fig.update_yaxes()
+# Remove duplicate legend entries
+seen_types = set()
+for trace in fig.data:
+    if hasattr(trace, 'name') and trace.name in seen_types:
+        trace.showlegend = False
+    elif hasattr(trace, 'name'):
+        seen_types.add(trace.name)
 
 # Save the chart
-fig.write_image("smart_tuner_status_dashboard.png")
+fig.write_image("training_decision_flow.png")
+print("Chart saved as training_decision_flow.png")
