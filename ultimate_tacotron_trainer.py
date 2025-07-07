@@ -514,31 +514,75 @@ class UltimateEnhancedTacotronTrainer:
         # Сохраняем диагональность для следующего шага
         self.last_attention_diagonality = attention_diagonality
         
-        # 🎯 БЕЗОПАСНАЯ АДАПТИВНАЯ НАСТРОЙКА GUIDED ATTENTION
+        # 🎯 УЛУЧШЕННАЯ АДАПТИВНАЯ НАСТРОЙКА GUIDED ATTENTION
         if hasattr(self.criterion, 'guide_loss_weight') and self.global_step > 0:
             current_weight = self.criterion.guide_loss_weight
             
-            # КРИТИЧЕСКИ ВАЖНО: НЕ ДОПУСКАЕМ ВЗРЫВА ДО 100.0!
-            if attention_diagonality < 0.05:
-                # Очень осторожное увеличение - НЕ БОЛЕЕ 15.0!
-                new_weight = min(current_weight * 1.5, 15.0)
+            # 🎯 КОНСЕРВАТИВНАЯ СТРАТЕГИЯ ДЛЯ УЛУЧШЕНИЯ ATTENTION
+            if attention_diagonality < 0.03:
+                # Критически низкое - осторожное увеличение до 8.0
+                new_weight = min(current_weight * 1.3, 8.0)
                 self.criterion.guide_loss_weight = new_weight
-                self.logger.warning(f"🚨 Осторожное увеличение guided attention weight: {current_weight:.1f} → {new_weight:.1f}")
+                self.logger.warning(f"🚨 КРИТИЧЕСКОЕ увеличение guided attention weight: {current_weight:.1f} → {new_weight:.1f}")
+                
+                # Дополнительно увеличиваем LR для attention компонентов
+                if self.global_step < 1000:  # Только на ранней стадии
+                    for param_group in self.optimizer.param_groups:
+                        if param_group['lr'] < 5e-5:
+                            param_group['lr'] = min(param_group['lr'] * 1.2, 5e-5)
+                            self.logger.info(f"🔄 Увеличение LR для лучшего attention: {param_group['lr']:.2e}")
+                            
+            elif attention_diagonality < 0.05:
+                # Очень низкое - умеренное увеличение до 10.0
+                new_weight = min(current_weight * 1.2, 10.0)
+                self.criterion.guide_loss_weight = new_weight
+                self.logger.warning(f"🚨 Сильное увеличение guided attention weight: {current_weight:.1f} → {new_weight:.1f}")
+                
             elif attention_diagonality < 0.1:
-                # Умеренное увеличение - НЕ БОЛЕЕ 12.0!
-                new_weight = min(current_weight * 1.3, 12.0)
+                # Низкое - небольшое увеличение до 10.0
+                new_weight = min(current_weight * 1.1, 10.0)
                 self.criterion.guide_loss_weight = new_weight
                 self.logger.warning(f"🚨 Умеренное увеличение guided attention weight: {current_weight:.1f} → {new_weight:.1f}")
+                
             elif attention_diagonality > 0.7:
-                # Снижение когда attention уже хорошее
-                new_weight = max(current_weight * 0.9, 1.0)
+                # Отличное attention - снижаем weight
+                new_weight = max(current_weight * 0.9, 2.0)
                 self.criterion.guide_loss_weight = new_weight
-                self.logger.info(f"📉 Снижение guided attention weight: {current_weight:.1f} → {new_weight:.1f}")
+                self.logger.info(f"📉 Снижение guided attention weight (хорошее внимание): {current_weight:.1f} → {new_weight:.1f}")
+                
+            elif attention_diagonality > 0.5:
+                # Хорошее attention - стабилизируем
+                new_weight = max(current_weight * 0.95, 5.0)
+                self.criterion.guide_loss_weight = new_weight
+                self.logger.info(f"📊 Стабилизация guided attention weight: {current_weight:.1f} → {new_weight:.1f}")
             
-            # АВАРИЙНАЯ ЗАЩИТА: если как-то дошло до критических значений
-            if self.criterion.guide_loss_weight > 20.0:
-                self.criterion.guide_loss_weight = 10.0  # Сбрасываем до безопасного
+            # АВАРИЙНАЯ ЗАЩИТА: максимум 12.0 для стабильности системы
+            if self.criterion.guide_loss_weight > 12.0:
+                self.criterion.guide_loss_weight = 10.0  
                 self.logger.error(f"🚨 АВАРИЙНЫЙ СБРОС guided attention weight до 10.0!")
+                
+            # 🎯 ДОПОЛНИТЕЛЬНЫЕ МЕРЫ ДЛЯ ПЛОХОГО ATTENTION
+            if attention_diagonality < 0.05 and self.global_step > 50:
+                # Критическая ситуация - применяем экстренные меры
+                if hasattr(self.model, 'attention') and hasattr(self.model.attention, 'score_mask_value'):
+                    # Увеличиваем контрастность attention
+                    self.model.attention.score_mask_value = -1e4  # Более контрастные веса
+                    self.logger.info("🎯 Увеличена контрастность attention mechanism")
+                    
+                # Временно увеличиваем temperature attention (если доступно)
+                if hasattr(self.model, 'decoder') and hasattr(self.model.decoder, 'attention_temperature'):
+                    self.model.decoder.attention_temperature = max(self.model.decoder.attention_temperature * 0.9, 0.5)
+                    self.logger.info(f"🌡️ Снижена temperature attention: {self.model.decoder.attention_temperature}")
+        
+        # 🎯 МОНИТОРИНГ ПРОГРЕССА ATTENTION
+        if self.global_step % 10 == 0:
+            attention_trend = "📈" if attention_diagonality > self.last_attention_diagonality else "📉" if attention_diagonality < self.last_attention_diagonality else "➡️"
+            if attention_diagonality < 0.1:
+                self.logger.warning(f"🎯 Attention Progress {attention_trend}: {attention_diagonality:.3f} (TARGET: >0.7)")
+            elif attention_diagonality < 0.3:
+                self.logger.info(f"🎯 Attention Progress {attention_trend}: {attention_diagonality:.3f} (IMPROVING)")
+            elif attention_diagonality >= 0.7:
+                self.logger.info(f"🎯 Attention EXCELLENT {attention_trend}: {attention_diagonality:.3f} ✅")
         
         # 🎯 ВЫЧИСЛЕНИЕ LOSS С БЕЗОПАСНОЙ ОБРАБОТКОЙ
         try:
@@ -1033,7 +1077,18 @@ class UltimateEnhancedTacotronTrainer:
             # Уведомление в Telegram
             if self.telegram_monitor:
                 message = "🧠 Интеллектуальные корректировки:\n" + "\n".join(f"• {adj}" for adj in adjustments_made)
-                self.telegram_monitor.send_message(message)
+                # Безопасная отправка с fallback методами
+                try:
+                    if hasattr(self.telegram_monitor, 'send_message'):
+                        self.telegram_monitor.send_message(message)
+                    elif hasattr(self.telegram_monitor, 'send_training_update'):
+                        self.telegram_monitor.send_training_update({'message': message})
+                    elif hasattr(self.telegram_monitor, 'send_auto_improvement_notification'):
+                        self.telegram_monitor.send_auto_improvement_notification(message)
+                    else:
+                        self.logger.debug("Telegram monitor не поддерживает отправку корректировок")
+                except Exception as e:
+                    self.logger.warning(f"Ошибка Telegram уведомления корректировок: {e}")
     
     def _save_checkpoint(self, epoch: int, is_best: bool = False):
         """Сохранение чекпоинта."""
