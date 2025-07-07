@@ -260,10 +260,23 @@ train_model() {
             IP_ADDR="localhost"
         fi
         
-        nohup "$VENV_DIR/bin/python" -m tensorboard.main --logdir "output/" --host 0.0.0.0 --port 5001 --reload_interval 5 > tensorboard.log 2>&1 &
-        echo "✓ TensorBoard запущен на порту 5001"
+        # Базовые сервисы мониторинга
         nohup "$VENV_DIR/bin/mlflow" ui --host 0.0.0.0 --port 5000 --backend-store-uri "file://$(pwd)/mlruns" > mlflow.log 2>&1 &
         echo "✓ MLflow UI запущен на порту 5000"
+        nohup "$VENV_DIR/bin/python" -m tensorboard.main --logdir "output/" --host 0.0.0.0 --port 5004 --reload_interval 5 > tensorboard.log 2>&1 &
+        echo "✓ TensorBoard запущен на порту 5004"
+        
+        # Production Dashboard'ы
+        nohup "$VENV_DIR/bin/python" production_realtime_dashboard.py > production_dashboard.log 2>&1 &
+        echo "✓ Production Real-time Dashboard запущен на порту 5001"
+        
+        # Smart Tuner веб-интерфейсы (для ultimate режима)
+        if [ "$TRAINING_MODE" = "ultimate" ]; then
+            if [ -f "smart_tuner/web_interfaces.py" ]; then
+                nohup "$VENV_DIR/bin/python" smart_tuner/web_interfaces.py --start > smart_tuner_web.log 2>&1 &
+                echo "✓ Smart Tuner веб-интерфейсы запущены на портах 5005-5010"
+            fi
+        fi
         
         if [ "$TRAINING_MODE" = "auto_optimized" ] || [ "$TRAINING_MODE" = "ultimate" ]; then
             mkdir -p smart_tuner
@@ -276,11 +289,13 @@ train_model() {
         
         sleep 3
         echo -e "\n${BLUE}📈 Мониторинг будет доступен по адресам (через ~1-2 минуты):${NC}"
-        echo -e "  MLflow:           ${GREEN}http://${IP_ADDR}:5000${NC}"
-        echo -e "  TensorBoard:      ${GREEN}http://${IP_ADDR}:5001${NC}"
+        echo -e "  📊 MLflow UI:                 ${GREEN}http://${IP_ADDR}:5000${NC}"
+        echo -e "  🎯 Production Dashboard:      ${GREEN}http://${IP_ADDR}:5001${NC}"
         if [ "$TRAINING_MODE" = "auto_optimized" ] || [ "$TRAINING_MODE" = "ultimate" ]; then
-            echo -e "  Optuna Dashboard: ${GREEN}http://${IP_ADDR}:5002${NC}"
+            echo -e "  🔧 Optuna Dashboard:          ${GREEN}http://${IP_ADDR}:5002${NC}"
         fi
+        echo -e "  📈 TensorBoard:               ${GREEN}http://${IP_ADDR}:5004${NC}"
+        echo -e "  🧠 Smart Tuner Interfaces:   ${GREEN}http://${IP_ADDR}:5005-5010${NC}"
         echo
 
         # --- Запуск Ultimate Enhanced Training ---
@@ -306,10 +321,11 @@ train_model() {
         if [ -z "$IP_ADDR" ]; then
             IP_ADDR="localhost"
         fi
-        nohup "$VENV_DIR/bin/python" -m tensorboard.main --logdir "output/" --host 0.0.0.0 --port 5001 --reload_interval 5 > tensorboard.log 2>&1 &
-        echo "✓ TensorBoard запущен на порту 5001"
+        # Базовые сервисы мониторинга (старая система)
         nohup "$VENV_DIR/bin/mlflow" ui --host 0.0.0.0 --port 5000 --backend-store-uri "file://$(pwd)/mlruns" > mlflow.log 2>&1 &
         echo "✓ MLflow UI запущен на порту 5000"
+        nohup "$VENV_DIR/bin/python" -m tensorboard.main --logdir "output/" --host 0.0.0.0 --port 5004 --reload_interval 5 > tensorboard.log 2>&1 &
+        echo "✓ TensorBoard запущен на порту 5004"
         mkdir -p smart_tuner
         if [ ! -f "smart_tuner/optuna_studies.db" ]; then
             "$VENV_DIR/bin/python" -c "import optuna; study_name = 'tacotron2_optimization'; storage = 'sqlite:///smart_tuner/optuna_studies.db'; optuna.create_study(study_name=study_name, storage=storage, direction='minimize', load_if_exists=True); print('База данных Optuna создана')"
@@ -318,9 +334,9 @@ train_model() {
         echo "✓ Optuna Dashboard запущен на порту 5002"
         sleep 3
         echo -e "\n${BLUE}📈 Мониторинг будет доступен по адресам (через ~1-2 минуты):${NC}"
-        echo -e "  MLflow:           ${GREEN}http://${IP_ADDR}:5000${NC}"
-        echo -e "  TensorBoard:      ${GREEN}http://${IP_ADDR}:5001${NC}"
-        echo -e "  Optuna Dashboard: ${GREEN}http://${IP_ADDR}:5002${NC}"
+        echo -e "  📊 MLflow UI:            ${GREEN}http://${IP_ADDR}:5000${NC}"
+        echo -e "  🔧 Optuna Dashboard:     ${GREEN}http://${IP_ADDR}:5002${NC}"
+        echo -e "  📈 TensorBoard:          ${GREEN}http://${IP_ADDR}:5004${NC}"
         echo
 
         echo -e "${YELLOW}🔄 Запуск старой системы Smart Tuner V2 (для сравнения)...${NC}"
