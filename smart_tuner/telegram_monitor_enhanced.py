@@ -97,13 +97,15 @@ class TelegramMonitorEnhanced:
             self.logger.error(f"Ошибка отправки training update: {e}")
             return False
     
-    def send_critical_alert(self, issue_type: str, details: Dict[str, Any]) -> bool:
+    def send_critical_alert(self, alert_type: str, details: Dict[str, Any], 
+                          recommendations: List[str] = None) -> bool:
         """
         Отправка критического алерта
         
         Args:
-            issue_type: Тип проблемы
+            alert_type: Тип алерта
             details: Детали проблемы
+            recommendations: Список рекомендаций
             
         Returns:
             True если отправка успешна
@@ -117,7 +119,7 @@ class TelegramMonitorEnhanced:
             return False
         
         try:
-            message = self._format_critical_alert(issue_type, details)
+            message = self._format_critical_alert(alert_type, details, recommendations)
             success = self._send_message(message)
             
             if success:
@@ -278,19 +280,21 @@ class TelegramMonitorEnhanced:
         
         return message
     
-    def _format_critical_alert(self, issue_type: str, details: Dict[str, Any]) -> str:
+    def _format_critical_alert(self, alert_type: str, details: Dict[str, Any], 
+                          recommendations: List[str] = None) -> str:
         """
         Форматирование критического алерта
         
         Args:
-            issue_type: Тип проблемы
+            alert_type: Тип алерта
             details: Детали проблемы
+            recommendations: Список рекомендаций
             
         Returns:
             Отформатированное сообщение
         """
         message = f"🚨 **КРИТИЧЕСКИЙ АЛЕРТ**\n\n"
-        message += f"🔴 **Тип проблемы:** {issue_type}\n"
+        message += f"🔴 **Тип проблемы:** {alert_type}\n"
         message += f"⏰ **Время:** {time.strftime('%H:%M:%S')}\n\n"
         
         message += "📋 **Детали:**\n"
@@ -299,6 +303,11 @@ class TelegramMonitorEnhanced:
                 message += f"  • {key}: {value:.4f}\n"
             else:
                 message += f"  • {key}: {value}\n"
+        
+        if recommendations:
+            message += "\n💡 **Рекомендации:**\n"
+            for rec in recommendations:
+                message += f"  • {rec}\n"
         
         message += "\n🛠️ **Требуется немедленное вмешательство!**"
         

@@ -165,7 +165,7 @@ class TelegramMonitor:
         except Exception as e:
             self.logger.error(f"❌ Ошибка отправки уведомления о перезапуске: {e}")
             return False
-    
+        
     def send_detailed_telegram_report(self, step: int, metrics: Dict[str, Any], 
                                     actions_taken: List[str], 
                                     gradient_norm: float = None,

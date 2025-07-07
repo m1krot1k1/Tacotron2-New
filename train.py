@@ -1039,7 +1039,35 @@ def train(
                         # total loss
                         if y_pred is not None:
                             try:
-                                loss_taco, loss_gate, loss_atten, loss_emb = criterion(y_pred, y)
+                                # 🔧 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Безопасная распаковка значений из criterion
+                                criterion_result = criterion(y_pred, y)
+                                
+                                # Проверяем количество возвращаемых значений и безопасно распаковываем
+                                if isinstance(criterion_result, tuple):
+                                    if len(criterion_result) == 4:
+                                        loss_taco, loss_gate, loss_atten, loss_emb = criterion_result
+                                    elif len(criterion_result) == 3:
+                                        loss_taco, loss_gate, loss_atten = criterion_result
+                                        loss_emb = torch.tensor(0.0, device=device, requires_grad=True)
+                                    elif len(criterion_result) == 2:
+                                        loss_taco, loss_gate = criterion_result
+                                        loss_atten = torch.tensor(0.0, device=device, requires_grad=True)
+                                        loss_emb = torch.tensor(0.0, device=device, requires_grad=True)
+                                    elif len(criterion_result) == 1:
+                                        loss_taco = criterion_result[0]
+                                        loss_gate = torch.tensor(0.0, device=device, requires_grad=True)
+                                        loss_atten = torch.tensor(0.0, device=device, requires_grad=True)
+                                        loss_emb = torch.tensor(0.0, device=device, requires_grad=True)
+                                    else:
+                                        # Больше 4 значений - берем первые 4
+                                        loss_taco, loss_gate, loss_atten, loss_emb = criterion_result[:4]
+                                else:
+                                    # Если возвращается одно значение (total loss)
+                                    loss_taco = criterion_result
+                                    loss_gate = torch.tensor(0.0, device=device, requires_grad=True)
+                                    loss_atten = torch.tensor(0.0, device=device, requires_grad=True)
+                                    loss_emb = torch.tensor(0.0, device=device, requires_grad=True)
+                                
                             except Exception as e:
                                 print(f"⚠️ Ошибка criterion: {e}")
                                 # Безопасное получение device из x (tuple)
@@ -1082,15 +1110,39 @@ def train(
                             print(f"⚠️ Ошибка mmi_loss: {e}")
                             loss_mmi = torch.tensor(0.0, device=device, requires_grad=True)
                         try:
+                            # 🔧 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Избегаем двойного применения guided attention
+                            # Guided attention уже включен в loss_taco (основной criterion)
+                            # Добавляем отдельный guide_loss только если он не включен в criterion
                             guide_loss_weight = getattr(hparams, 'guide_loss_weight', 2.5)
-                            loss = (
-                                0.4 * loss_taco +
-                                0.3 * loss_atten +
-                                0.3 * loss_gate +
-                                guide_loss_weight * loss_guide +
-                                loss_mmi +
-                                loss_emb
-                            )
+                            
+                            # Проверяем, включен ли guided attention в основной criterion
+                            criterion_has_guided_attention = hasattr(criterion, 'guide_loss_weight') and criterion.guide_loss_weight > 0
+                            
+                            if criterion_has_guided_attention:
+                                # Guided attention уже в criterion, не добавляем отдельно
+                                loss = (
+                                    0.4 * loss_taco +
+                                    0.3 * loss_atten +
+                                    0.3 * loss_gate +
+                                    loss_mmi +
+                                    loss_emb
+                                )
+                                # Логируем для отладки
+                                if iteration % 1000 == 0:
+                                    print(f"🎯 Guided attention уже включен в criterion (weight: {criterion.guide_loss_weight:.2f})")
+                            else:
+                                # Guided attention не в criterion, добавляем отдельно
+                                loss = (
+                                    0.4 * loss_taco +
+                                    0.3 * loss_atten +
+                                    0.3 * loss_gate +
+                                    guide_loss_weight * loss_guide +
+                                    loss_mmi +
+                                    loss_emb
+                                )
+                                # Логируем для отладки
+                                if iteration % 1000 == 0:
+                                    print(f"🎯 Добавляем отдельный guided attention loss (weight: {guide_loss_weight:.2f})")
                         except Exception as e:
                             print(f"⚠️ Ошибка вычисления loss: {e}")
                             loss = torch.tensor(0.0, device=device, requires_grad=True)
@@ -1199,9 +1251,45 @@ def train(
                     # total loss
                     if y_pred is not None:
                         try:
-                            loss_taco, loss_gate, loss_atten, loss_emb = criterion(y_pred, y)
-                        except Exception as e:
-                            print(f"⚠️ Ошибка criterion: {e}")
+                            # 🔧 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Безопасная распаковка значений из criterion
+                            criterion_result = criterion(y_pred, y)
+                            
+                            # Проверяем количество возвращаемых значений и безопасно распаковываем
+                            if isinstance(criterion_result, tuple):
+                                if len(criterion_result) == 4:
+                                    loss_taco, loss_gate, loss_atten, loss_emb = criterion_result
+                                elif len(criterion_result) == 3:
+                                    loss_taco, loss_gate, loss_atten = criterion_result
+                                    loss_emb = torch.tensor(0.0, device=device, requires_grad=True)
+                                elif len(criterion_result) == 2:
+                                    loss_taco, loss_gate = criterion_result
+                                    loss_atten = torch.tensor(0.0, device=device, requires_grad=True)
+                                    loss_emb = torch.tensor(0.0, device=device, requires_grad=True)
+                                elif len(criterion_result) == 1:
+                                    loss_taco = criterion_result[0]
+                                    loss_gate = torch.tensor(0.0, device=device, requires_grad=True)
+                                    loss_atten = torch.tensor(0.0, device=device, requires_grad=True)
+                                    loss_emb = torch.tensor(0.0, device=device, requires_grad=True)
+                                else:
+                                    # Больше 4 значений - берем первые 4
+                                    loss_taco, loss_gate, loss_atten, loss_emb = criterion_result[:4]
+                            else:
+                                # Если возвращается одно значение (total loss)
+                                loss_taco = criterion_result
+                                loss_gate = torch.tensor(0.0, device=device, requires_grad=True)
+                                loss_atten = torch.tensor(0.0, device=device, requires_grad=True)
+                                loss_emb = torch.tensor(0.0, device=device, requires_grad=True)
+                                
+                            except Exception as e:
+                                print(f"⚠️ Ошибка criterion: {e}")
+                                # Безопасное получение device из x (tuple)
+                                device = x[0].device if isinstance(x, tuple) and len(x) > 0 else 'cuda'
+                                loss_taco = torch.tensor(0.0, device=device, requires_grad=True)
+                                loss_gate = torch.tensor(0.0, device=device, requires_grad=True)
+                                loss_atten = torch.tensor(0.0, device=device, requires_grad=True)
+                                loss_emb = torch.tensor(0.0, device=device, requires_grad=True)
+                        else:
+                            # Если y_pred None, создаем нулевые loss
                             # Безопасное получение device из x (tuple)
                             device = x[0].device if isinstance(x, tuple) and len(x) > 0 else 'cuda'
                             loss_taco = torch.tensor(0.0, device=device, requires_grad=True)
@@ -1295,20 +1383,62 @@ def train(
                         print("⚠️ Предупреждение: loss is None, пропускаем backward pass")
 
                 if loss is not None:
-                    # 🔧 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ПРАВИЛЬНЫЙ GRADIENT CLIPPING
-                    # Применяем строгое gradient clipping с max_norm=1.0
-                    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                    
-                    # Критические алерты для высоких градиентов
-                    if grad_norm > 10.0:
-                        logger.warning(f"🚨 ВЫСОКАЯ норма градиентов: {grad_norm:.2f}")
-                        if debug_reporter:
-                            debug_reporter.add_warning(f"High gradient norm: {grad_norm:.2f}")
-                    
-                    if grad_norm > 100.0:
-                        logger.error(f"🚨 КРИТИЧЕСКАЯ норма градиентов: {grad_norm:.2f}")
-                        if debug_reporter:
-                            debug_reporter.add_warning(f"CRITICAL gradient norm: {grad_norm:.2f}")
+                    # 🔧 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: АДАПТИВНЫЙ GRADIENT CLIPPING
+                    # Используем Smart Tuner AdaptiveGradientClipper для обработки экстремальных градиентов
+                    try:
+                        from smart_tuner.gradient_clipper import get_global_clipper, AdaptiveGradientClipper
+                        
+                        # Инициализируем глобальный clipper если не существует
+                        gradient_clipper = get_global_clipper()
+                        if gradient_clipper is None:
+                            gradient_clipper = AdaptiveGradientClipper(
+                                max_norm=1.0,
+                                adaptive=True, 
+                                emergency_threshold=1000.0,
+                                history_size=1000,
+                                percentile=95
+                            )
+                            from smart_tuner.gradient_clipper import set_global_clipper
+                            set_global_clipper(gradient_clipper)
+                        
+                        # Применяем интеллектуальное gradient clipping
+                        was_clipped, grad_norm, clip_threshold = gradient_clipper.clip_gradients(model, iteration)
+                        
+                        # Логируем результаты клиппинга
+                        if was_clipped:
+                            logger.info(f"✂️ Градиенты обрезаны: {grad_norm:.2f} → {clip_threshold:.2f}")
+                            if debug_reporter:
+                                debug_reporter.add_warning(f"Gradients clipped: {grad_norm:.2f} → {clip_threshold:.2f}")
+                        
+                        # Критические алерты для экстремальных градиентов  
+                        if grad_norm > 1000.0:
+                            logger.error(f"🚨 ЭКСТРЕМАЛЬНАЯ норма градиентов: {grad_norm:.2f}")
+                            if debug_reporter:
+                                debug_reporter.add_warning(f"EXTREME gradient norm: {grad_norm:.2f}")
+                        elif grad_norm > 100.0:
+                            logger.warning(f"🚨 КРИТИЧЕСКАЯ норма градиентов: {grad_norm:.2f}")
+                            if debug_reporter:
+                                debug_reporter.add_warning(f"CRITICAL gradient norm: {grad_norm:.2f}")
+                        elif grad_norm > 10.0:
+                            logger.warning(f"🚨 ВЫСОКАЯ норма градиентов: {grad_norm:.2f}")
+                            if debug_reporter:
+                                debug_reporter.add_warning(f"High gradient norm: {grad_norm:.2f}")
+                                
+                    except ImportError as e:
+                        logger.warning(f"⚠️ Smart Tuner gradient clipper не найден, используем стандартный: {e}")
+                        # Fallback к базовому gradient clipping
+                        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                        
+                        # Критические алерты для высоких градиентов
+                        if grad_norm > 10.0:
+                            logger.warning(f"🚨 ВЫСОКАЯ норма градиентов: {grad_norm:.2f}")
+                            if debug_reporter:
+                                debug_reporter.add_warning(f"High gradient norm: {grad_norm:.2f}")
+                        
+                        if grad_norm > 100.0:
+                            logger.error(f"🚨 КРИТИЧЕСКАЯ норма градиентов: {grad_norm:.2f}")
+                            if debug_reporter:
+                                debug_reporter.add_warning(f"CRITICAL gradient norm: {grad_norm:.2f}")
                     
                     # Логируем gradient norm для мониторинга
                     if debug_reporter:
@@ -2260,7 +2390,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--warm-start",
         action="store_true",
-        help="load model weights only, ignore specified layers",
+        help="load model from checkpoint",
     )
     parser.add_argument(
         "--ignore-mmi-layers",

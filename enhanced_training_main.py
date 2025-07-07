@@ -18,6 +18,7 @@ import sys
 import time
 import torch
 import torch.nn as nn
+import torch.distributed as dist
 import numpy as np
 import logging
 from pathlib import Path
@@ -293,12 +294,31 @@ class EnhancedTacotronTrainer:
         # === MLflow: инициализация эксперимента ===
         if MLFLOW_AVAILABLE:
             try:
-                experiment_name = f"tacotron2_training_{int(time.time())}"
-                mlflow.set_experiment(experiment_name)
-                mlflow.start_run(run_name=f"training_run_{int(time.time())}")
-                self.logger.info(f"✅ MLflow эксперимент инициализирован: {experiment_name}")
+                # Проверяем, есть ли уже активный run
+                active_run = mlflow.active_run()
+                if active_run is not None:
+                    self.logger.info(f"✅ Используем существующий MLflow run: {active_run.info.run_id}")
+                else:
+                    experiment_name = f"tacotron2_training_{int(time.time())}"
+                    mlflow.set_experiment(experiment_name)
+                    mlflow.start_run(run_name=f"training_run_{int(time.time())}")
+                    self.logger.info(f"✅ MLflow эксперимент инициализирован: {experiment_name}")
             except Exception as e:
                 self.logger.error(f"⚠️ Ошибка инициализации MLflow: {e}")
+        
+        # 🔧 Инициализация AutoFixManager для автоматического исправления проблем
+        try:
+            from smart_tuner.auto_fix_manager import AutoFixManager
+            self.auto_fix_manager = AutoFixManager(
+                model=self.model,
+                optimizer=self.optimizer,
+                hparams=self.hparams,
+                telegram_monitor=self.telegram_monitor
+            )
+            self.logger.info("🤖 AutoFixManager интегрирован")
+        except ImportError:
+            self.auto_fix_manager = None
+            self.logger.warning("⚠️ AutoFixManager не найден - автоматические исправления отключены")
     
     def get_current_training_phase(self) -> str:
         """Определяет текущую фазу обучения."""
@@ -408,15 +428,25 @@ class EnhancedTacotronTrainer:
             if alignments is not None:
                 attention_matrix = alignments.detach().cpu().numpy()
                 if attention_matrix.ndim == 3:  # [batch, time, mel_time]
+                    # Вычисляем диагональность для каждого элемента batch отдельно
+                    batch_diagonalities = []
+                    for b in range(attention_matrix.shape[0]):
+                        # Нормализуем attention матрицу
+                        attn = attention_matrix[b]
+                        if attn.sum() > 0:
+                            attn = attn / attn.sum(axis=1, keepdims=True)
+                        
+                        # Вычисляем диагональность как среднее по диагональным элементам
+                        min_dim = min(attn.shape[0], attn.shape[1])
+                        diagonal_elements = []
+                        for i in range(min_dim):
+                            diagonal_elements.append(attn[i, i])
+                        batch_diagonalities.append(np.mean(diagonal_elements) if diagonal_elements else 0.0)
+                    
                     # Берем среднее по batch
-                    attention_matrix = attention_matrix.mean(axis=0)
-                
-                # Вычисляем диагональность как среднее по диагональным элементам
-                min_dim = min(attention_matrix.shape[0], attention_matrix.shape[1])
-                diagonal_elements = []
-                for i in range(min_dim):
-                    diagonal_elements.append(attention_matrix[i, i])
-                attention_diagonality = np.mean(diagonal_elements) if diagonal_elements else 0.0
+                    attention_diagonality = np.mean(batch_diagonalities) if batch_diagonalities else 0.0
+                else:
+                    attention_diagonality = 0.0
             
             # Вычисляем gate_accuracy из gate outputs
             if gate_outputs is not None:
@@ -433,6 +463,10 @@ class EnhancedTacotronTrainer:
         
         # Сохраняем диагональность для следующего шага
         self.last_attention_diagonality = attention_diagonality
+        
+        # Логируем диагональность каждые 100 шагов для отладки
+        if self.global_step % 100 == 0:
+            self.logger.info(f"📊 Attention диагональность: {attention_diagonality:.4f}")
         
         # Вычисление loss с современными техниками
         loss_components = self.criterion(
@@ -469,7 +503,40 @@ class EnhancedTacotronTrainer:
             getattr(self.hparams, 'grad_clip_thresh', 1.0)
         )
         
-        # 🔧 Проверка на исчезновение градиентов
+        # 🔧 АВТОМАТИЧЕСКОЕ ИСПРАВЛЕНИЕ ПРОБЛЕМ через AutoFixManager
+        if self.auto_fix_manager:
+            try:
+                # Собираем метрики для анализа
+                fix_metrics = {
+                    'grad_norm': float(grad_norm),
+                    'attention_diagonality': attention_diagonality,
+                    'gate_accuracy': gate_accuracy,
+                    'loss': float(loss.item()),
+                    'mel_loss': loss_dict.get('mel_loss', 0),
+                    'gate_loss': loss_dict.get('gate_loss', 0),
+                    'guide_loss': loss_dict.get('guide_loss', 0)
+                }
+                
+                # Анализируем и применяем исправления
+                applied_fixes = self.auto_fix_manager.analyze_and_fix(
+                    step=self.global_step,
+                    metrics=fix_metrics,
+                    loss=loss
+                )
+                
+                # Логируем примененные исправления
+                if applied_fixes:
+                    self.logger.info(f"🔧 Применено {len(applied_fixes)} автоматических исправлений")
+                    for fix in applied_fixes:
+                        if fix.success:
+                            self.logger.info(f"✅ {fix.description}")
+                        else:
+                            self.logger.warning(f"⚠️ Не удалось: {fix.description}")
+                            
+            except Exception as e:
+                self.logger.error(f"❌ Ошибка в AutoFixManager: {e}")
+        
+        # 🔧 Проверка на исчезновение градиентов (fallback)
         if grad_norm < 1e-8:
             self.logger.warning(f"⚠️ Исчезновение градиентов: {grad_norm:.2e}")
             # Попытка восстановления
@@ -1084,6 +1151,198 @@ class EnhancedTacotronTrainer:
         # Среднее время эпохи
         avg_epoch_time = np.mean([m.get('epoch_time', 0) for m in metrics])
         self.logger.info(f"   Среднее время эпохи: {avg_epoch_time:.1f}с")
+
+    # === 🔥 МИГРАЦИЯ ФУНКЦИЙ ИЗ TRAIN.PY ===
+    
+    def reduce_tensor(self, tensor, n_gpus):
+        """Reduce tensor across GPUs (для distributed training)."""
+        if n_gpus > 1:
+            rt = tensor.clone()
+            dist.all_reduce(rt, op=dist.ReduceOp.SUM)
+            rt /= n_gpus
+            return rt
+        return tensor
+
+    def init_distributed(self, hparams, n_gpus, rank, group_name):
+        """Инициализация distributed training."""
+        assert torch.cuda.is_available(), "Distributed mode requires CUDA."
+        self.logger.info("Initializing Distributed")
+
+        # Set cuda device so everything is done on the right GPU.
+        torch.cuda.set_device(rank % torch.cuda.device_count())
+
+        # Initialize distributed communication
+        dist.init_process_group(
+            backend=hparams.dist_backend,
+            init_method=hparams.dist_url,
+            world_size=n_gpus,
+            rank=rank,
+            group_name=group_name,
+        )
+
+        self.logger.info("Done initializing distributed")
+
+    def load_model(self, hparams):
+        """Загрузка модели с поддержкой distributed training."""
+        model = Tacotron2(hparams).cuda()
+        
+        if hparams.distributed_run:
+            from distributed import apply_gradient_allreduce
+            model = apply_gradient_allreduce(model)
+
+        return model
+
+    def warm_start_model(self, checkpoint_path, model, ignore_layers, exclude=None):
+        """Warm start модели из checkpoint."""
+        assert os.path.isfile(checkpoint_path)
+        self.logger.info(f"Warm starting model from checkpoint '{checkpoint_path}'")
+        
+        checkpoint_dict = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        model_dict = checkpoint_dict["state_dict"]
+        
+        self.logger.info(f"ignoring layers: {ignore_layers}")
+        if len(ignore_layers) > 0 or exclude:
+            model_dict = {
+                k: v
+                for k, v in model_dict.items()
+                if k not in ignore_layers and (not exclude or exclude not in k)
+            }
+        
+        model.load_state_dict(model_dict, strict=False)
+        return model
+
+    def load_checkpoint(self, checkpoint_path, model, optimizer):
+        """Загрузка checkpoint."""
+        assert os.path.isfile(checkpoint_path)
+        self.logger.info(f"Loading checkpoint '{checkpoint_path}'")
+        
+        checkpoint_dict = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        model.load_state_dict(checkpoint_dict['state_dict'])
+        optimizer.load_state_dict(checkpoint_dict['optimizer'])
+        learning_rate = checkpoint_dict['learning_rate']
+        iteration = checkpoint_dict['iteration']
+        
+        self.logger.info(f"Loaded checkpoint '{checkpoint_path}' (iteration {iteration})")
+        return model, optimizer, learning_rate, iteration
+
+    def save_checkpoint_legacy(self, model, optimizer, learning_rate, iteration, filepath):
+        """Сохранение checkpoint в legacy формате (для совместимости)."""
+        self.logger.info(f"Saving model and optimizer state at iteration {iteration} to {filepath}")
+        torch.save({'iteration': iteration,
+                   'state_dict': model.state_dict(),
+                   'optimizer': optimizer.state_dict(),
+                   'learning_rate': learning_rate}, filepath)
+
+    def setup_mixed_precision(self, hparams):
+        """Настройка mixed precision (FP16/AMP)."""
+        self.apex_available = False
+        self.use_native_amp = False
+        self.scaler = None
+
+        if hparams.fp16_run:
+            try:
+                from apex import amp
+                self.model, self.optimizer = amp.initialize(
+                    self.model, self.optimizer, opt_level="O2"
+                )
+                self.apex_available = True
+                self.logger.info("✅ NVIDIA Apex успешно загружен для FP16 обучения")
+            except ImportError:
+                try:
+                    from torch.amp import GradScaler, autocast
+                    self.model = self.model.float()
+                    self.scaler = GradScaler("cuda")
+                    self.use_native_amp = True
+                    self.logger.info("✅ Переключаемся на torch.amp (PyTorch Native AMP)")
+                except ImportError as e:
+                    hparams.fp16_run = False
+                    self.logger.warning(f"❌ Mixed precision недоступна: {e}. FP16 отключён.")
+
+    def setup_loss_functions(self, hparams):
+        """Настройка всех loss функций."""
+        # Основной loss
+        self.criterion = Tacotron2Loss(hparams)
+        
+        # MMI Loss
+        self.mmi_loss = None
+        if hparams.use_mmi:
+            try:
+                from mmi_loss import MMI_loss
+                self.mmi_loss = MMI_loss(hparams.mmi_map, hparams.mmi_weight)
+                self.logger.info("✅ MMI loss загружен")
+            except ImportError as e:
+                self.logger.warning(f"⚠️ MMI loss недоступен: {e}")
+
+        # Guided Attention Loss
+        self.guide_loss = None
+        if hparams.use_guided_attn:
+            try:
+                from loss_function import GuidedAttentionLoss
+                self.guide_loss = GuidedAttentionLoss(alpha=hparams.guided_attn_weight)
+                self.logger.info("✅ Guided Attention Loss загружен")
+            except ImportError as e:
+                self.logger.warning(f"⚠️ Guided Attention Loss недоступен: {e}")
+
+    def setup_smart_tuner_components(self):
+        """Настройка всех Smart Tuner компонентов."""
+        # AdvancedQualityController
+        try:
+            from smart_tuner.advanced_quality_controller import AdvancedQualityController
+            self.quality_ctrl = AdvancedQualityController()
+            self.logger.info("🤖 AdvancedQualityController активирован")
+        except Exception as e:
+            self.quality_ctrl = None
+            self.logger.warning(f"⚠️ Не удалось инициализировать AdvancedQualityController: {e}")
+
+        # ParamScheduler
+        try:
+            from smart_tuner.param_scheduler import ParamScheduler
+            self.sched_ctrl = ParamScheduler()
+            self.logger.info("📅 ParamScheduler активирован")
+        except Exception as e:
+            self.sched_ctrl = None
+            self.logger.warning(f"⚠️ Не удалось инициализировать ParamScheduler: {e}")
+
+        # EarlyStopController
+        try:
+            from smart_tuner.early_stop_controller import EarlyStopController
+            self.stop_ctrl = EarlyStopController()
+            self.logger.info("🛑 EarlyStopController активирован")
+        except Exception as e:
+            self.stop_ctrl = None
+            self.logger.warning(f"⚠️ Не удалось инициализировать EarlyStopController: {e}")
+
+        # Debug Reporter
+        try:
+            from debug_reporter import initialize_debug_reporter
+            self.debug_reporter = initialize_debug_reporter(self.telegram_monitor)
+            self.logger.info("🔍 Debug Reporter активирован")
+        except Exception as e:
+            self.debug_reporter = None
+            self.logger.warning(f"⚠️ Не удалось инициализировать Debug Reporter: {e}")
+
+    def calculate_global_mean(self, data_loader, global_mean_npy):
+        """Вычисление глобального среднего для нормализации."""
+        if global_mean_npy and os.path.exists(global_mean_npy):
+            self.logger.info(f"Loading global mean from {global_mean_npy}")
+            return np.load(global_mean_npy)
+        
+        self.logger.info("Computing global mean...")
+        global_mean = 0.0
+        count = 0
+        
+        for batch in data_loader:
+            mel = batch[1]  # mel spectrogram
+            global_mean += mel.sum().item()
+            count += mel.numel()
+        
+        global_mean /= count
+        self.logger.info(f"Global mean computed: {global_mean}")
+        
+        if global_mean_npy:
+            np.save(global_mean_npy, global_mean)
+        
+        return global_mean
 
 
 def prepare_dataloaders(hparams):
