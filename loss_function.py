@@ -53,6 +53,18 @@ class SpectralMelLoss(nn.Module):
         # 🔥 ИСПРАВЛЕНИЕ CUDA/CPU: Убеждаемся, что mel_weights на том же устройстве
         mel_weights = self.mel_weights.to(mel_pred.device)
         
+        # 🔧 ИСПРАВЛЕНИЕ: Адаптируем веса к фактическому количеству mel каналов
+        actual_mel_channels = mel_pred.size(1)
+        if actual_mel_channels != mel_weights.size(0):
+            # Ресамплируем веса под фактический размер
+            if actual_mel_channels > mel_weights.size(0):
+                # Повторяем последний вес
+                extra_weights = mel_weights[-1].repeat(actual_mel_channels - mel_weights.size(0))
+                mel_weights = torch.cat([mel_weights, extra_weights])
+            else:
+                # Обрезаем до нужного размера
+                mel_weights = mel_weights[:actual_mel_channels]
+        
         # Основной MSE loss с весами по частотам
         weighted_mse = F.mse_loss(mel_pred * mel_weights[None, :, None], 
                                   mel_target * mel_weights[None, :, None])
@@ -221,11 +233,11 @@ class Tacotron2Loss(nn.Module):
                 guide_loss = self.unified_guided_attention(model_output)
             else:
                 # Fallback на legacy реализацию
-            guide_loss = self.guided_attention_loss(
-                alignments, 
-                mel_target.size(2), 
-                mel_out.size(1)
-            )
+                guide_loss = self.guided_attention_loss(
+                    alignments, 
+                    mel_target.size(2), 
+                    mel_out.size(1)
+                )
         
         # 🎵 3. ПРОДВИНУТЫЕ LOSS ФУНКЦИИ
         
@@ -293,26 +305,26 @@ class Tacotron2Loss(nn.Module):
             
         else:
             # 🔄 FALLBACK: стандартная система loss функций
-        # Объединяем mel loss + продвинутые loss для совместимости
-        combined_mel_loss = (
-            self.mel_loss_weight * mel_loss +
-            self.spectral_loss_weight * spectral_loss +
-            self.perceptual_loss_weight * perceptual_loss
-        )
-        
-        # Style loss + monotonic loss как embedding loss
-        combined_emb_loss = (
-            self.style_loss_weight * style_loss +
-            self.monotonic_loss_weight * monotonic_loss
-        )
-        
+            # Объединяем mel loss + продвинутые loss для совместимости
+            combined_mel_loss = (
+                self.mel_loss_weight * mel_loss +
+                self.spectral_loss_weight * spectral_loss +
+                self.perceptual_loss_weight * perceptual_loss
+            )
+            
+            # Style loss + monotonic loss как embedding loss
+            combined_emb_loss = (
+                self.style_loss_weight * style_loss +
+                self.monotonic_loss_weight * monotonic_loss
+            )
+            
             # Адаптивный guided attention loss (унифицированная система уже применяет веса)
             if self.use_unified_guided and self.unified_guided_attention:
                 # Унифицированная система уже применила адаптивный вес
                 adaptive_guide_loss = guide_loss
             else:
                 # Legacy система нуждается в адаптивном весе
-        adaptive_guide_loss = self._get_adaptive_guide_weight() * guide_loss
+                adaptive_guide_loss = self._get_adaptive_guide_weight() * guide_loss
         
         # Double Decoder Consistency Loss
         ddc_loss = 0.0
@@ -631,6 +643,18 @@ class PerceptualLoss(nn.Module):
         """
         # 🔥 ИСПРАВЛЕНИЕ CUDA/CPU: Убеждаемся, что freq_weights на том же устройстве
         freq_weights = self.freq_weights.to(mel_pred.device)
+        
+        # 🔧 ИСПРАВЛЕНИЕ: Адаптируем веса к фактическому количеству mel каналов
+        actual_mel_channels = mel_pred.size(1)
+        if actual_mel_channels != freq_weights.size(0):
+            # Ресамплируем веса под фактический размер
+            if actual_mel_channels > freq_weights.size(0):
+                # Повторяем последний вес
+                extra_weights = freq_weights[-1].repeat(actual_mel_channels - freq_weights.size(0))
+                freq_weights = torch.cat([freq_weights, extra_weights])
+            else:
+                # Обрезаем до нужного размера
+                freq_weights = freq_weights[:actual_mel_channels]
         
         # Взвешенный MSE loss
         weighted_diff = (mel_pred - mel_target) ** 2

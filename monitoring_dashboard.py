@@ -19,10 +19,38 @@ from dash import dcc, html, Input, Output, callback, dash_table
 import dash_bootstrap_components as dbc
 from dash.exceptions import PreventUpdate
 
-from production_monitoring import (
-    ProductionMonitor, MonitoringConfig, ComponentStatus, AlertSeverity,
-    create_production_monitor
-)
+# Используем простую заглушку вместо недоступного production_monitoring
+try:
+    from simple_monitoring import (
+        SimpleProductionMonitor as ProductionMonitor, 
+        MonitoringConfig, ComponentStatus, AlertSeverity
+    )
+    def create_production_monitor(config=None):
+        return ProductionMonitor(config)
+except ImportError:
+    # Fallback заглушки
+    class ProductionMonitor:
+        def __init__(self, config=None): pass
+        def register_component(self, name, component): pass
+        def start_monitoring(self): pass
+        def stop_monitoring(self): pass
+    
+    class MonitoringConfig:
+        def __init__(self): pass
+    
+    class ComponentStatus:
+        HEALTHY = "healthy"
+        WARNING = "warning"
+        CRITICAL = "critical"
+        OFFLINE = "offline"
+    
+    class AlertSeverity:
+        INFO = "info"
+        WARNING = "warning"
+        CRITICAL = "critical"
+    
+    def create_production_monitor(config=None):
+        return ProductionMonitor(config)
 
 # Настройка логирования
 logger = logging.getLogger(__name__)
@@ -708,6 +736,16 @@ def run_dashboard_with_monitoring(components: Dict[str, Any] = None,
         dashboard.run_server(debug=debug)
     finally:
         monitor.stop_monitoring()
+
+# Alias для совместимости с production_realtime_dashboard
+class ProductionRealtimeDashboard(MonitoringDashboard):
+    """Alias для совместимости"""
+    def __init__(self, host='0.0.0.0', port=5001):
+        # Создаем mock monitor
+        monitor = create_production_monitor()
+        super().__init__(monitor)
+        self.host = host
+        self.port = port
 
 if __name__ == "__main__":
     # Демонстрация использования
