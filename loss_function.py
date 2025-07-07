@@ -221,11 +221,11 @@ class Tacotron2Loss(nn.Module):
                 guide_loss = self.unified_guided_attention(model_output)
             else:
                 # Fallback на legacy реализацию
-                guide_loss = self.guided_attention_loss(
-                    alignments, 
-                    mel_target.size(2), 
-                    mel_out.size(1)
-                )
+            guide_loss = self.guided_attention_loss(
+                alignments, 
+                mel_target.size(2), 
+                mel_out.size(1)
+            )
         
         # 🎵 3. ПРОДВИНУТЫЕ LOSS ФУНКЦИИ
         
@@ -293,26 +293,26 @@ class Tacotron2Loss(nn.Module):
             
         else:
             # 🔄 FALLBACK: стандартная система loss функций
-            # Объединяем mel loss + продвинутые loss для совместимости
-            combined_mel_loss = (
-                self.mel_loss_weight * mel_loss +
-                self.spectral_loss_weight * spectral_loss +
-                self.perceptual_loss_weight * perceptual_loss
-            )
-            
-            # Style loss + monotonic loss как embedding loss
-            combined_emb_loss = (
-                self.style_loss_weight * style_loss +
-                self.monotonic_loss_weight * monotonic_loss
-            )
-            
+        # Объединяем mel loss + продвинутые loss для совместимости
+        combined_mel_loss = (
+            self.mel_loss_weight * mel_loss +
+            self.spectral_loss_weight * spectral_loss +
+            self.perceptual_loss_weight * perceptual_loss
+        )
+        
+        # Style loss + monotonic loss как embedding loss
+        combined_emb_loss = (
+            self.style_loss_weight * style_loss +
+            self.monotonic_loss_weight * monotonic_loss
+        )
+        
             # Адаптивный guided attention loss (унифицированная система уже применяет веса)
             if self.use_unified_guided and self.unified_guided_attention:
                 # Унифицированная система уже применила адаптивный вес
                 adaptive_guide_loss = guide_loss
             else:
                 # Legacy система нуждается в адаптивном весе
-                adaptive_guide_loss = self._get_adaptive_guide_weight() * guide_loss
+        adaptive_guide_loss = self._get_adaptive_guide_weight() * guide_loss
         
         # Double Decoder Consistency Loss
         ddc_loss = 0.0

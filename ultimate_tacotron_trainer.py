@@ -72,7 +72,7 @@ except ImportError:
 
 # 🤖 АВТОМАТИЧЕСКИЕ ИСПРАВЛЕНИЯ (ПОЛНОСТЬЮ УДАЛЕНО - заменено на умную систему)
 # AutoFixManager УДАЛЕН - заменен на Context-Aware Training Manager
-AUTO_FIX_AVAILABLE = False
+    AUTO_FIX_AVAILABLE = False
 logging.info("🔧 AutoFixManager полностью удален - заменен на Context-Aware Manager")
 
 # 🚀 АВТОМАТИЧЕСКАЯ ОПТИМИЗАЦИЯ
